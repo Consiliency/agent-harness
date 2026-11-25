@@ -79,7 +79,7 @@ def test_failed_command_beside_successful_command_counts():
 
 
 def test_diagnostics_count_distinct_tool_items_and_terminal_failures():
-    from phase_loop_runtime.seat_codex_evidence import run_diagnostics
+    from phase_loop_runtime.seat_codex_evidence import CodexStreamDiagnostics, empty_run_diagnostics
 
     pending = {"id": "private id 1", "type": "command_execution", "status": "in_progress"}
     failed = {"id": "private id 2", "type": "mcp_tool_call", "status": "failed",
@@ -91,7 +91,11 @@ def test_diagnostics_count_distinct_tool_items_and_terminal_failures():
         {"type": "item.completed", "item": failed},
         {"type": "turn.failed", "error": {"message": "private turn failure"}},
     )) + b"bad json with private text"
-    record = run_diagnostics(1, 42, data)
+    record = empty_run_diagnostics()
+    diagnostics = CodexStreamDiagnostics()
+    for offset in range(0, len(data), 17):
+        diagnostics.feed(data[offset:offset + 17])
+    diagnostics.finish(record)
     assert record["provider_stage_reached"] == "terminal_event"
     assert record["provider_event_type_counts"] == {
         "thread.started": 1, "turn.started": 1, "item.started": 1,

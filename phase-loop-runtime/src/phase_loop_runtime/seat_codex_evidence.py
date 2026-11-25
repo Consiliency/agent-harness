@@ -88,59 +88,83 @@ _TOOL_FAILURE_CODES = {
 }
 
 
-def run_diagnostics(
-    returncode: int | None = None, duration_ms: int | None = None,
-    stdout: bytes | bytearray = b"", stderr_bytes: int = 0,
-) -> dict[str, object]:
-    """Summarize the native pipes independently of the review evidence gate."""
-    events: Counter[str] = Counter()
-    errors: Counter[str] = Counter()
-    attempts: set[str] = set()
-    completions: set[str] = set()
-    for line in stdout.splitlines():
+def empty_run_diagnostics() -> dict[str, object]:
+    """Initial diagnostics for a routed leg before any launch is attempted."""
+    return {
+        "native_exit_code": None,
+        "native_signal": None,
+        "native_duration_ms": None,
+        "native_stdout_bytes": 0,
+        "native_stderr_bytes": 0,
+        "provider_stage_reached": "not_launched",
+        "provider_event_type_counts": {},
+        "provider_tool_calls_attempted": 0,
+        "provider_tool_calls_completed": 0,
+        "provider_tool_calls_failed": 0,
+        "provider_tool_error_codes": {},
+    }
+
+
+class CodexStreamDiagnostics:
+    """Summarize raw stdout before redaction, independently of the evidence gate."""
+
+    def __init__(self) -> None:
+        self._pending = bytearray()
+        self._events: Counter[str] = Counter()
+        self._errors: Counter[str] = Counter()
+        self._attempts: set[str] = set()
+        self._completions: set[str] = set()
+
+    def feed(self, chunk: bytes) -> None:
+        lines = chunk.split(b"\n")
+        self._pending.extend(lines[0])
+        if len(lines) == 1:
+            return
+        self._observe_line(self._pending)
+        for line in lines[1:-1]:
+            self._observe_line(line)
+        self._pending = bytearray(lines[-1])
+
+    def _observe_line(self, line: bytes | bytearray) -> None:
         try:
             event = json.loads(line)
         except (ValueError, RecursionError):
-            events["malformed"] += 1
-            continue
+            self._events["malformed"] += 1
+            return
         if not isinstance(event, dict) or not isinstance(name := event.get("type"), str):
-            events["malformed"] += 1
-            continue
-        events[name if name in CODEX_TOOL_EVENTS else "unknown"] += 1
+            self._events["malformed"] += 1
+            return
+        self._events[name if name in CODEX_TOOL_EVENTS else "unknown"] += 1
         if name not in {"item.started", "item.updated", "item.completed"}:
-            continue
+            return
         item = event.get("item")
         if not isinstance(item, dict):
-            continue
+            return
         kind, ident = item.get("type"), item.get("id")
         if not isinstance(kind, str) or kind not in _TOOL_FAILURE_CODES or not isinstance(ident, str):
-            continue
-        attempts.add(ident)
-        if name != "item.completed" or ident in completions:
-            continue
-        completions.add(ident)
+            return
+        self._attempts.add(ident)
+        if name != "item.completed" or ident in self._completions:
+            return
+        self._completions.add(ident)
         exit_code = item.get("exit_code")
         if kind == "command_execution" and type(exit_code) is int and exit_code != 0:
-            errors["command_nonzero_exit"] += 1
+            self._errors["command_nonzero_exit"] += 1
         elif item.get("status") == "failed":
-            errors[_TOOL_FAILURE_CODES[kind]] += 1
+            self._errors[_TOOL_FAILURE_CODES[kind]] += 1
 
-    stage = "not_launched" if duration_ms is None else "launch"
-    if events["turn.completed"] or events["turn.failed"]:
-        stage = "terminal_event"
-    elif any(name != "malformed" for name in events):
-        stage = "first_incoming_event"
-    return {
-        # A positive 128 + signal status from a wrapper is ambiguous.
-        "native_exit_code": returncode if returncode is not None and returncode >= 0 else None,
-        "native_signal": -returncode if returncode is not None and returncode < 0 else None,
-        "native_duration_ms": duration_ms,
-        "native_stdout_bytes": len(stdout),
-        "native_stderr_bytes": stderr_bytes,
-        "provider_stage_reached": stage,
-        "provider_event_type_counts": dict(events),
-        "provider_tool_calls_attempted": len(attempts),
-        "provider_tool_calls_completed": len(completions),
-        "provider_tool_calls_failed": sum(errors.values()),
-        "provider_tool_error_codes": dict(errors),
-    }
+    def finish(self, evidence: dict[str, object]) -> None:
+        if self._pending:
+            self._observe_line(self._pending)
+            self._pending.clear()
+        if self._events["turn.completed"] or self._events["turn.failed"]:
+            evidence["provider_stage_reached"] = "terminal_event"
+        elif any(name != "malformed" for name in self._events):
+            evidence["provider_stage_reached"] = "first_incoming_event"
+        evidence.update(
+            provider_event_type_counts=dict(self._events),
+            provider_tool_calls_attempted=len(self._attempts),
+            provider_tool_calls_completed=len(self._completions),
+            provider_tool_calls_failed=sum(self._errors.values()),
+            provider_tool_error_codes=dict(self._errors),
+        )

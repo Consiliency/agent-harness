@@ -8037,6 +8037,59 @@ def _broker_gemini_stream_result(
     )
 
 
+_AGY_RUN_FIELDS = (
+    "native_exit_code", "native_signal", "native_duration_ms",
+    "native_stdout_bytes", "native_stderr_bytes", "provider_stage_reached",
+    "provider_stream_incoming_event_count", "provider_stream_result_count",
+    "provider_stream_output_bytes", "provider_stream_outcome",
+)
+
+
+def _retain_agy_stream_progress(
+    evidence: dict[str, object], raw: str, protocol: _BrokerGeminiStreamProtocol,
+    metadata: Mapping[str, object] | None = None, *, tooled: bool = False,
+) -> None:
+    """Record observed stream progress without retaining any event payload."""
+    incoming = results = 0
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict) or type(event.get("event")) is not str:
+            continue
+        kind = event["event"]
+        if kind == "init" or (kind in {"step_update", "result"} and isinstance(event.get(kind), dict)):
+            incoming += 1
+            results += kind == "result"
+
+    stage = "launch"
+    if results > len(protocol.acknowledgements):
+        stage = "terminal_event"
+    elif incoming:
+        stage = "first_incoming_event"
+
+    if metadata is None:
+        # A failed process can still emit a complete stream. Observe its parser outcome
+        # without letting that parse mark the leg as having produced a usable verdict.
+        token = _EXEC_OBSERVATION.set(None)
+        try:
+            _, _, _, metadata = _broker_gemini_stream_result(raw, protocol, tooled=tooled)
+        except RecursionError:
+            metadata = {"provider_stream_outcome": "parse_error"}
+        finally:
+            _EXEC_OBSERVATION.reset(token)
+    evidence.update(
+        provider_stage_reached=stage,
+        provider_stream_incoming_event_count=incoming,
+        provider_stream_result_count=metadata.get("provider_stream_result_count", results),
+    )
+    if "provider_stream_output_bytes" not in evidence:
+        evidence["provider_stream_output_bytes"] = len(raw.encode("utf-8"))
+    if "provider_stream_outcome" in metadata:
+        evidence["provider_stream_outcome"] = metadata["provider_stream_outcome"]
+
+
 def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Pass only runtime and subscription-login ambient state to a broker parent.
 
@@ -10286,7 +10339,7 @@ def _run_leg_with_liveness(
     probe_jail: "_seat_jail.SeatJail | None" = None,
     trace_output: str | None = None,
     duplex: "_ClaudeSdkDuplex | None" = None,
-    on_native_exit: Callable[[int | None, int, bytearray, int], None] | None = None,
+    native_run: dict[str, object] | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -10319,9 +10372,6 @@ def _run_leg_with_liveness(
     launched, timed, stalled and torn down exactly as above, its stdin carries only the
     bytes the bridge writes from its own templates, and the bridge's stop ends the run.
     Worker traffic is not a heartbeat of the CLI.
-
-    The native exit observer receives wait status, elapsed milliseconds and raw
-    pipe progress after reaping, including on timeout or cancellation.
     """
     if duplex is not None and (input_text is not None or gemini_profile is not None):
         raise ValueError("a duplex leg takes no stdin text and no heartbeat profile")
@@ -10444,16 +10494,23 @@ def _run_leg_with_liveness(
 
     out_buf = bytearray()
     err_buf = bytearray()
-    native_started = time.monotonic() if on_native_exit is not None else 0.0
+    if native_run is not None:
+        native_started = time.monotonic()
+        native_run["provider_stage_reached"] = "launch"
 
-    def _reap_and_observe():
-        try:
-            _reap()
-        finally:
-            if on_native_exit is not None:
-                rc = proc.returncode if proc is not None else None
-                elapsed_ms = int((time.monotonic() - native_started) * 1000)
-                on_native_exit(rc, elapsed_ms, out_buf, len(err_buf))
+    def _record_native_exit():
+        if native_run is None:
+            return
+        # A negative wait status identifies a signal. Bubblewrap can collapse
+        # a payload signal into 128 + signal, which is also a valid exit code.
+        rc = proc.returncode if proc is not None else None
+        native_run.update(
+            native_exit_code=rc if rc is not None and rc >= 0 else None,
+            native_signal=-rc if rc is not None and rc < 0 else None,
+            native_duration_ms=int((time.monotonic() - native_started) * 1000),
+            native_stdout_bytes=len(out_buf),
+            native_stderr_bytes=len(err_buf),
+        )
 
     try:
         if quiescence_latch is None:
@@ -10470,8 +10527,9 @@ def _run_leg_with_liveness(
                 raise ValueError("gemini_heartbeat_admission_handshake_failed")
     except BaseException:
         try:
-            _reap_and_observe()
+            _reap()
         finally:
+            _record_native_exit()
             profile_stack.close()
             if proc is not None:
                 for pipe in (proc.stdin, proc.stdout, proc.stderr):
@@ -10603,8 +10661,9 @@ def _run_leg_with_liveness(
                 return _LegRun(proc.returncode or 1, out_s, err_s + marker)
     finally:
         try:
-            _reap_and_observe()
+            _reap()
         finally:
+            _record_native_exit()
             for pipe in (proc.stdout, proc.stderr, *((proc.stdin,) if gemini_profile is not None and gemini_profile.quiescent else ())):
                 try:
                     if pipe is not None:
@@ -14546,13 +14605,8 @@ def _exec_jailed_codex_leg(
     if observation is not None:
         observation["scan_secrets"] = secrets
 
-    def capture_native_exit(returncode, duration_ms, stdout, stderr_bytes):
-        diagnostics = evidence.run_diagnostics(returncode, duration_ms, stdout, stderr_bytes)
-        if observation is not None:
-            observation["codex_run"] = diagnostics
-        if broker_evidence is not None:
-            broker_evidence.update(diagnostics)
-
+    native_run = evidence.empty_run_diagnostics()
+    stream_diagnostics = evidence.CodexStreamDiagnostics()
     tails = [b"", b""]
     longest = max((len(secret) for secret in secrets), default=1)
     secret_seen = False
@@ -14572,6 +14626,8 @@ def _exec_jailed_codex_leg(
             secret_seen |= hit
             tails[index] = window[-4 * longest:]
             cursors[index].advance(chunk)
+            if index == 0:
+                stream_diagnostics.feed(chunk)
             return secret_seen
         return feed
 
@@ -14619,11 +14675,17 @@ def _exec_jailed_codex_leg(
                 command, cwd="/seat/home/workspace", env=dict(seat.jail.env),
                 deadline_s=deadline_s, input_text=prompt, stdout_guard=stdout_guard,
                 stderr_guard=stderr_guard, seat_jail=seat.jail, probe_jail=seat.probe_jail,
-                quiescence_latch=quiescence_latch, on_native_exit=capture_native_exit,
+                quiescence_latch=quiescence_latch, native_run=native_run,
                 **({"review_monitor": review_monitor} if review_monitor is not None else {}),
             )
         except subprocess.TimeoutExpired:
             pass
+        finally:
+            stream_diagnostics.finish(native_run)
+            if observation is not None:
+                observation["codex_run"] = native_run
+            if broker_evidence is not None:
+                broker_evidence.update(native_run)
         try:
             observed = _seat_uid.read_in_h(
                 seat.holder_pid, str(seat.seat_dir / _seat_jail.HOST_HOME_DIRNAME),
@@ -17280,9 +17342,12 @@ def _exec_jailed_gemini_leg(
             deadline_s=deadline_s, input_text=protocol.transport,
             quiescence_latch=quiescence_latch, stdout_guard=_guard,
             seat_jail=jail, probe_jail=seat.probe_jail,
+            native_run=broker_evidence,
             **({"review_monitor": review_monitor} if review_monitor is not None else {}),
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        if broker_evidence is not None and isinstance(exc.stdout, str):
+            _retain_agy_stream_progress(broker_evidence, exc.stdout, protocol, tooled=True)
         proc = None
     finally:
         if proc is not None and sys.exception() is None:
@@ -17312,6 +17377,8 @@ def _exec_jailed_gemini_leg(
         return "UNAVAILABLE", "review_operation_cancelled"
     expired = seat.expires_at is not None and time.time() >= seat.expires_at
     if proc.returncode != 0:
+        if broker_evidence is not None:
+            _retain_agy_stream_progress(broker_evidence, proc.stdout, protocol, tooled=True)
         return _jailed_failure("gemini_seat_token_expired" if expired
                                else "Gemini broker native exit without an accepted review",
                                failure_detail_sink)
@@ -17321,6 +17388,7 @@ def _exec_jailed_gemini_leg(
         window_board.tool_steps = steps if type(steps) is int else None
     if broker_evidence is not None:
         broker_evidence.update(metadata)
+        _retain_agy_stream_progress(broker_evidence, proc.stdout, protocol, metadata, tooled=True)
     if rc != 0:
         if detail == _JAILED_GEMINI_UNKNOWN_EVENT:
             seat.notices.append(_JAILED_GEMINI_UNKNOWN_EVENT)
@@ -18863,8 +18931,8 @@ def _exec_leg(
                                 deadline_s=deadline_s, input_text=broker_stream_input,
                                 broker_evidence=broker_evidence,
                                 quiescence_latch=quiescence_latch,
-                                **({"review_monitor": review_monitor, "gemini_profile": profile}
-                                   if review_monitor is not None else {}),
+                                **({"review_monitor": review_monitor, "gemini_profile": profile,
+                                    "native_run": broker_evidence} if review_monitor is not None else {}),
                             )
                     except gemini_heartbeat.GeminiQuiescenceError as exc:
                         error = ProviderProcessGroupQuiescenceError(str(exc))
@@ -18930,6 +18998,9 @@ def _exec_leg(
                     broker_evidence.update(stream_metadata)
                 if stream_detail:
                     log_text = stream_detail
+            if (brokered and review_monitor is not None and broker_evidence is not None
+                    and not review_monitor.cancel.is_set()):
+                _retain_agy_stream_progress(broker_evidence, raw_stream, broker_stream, stream_metadata)
             retry_text = raw_stream if native_rc != 0 else review_text
             bounded_stall = bool(
                 _GEMINI_TRANSIENT_RE.search(original_log if native_rc != 0 else log_text)
@@ -19645,10 +19716,10 @@ def _default_spawn(
                                     seat_notices=(seat_refusal, *_ignored_override(leg)))
     jailed = seat_route is not None and seat_route.jailed
     if jailed and leg == "codex":
-        from .seat_codex_evidence import run_diagnostics
+        from .seat_codex_evidence import empty_run_diagnostics
         observation = _EXEC_OBSERVATION.get()
         if observation is not None:
-            observation["codex_run"] = run_diagnostics()
+            observation["codex_run"] = empty_run_diagnostics()
     # IF-0-CLAUDE-1: the jailed Claude seat reads the selector, before any wait or staging.
     # A refused value launches nothing, never falls back, and republishes the seat's mode.
     claude_transport: str | None = None
@@ -20743,9 +20814,14 @@ def _write_incremental_verdict(
             "text": result.text,
             "detail": result.detail,
         }
-        exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
-        codex_run = getattr(result, "_codex_run", None)
-        payload.update(codex_run if codex_run is not None else exec_metadata.get("codex_run", {}))
+        if result.leg == "codex":
+            exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
+            run_fields = getattr(result, "_codex_run", None) or exec_metadata.get("codex_run", {})
+        else:
+            evidence = result.harden_isolation_evidence or {}
+            run_fields = ({key: evidence[key] for key in _AGY_RUN_FIELDS if key in evidence}
+                          if "provider_stage_reached" in evidence else {})
+        payload.update(run_fields)
         if result.review_monitoring is not None:
             # agent-harness#1176: heartbeat_only only; metadata, never provider text.
             payload["review_monitoring"] = dict(result.review_monitoring)
