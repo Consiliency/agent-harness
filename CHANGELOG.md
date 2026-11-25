@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Changed
+
+- Live Gemini W1 is now pinned to one owner-approved packet and its minted grant
+  (`seat_window.OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256`). The grant admits
+  exactly one attended attempt on the designated host inside its start window, and never
+  at or after the unchanged 2026-12-04T00:00Z cutoff (agent-harness#2157).
+
 ### Fixed
 
 - The `publish-pypi` tag and dispatch build job now allows 210 minutes instead of 140.

@@ -285,6 +285,8 @@ def test_k1_f8_w1_is_unchanged():
     from phase_loop_runtime import seat_window as w
     assert w.OWNER_W1_APPROVED_UNTIL == "2026-12-04T00:00:00+00:00"
     assert w.W1_COMPLETION_MARGIN_S == 10800 and w.W1_GRANT_NAME == "w1-grant.jsonl"
-    assert w.OWNER_W1_GRANT_SHA256 is None and w.OWNER_W1_PACKET_SHA256 is None
+    # The owner-approved W1 packet and its minted grant (agent-harness#2157).
+    assert w.OWNER_W1_GRANT_SHA256 == "6145c5c47aa724133622ca8cd19f461fd21ae798a57521bd89f9c642ef9c0041"
+    assert w.OWNER_W1_PACKET_SHA256 == "bfc7b22c3cf60cc41a9a400397ffdf23d46f2154001554046b23410fd097e361"
     assert w.W1_GRANT_FIELDS == ("schema", "host_digest", "not_before", "not_after", "vendor",
                                  "host_class", "max_attempts", "packet_sha256", "nonce")

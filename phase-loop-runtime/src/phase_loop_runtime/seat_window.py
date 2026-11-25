@@ -217,8 +217,8 @@ def preflight(*, is_available=None, auth_ok=None, composed_out=None):
 #: digest names the first line of one private grant file, minted on the designated host by
 #: :func:`mint_w1_grant`. That line binds the host, the start window, the vendor, the standard
 #: context, exactly one attempt, the packet digest and a nonce. ``None`` keeps live W1 closed.
-OWNER_W1_GRANT_SHA256: str | None = None
-OWNER_W1_PACKET_SHA256: str | None = None
+OWNER_W1_GRANT_SHA256: str | None = "6145c5c47aa724133622ca8cd19f461fd21ae798a57521bd89f9c642ef9c0041"
+OWNER_W1_PACKET_SHA256: str | None = "bfc7b22c3cf60cc41a9a400397ffdf23d46f2154001554046b23410fd097e361"
 #: The window vendor a grant can admit, and the only context `done-local` reads.
 OWNER_W1_VENDOR = "gemini"
 OWNER_W1_HOST_CLASS = "standard"
