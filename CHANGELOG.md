@@ -11,6 +11,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `phase-loop seat-sandbox qualify` records Claude and Gemini passes for the same
   qualification keys their jailed routes check. Seat-window readiness and record
   verification use those same passes (agent-harness#2181).
+- Jailed Codex leg records and streamed verdicts retain native exit status,
+  duration, pipe byte counts, and event and tool progress on success or refusal
+  (agent-harness#2185). The diagnostics contain no provider text.
 - Gemini heartbeat and jailed review records retain native status, duration, pipe byte
   counts and stream progress for diagnosing failed runs (agent-harness#2183).
   The diagnostics carry no provider stderr content.

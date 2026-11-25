@@ -10492,9 +10492,25 @@ def _run_leg_with_liveness(
         if quiescence_latch is not None:
             quiescence_latch.release(proc)
 
+    out_buf = bytearray()
+    err_buf = bytearray()
     if native_run is not None:
         native_started = time.monotonic()
         native_run["provider_stage_reached"] = "launch"
+
+    def _record_native_exit():
+        if native_run is None:
+            return
+        # A negative wait status identifies a signal. Bubblewrap can collapse
+        # a payload signal into 128 + signal, which is also a valid exit code.
+        rc = proc.returncode if proc is not None else None
+        native_run.update(
+            native_exit_code=rc if rc is not None and rc >= 0 else None,
+            native_signal=-rc if rc is not None and rc < 0 else None,
+            native_duration_ms=int((time.monotonic() - native_started) * 1000),
+            native_stdout_bytes=len(out_buf),
+            native_stderr_bytes=len(err_buf),
+        )
 
     try:
         if quiescence_latch is None:
@@ -10513,14 +10529,13 @@ def _run_leg_with_liveness(
         try:
             _reap()
         finally:
+            _record_native_exit()
             profile_stack.close()
             if proc is not None:
                 for pipe in (proc.stdin, proc.stdout, proc.stderr):
                     if pipe is not None:
                         pipe.close()
         raise
-    out_buf = bytearray()
-    err_buf = bytearray()
     try:
         if duplex is not None and duplex.attach(proc):
             # The bridge refused before the CLI said anything (its start action).
@@ -10648,17 +10663,7 @@ def _run_leg_with_liveness(
         try:
             _reap()
         finally:
-            if native_run is not None:
-                # A negative wait status identifies a signal. Bubblewrap can collapse
-                # a payload signal into 128 + signal, which is also a valid exit code.
-                rc = proc.returncode
-                native_run.update(
-                    native_exit_code=rc if rc is not None and rc >= 0 else None,
-                    native_signal=-rc if rc is not None and rc < 0 else None,
-                    native_duration_ms=int((time.monotonic() - native_started) * 1000),
-                    native_stdout_bytes=len(out_buf),
-                    native_stderr_bytes=len(err_buf),
-                )
+            _record_native_exit()
             for pipe in (proc.stdout, proc.stderr, *((proc.stdin,) if gemini_profile is not None and gemini_profile.quiescent else ())):
                 try:
                     if pipe is not None:
@@ -14599,6 +14604,9 @@ def _exec_jailed_codex_leg(
     observation = _EXEC_OBSERVATION.get()
     if observation is not None:
         observation["scan_secrets"] = secrets
+
+    native_run = evidence.empty_run_diagnostics()
+    stream_diagnostics = evidence.CodexStreamDiagnostics()
     tails = [b"", b""]
     longest = max((len(secret) for secret in secrets), default=1)
     secret_seen = False
@@ -14618,6 +14626,8 @@ def _exec_jailed_codex_leg(
             secret_seen |= hit
             tails[index] = window[-4 * longest:]
             cursors[index].advance(chunk)
+            if index == 0:
+                stream_diagnostics.feed(chunk)
             return secret_seen
         return feed
 
@@ -14665,11 +14675,17 @@ def _exec_jailed_codex_leg(
                 command, cwd="/seat/home/workspace", env=dict(seat.jail.env),
                 deadline_s=deadline_s, input_text=prompt, stdout_guard=stdout_guard,
                 stderr_guard=stderr_guard, seat_jail=seat.jail, probe_jail=seat.probe_jail,
-                quiescence_latch=quiescence_latch,
+                quiescence_latch=quiescence_latch, native_run=native_run,
                 **({"review_monitor": review_monitor} if review_monitor is not None else {}),
             )
         except subprocess.TimeoutExpired:
             pass
+        finally:
+            stream_diagnostics.finish(native_run)
+            if observation is not None:
+                observation["codex_run"] = native_run
+            if broker_evidence is not None:
+                broker_evidence.update(native_run)
         try:
             observed = _seat_uid.read_in_h(
                 seat.holder_pid, str(seat.seat_dir / _seat_jail.HOST_HOME_DIRNAME),
@@ -17949,6 +17965,9 @@ def _retained_leg_exec(function):
                 launched=_exec_launched(observation),
                 output_refused=observation.get("output_refused") is True and not accepted,
                 stream_rejection=observation.get("stream_rejection"))
+            codex_run = observation.get("codex_run")
+            if codex_run is not None:
+                record.update(codex_run)
             if result is not None and type(result[0]) is int and result[0] != 0:
                 detail = result[2] if len(result) > 2 else None
                 if type(detail) is not _HarnessCode and record["outcome"].startswith("leg_auth_"):
@@ -17965,6 +17984,8 @@ def _retained_leg_exec(function):
                 path = write_private_record("leg-" + record["attempt_id"] + ".json", record)
                 metadata = {"record_digest": sha256(path.read_bytes()).hexdigest(),
                     "outcome": record["outcome"], "attempt_id": record["attempt_id"]}
+                if codex_run is not None:
+                    metadata["codex_run"] = codex_run
                 if result is None and sys.exception() is not None:
                     setattr(sys.exception(), "_leg_exec_metadata", metadata)
                 if result is not None and type(result[0]) is str:
@@ -19694,6 +19715,11 @@ def _default_spawn(
         return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(seat_refusal),
                                     seat_notices=(seat_refusal, *_ignored_override(leg)))
     jailed = seat_route is not None and seat_route.jailed
+    if jailed and leg == "codex":
+        from .seat_codex_evidence import empty_run_diagnostics
+        observation = _EXEC_OBSERVATION.get()
+        if observation is not None:
+            observation["codex_run"] = empty_run_diagnostics()
     # IF-0-CLAUDE-1: the jailed Claude seat reads the selector, before any wait or staging.
     # A refused value launches nothing, never falls back, and republishes the seat's mode.
     claude_transport: str | None = None
@@ -20788,9 +20814,14 @@ def _write_incremental_verdict(
             "text": result.text,
             "detail": result.detail,
         }
-        evidence = result.harden_isolation_evidence or {}
-        if "provider_stage_reached" in evidence:
-            payload.update({key: evidence[key] for key in _AGY_RUN_FIELDS if key in evidence})
+        if result.leg == "codex":
+            exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
+            run_fields = getattr(result, "_codex_run", None) or exec_metadata.get("codex_run", {})
+        else:
+            evidence = result.harden_isolation_evidence or {}
+            run_fields = ({key: evidence[key] for key in _AGY_RUN_FIELDS if key in evidence}
+                          if "provider_stage_reached" in evidence else {})
+        payload.update(run_fields)
         if result.review_monitoring is not None:
             # agent-harness#1176: heartbeat_only only; metadata, never provider text.
             payload["review_monitoring"] = dict(result.review_monitoring)
@@ -22557,6 +22588,7 @@ def invoke_board(
             monitor = _ReviewMonitor(monitor_root / invocation_id / f"seat-{index}.json",
                                      invocation_id, index, operation_cancel)
             broker_evidence = None
+            codex_run = None
             body_notices: tuple[str, ...] = ()
             placement_evidence = None
             try:
@@ -22566,6 +22598,8 @@ def invoke_board(
                 else:
                     result = _run_seat_body(item, monitor)
                 broker_evidence = result.harden_isolation_evidence
+                exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
+                codex_run = exec_metadata.get("codex_run")
                 body_notices = getattr(result, "_seat_notice_codes", ())
                 placement_evidence = result.sandbox_placement_evidence
                 if monitor.write_failed:
@@ -22586,6 +22620,9 @@ def invoke_board(
                 raise
             if broker_evidence is not None:
                 attach_harden_isolation_evidence(result, broker_evidence)
+            if codex_run is not None:
+                # A replacement keeps diagnostics but gets its own retention decision.
+                object.__setattr__(result, "_codex_run", codex_run)
             if not getattr(result, "_seat_notice_codes", ()) and body_notices:
                 attach_seat_notices(result, body_notices)
             if placement_evidence is not None:
