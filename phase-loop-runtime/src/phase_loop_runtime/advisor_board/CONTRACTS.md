@@ -1411,9 +1411,16 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
 - **Provider failure diagnostics.** A non-OK qualification provider result can retain
   `broker.provider_error_class` in private `terminal.json` and project the label into
   `failure.json`. On a transient refusal, `gemini_heartbeat_self_qualification_unavailable`
-  can include the same label in `notice.detail`. The label comes from structured process,
-  stream and credential facts. Opaque provider failures use `unknown`. The qualification
-  predicates and transient accounting are unchanged.
+  can include the same label in `notice.detail`. Structured process and credential
+  diagnostics take precedence. On a positive native exit, the heartbeat and jailed agy
+  routes also match fixed, case-insensitive markers in up to the last 64 KiB per stream.
+  Stderr is checked first. If stderr has no match, stdout is checked for plain
+  diagnostics, skipping JSON-shaped lines and any partial line at the byte boundary.
+  Within each stream, the first matching class in this order wins: `auth_expired`,
+  `auth_missing`, `quota_exhausted`, `permission_denied`, `timeout`, `network`,
+  `model_error`. Opaque provider failures use `unknown`. The broker evidence and
+  streamed verdict can retain the label. Matched text and stream excerpts stay in
+  memory. The qualification predicates and transient accounting are unchanged.
   The private terminal's broker evidence and the streamed leg verdict also retain
   native-run diagnostics for the heartbeat and jailed Gemini routes (agent-harness#2183).
   The provider launch status is separate from the credentialless client's

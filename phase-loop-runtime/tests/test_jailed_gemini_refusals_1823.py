@@ -549,7 +549,7 @@ class _Broker:
             if type(self).chained:
                 raise ADAPTER_FAILURE(f"credentialless broker client failed: {exc}") from exc
             raise ValueError(f"credentialless broker client failed: {exc}") from None
-        return {"schema": "parent_unix_broker_v1", "status": status, "text": text}, {"fake": True}
+        return {"schema": "parent_unix_broker_v1", "status": status, "text": text}, self.evidence
 
     def close(self):
         return None
@@ -794,6 +794,42 @@ def test_the_token_guard_return_records_its_code(monkeypatch, tmp_path):
     assert _spawn_detail(spawned) == "gemini_seat_token_in_output"
     assert record["refusal"] == "gemini_seat_token_in_output"
     assert seat.token.decode() not in json.dumps(record)
+
+
+@pytest.mark.parametrize(("expires_at", "expected"), [(None, "permission_denied"), (0, "auth_expired")])
+def test_jailed_broker_retains_native_exit_class(monkeypatch, tmp_path, expires_at, expected, caplog):
+    seat = _jailed_seat()
+    seat.expires_at = expires_at
+    stdout = "PRIVATE_STDOUT_SENTINEL"
+    stderr = "HTTP 403 PRIVATE_STDERR_SENTINEL"
+
+    def run(*args, native_run, **kwargs):
+        native_run.update(native_exit_code=1, native_signal=None,
+                          native_stdout_bytes=len(stdout), native_stderr_bytes=len(stderr))
+        return pi._LegRun(1, stdout, stderr)
+
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run)
+    spawned, record = _jailed_gemini_spawn(
+        monkeypatch, tmp_path, prepare=lambda *a, **k: seat, execute=_REAL_EXEC,
+    )
+    assert tuple(spawned)[:2] == ("DEGRADED", "")
+    evidence = spawned.harden_isolation_evidence
+    assert evidence["provider_error_class"] == expected
+    assert evidence["provider_response_bytes"] == 0
+    assert evidence["native_exit_code"] == 1
+    assert evidence["native_stdout_bytes"] == len(stdout)
+    assert evidence["native_stderr_bytes"] == len(stderr)
+    leg = pi.PanelLegResult(leg="gemini", status=spawned[0], text=spawned[1],
+                            detail=_spawn_detail(spawned))
+    pi.attach_harden_isolation_evidence(leg, evidence)
+    pi._write_incremental_verdict(tmp_path, 0, leg)
+    raw_verdict = next(tmp_path.glob("leg-*.verdict.json")).read_text()
+    assert json.loads(raw_verdict)["provider_error_class"] == expected
+    for retained in (json.dumps(evidence), json.dumps(record), raw_verdict, caplog.text):
+        assert stdout not in retained
+        assert stderr not in retained
+        assert "PRIVATE_STDERR_SENTINEL" not in retained
 
 
 def test_a_launch_that_fails_after_its_gate_opened_stays_failed(monkeypatch, tmp_path):
