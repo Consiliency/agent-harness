@@ -28,6 +28,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Changed
 
+- The Grok jail contract's managed-subject erratum requires a pinned root-owned
+  Dotfiles release and reviewed npm provenance for the Grok 1.0.92 grant
+  (agent-harness#2178, agent-harness#2179).
 - Grok measurement refuses new unjailed grants once the Grok jail profile is
   registered (agent-harness#2101).
 - Grok jail grants reopen a counted label once after a sink-probe timeout without

@@ -4,7 +4,7 @@ phase: GROK
 roadmap: specs/phase-plans-seats-v1.md
 roadmap_sha256: 9d1d149a4709dbf7c67dbdbb957228ff8a06d36570e1f9cb77bcc039b96a7ac4
 automation:
-  suite_command: ["timeout", "600", "env", "PYTHONDONTWRITEBYTECODE=1", "PYTEST_ADDOPTS=", "uv", "run", "--project", "phase-loop-runtime", "--group", "test", "--python", "/usr/bin/python3", "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:xdist", "-q", "phase-loop-runtime/tests/test_grok_seat_vocabulary.py", "phase-loop-runtime/tests/test_grok_seat_credential.py", "phase-loop-runtime/tests/test_grok_seat_egress.py", "phase-loop-runtime/tests/test_grok_seat_profile.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_grok_jail_surface.py", "phase-loop-runtime/tests/test_grok_seat_jail.py", "phase-loop-runtime/tests/test_grok_jail_measure.py", "phase-loop-runtime/tests/test_grok_seat_provider_free.py", "phase-loop-runtime/tests/test_grok_jail_catalog.py", "phase-loop-runtime/tests/test_grok_seat_renewal.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
+  suite_command: ["timeout", "600", "env", "PYTHONDONTWRITEBYTECODE=1", "PYTEST_ADDOPTS=", "uv", "run", "--project", "phase-loop-runtime", "--group", "test", "--python", "/usr/bin/python3", "-m", "pytest", "-p", "no:cacheprovider", "-p", "no:xdist", "-q", "phase-loop-runtime/tests/test_grok_seat_vocabulary.py", "phase-loop-runtime/tests/test_grok_seat_credential.py", "phase-loop-runtime/tests/test_grok_seat_egress.py", "phase-loop-runtime/tests/test_grok_seat_profile.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_grok_jail_surface.py", "phase-loop-runtime/tests/test_grok_seat_jail.py", "phase-loop-runtime/tests/test_grok_jail_measure.py", "phase-loop-runtime/tests/test_grok_seat_provider_free.py", "phase-loop-runtime/tests/test_grok_jail_catalog.py", "phase-loop-runtime/tests/test_grok_seat_renewal.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_grok_jail_contract_errata.py"]
 ---
 
 # GROK: Grok Seat in the Jail
@@ -25,6 +25,12 @@ window-kit decisions (jail contract §15). The roadmap text is unchanged.
 - `plans/artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md` at sha256
   `6fbad698480d1ba3391888bd2a31350a954051c684b5489047f488a7c8468490` (jail contract revision r8). Items r8-4 and r8-5 block the §7 grant run until
   the managed-subject plan's `GROK-R8-FOLLOWUP` lane delivers them.
+- `plans/artifacts/grok-jail-tool-surface-contract-v1-managed-subject-erratum.md` at sha256
+  `70d43a826ff11fe6ce9cd14b0b87f5a90aa3007e65f624c4e50b3231c2c4eaa2` governs managed binary identity in §§2.1 and 4.4 and supplies §7's Image bullet.
+- `plans/evidence/seat-grok/image-provenance-1.0.92.json` at sha256
+  `398f019cc3709a745bb6d8173e0b7d78ae0441f999ac19bb513f22e779f43c36` records npm provenance for the contract-pinned 1.0.92 image.
+  The §7 grant requires independent review of the derivation, both r8 follow-ups, and
+  qualification of the integrated Dotfiles and runtime release.
 - `plans/artifacts/grok-tool-surface-contract-v1.md` at sha256
   `5b929cb588e4bb555ce8374311432376fe4c04e8a851fd511e6c44682736b27c` (the **effective
   input**: agent-harness#2033 through erratum 7, erratum 8 r3 as merged with E8-A
@@ -473,4 +479,5 @@ gates beside `suite_command`.
   [Grok measurement procedure](../docs/ops/grok-jail-measurement.md), required by
   [jail contract revision r8](artifacts/grok-jail-tool-surface-contract-v1-erratum-r8.md).
 - `VK`: on the designated seat host's installed runtime: `timeout 300 phase-loop seat-sandbox qualify --leg grok`, `timeout 300 phase-loop seat-egress status`; after SL-6, `measure-tools --verify-probe final` (jail contract §7.1)
+- `VP`: `P test_grok_jail_contract_errata.py` (offline byte pins and npm signature)
 - Full suite: hosted CI and Gate A only.
