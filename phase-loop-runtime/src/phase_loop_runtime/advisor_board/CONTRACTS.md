@@ -1633,19 +1633,18 @@ are recorded on agent-harness#1132.
   windows and reissue grants against the installed runtime.
   The leg's evidence records `egress` (with `tls_inspection: true`). Without the layer the seat is DEGRADED and not
   run with `gemini_seat_egress_unavailable`; its fix is `phase-loop seat-egress install`.
-- **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no EC-EXECFIND-2
+- **EC-EXECFIND-2 gate.** A jailed route whose qualification key has no EC-EXECFIND-2
   falsifier pass recorded on THIS host is REFUSED before any effect with
   `seat_sandbox_refused:jail_unqualified`. The notice names the per-host qualification as
   the fix.
   - **Where passes live:** per user and per host, at
-    `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`. A record qualifies only if it
-    binds all of:
-    - the digest;
-    - this host (sha256 of `/etc/machine-id`);
-    - the EC-EXECFIND-2 falsifier-run layout: `seat_jail.falsifier_layout_identity()`, a
-      digest of the EXECFIND staging and run code, so a change to either invalidates every
-      pass;
-    - the run's evidence file, which the gate re-hashes and which must name the same values.
+    `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<key-digest>.json`. A record binds
+    the exact key and the run's evidence file, which the gate re-hashes and which
+    must name the same values. The key contains the jail profile digest, packaged
+    allowlist digest, admitted dependency projection digest, transport variant,
+    this host's identity (sha256 of `/etc/machine-id`), and the EC-EXECFIND-2 falsifier-run
+    layout. The layout identity, `seat_jail.falsifier_layout_identity()`, hashes the
+    EXECFIND staging and run code. A change to either invalidates every pass.
 
     The record and the evidence must be regular, operator-owned files that are not group- or
     other-writable and are not links. They are read non-blocking with size caps.
@@ -1669,7 +1668,8 @@ are recorded on agent-harness#1132.
   - **Checked at launch:** qualification is re-checked against the jail actually built.
   - **Threat model:** the operator's own account can forge a record, and is trusted to. The
     store defends against the seat uid, stale records, other hosts and accidental reuse.
-  - **Why per host:** the digest binds the host's layout (maintainer decision, option A).
+  - **Why per host:** the key binds the machine identity and host-specific jail profile
+    (maintainer decision, option A).
     A shipped host-independent policy digest plus a first-use self-check is
     agent-harness#1186.
   - **Recording a pass:** `phase-loop seat-sandbox qualify` runs EC-EXECFIND-2's jail

@@ -278,8 +278,9 @@ def test_live_pre_drop_set_is_exactly_the_three_capabilities(tmp_path):
 def test_live_jailed_claude_runs_a_tool_and_quotes_it(tmp_path):
     import hashlib
     import types
+    from dataclasses import replace
 
-    from phase_loop_runtime import review_stage
+    from phase_loop_runtime import review_stage, seat_qualification_entry, seat_profiles
 
     from ._seat_prereq import require_seat_token
 
@@ -311,6 +312,10 @@ def test_live_jailed_claude_runs_a_tool_and_quotes_it(tmp_path):
             seat = pi._prepare_jailed_claude(review, base / "seat", auth, n,
                                              seat_uid.holder_pid_from_prefix(egress),
                                              ("BUNDLE: see the tree.", instructions))
+            # This test bypasses the board resolver, which normally binds the route key.
+            key = seat_qualification_entry._explicit_route_key(seat_profiles.profile_for("claude"), os.environ)
+            seat.jail = replace(seat.jail, qualification_key=key)
+            seat.probe_jail = replace(seat.probe_jail, qualification_key=key)
             prompt = pi._render_broker_pointer_prompt(
                 "BUNDLE: see the tree.", instructions,
                 source_commit=(review / seat_jail.HOST_TREE_DIRNAME / ".git"
@@ -432,15 +437,30 @@ def test_r4_live_a_record_owned_by_a_seat_uid_is_no_pass(tmp_path):
 # EC-EXECFIND-2 jail falsifiers (seat_jail_qualification), live, with a real falsifier run.
 # --------------------------------------------------------------------------------------
 
-@needs_seat_uid_switch
-def test_execfind2_jail_falsifiers_pass_on_the_production_jail(tmp_path, monkeypatch):
-    from phase_loop_runtime import seat_jail_qualification as q
+@pytest.fixture
+def claude_qualification_key(tmp_path, monkeypatch):
+    from phase_loop_runtime import claude_seat_transport, seat_qualification_entry as entry, seat_profiles
 
+    # Keep the D8 run provider-free while exercising actual standalone subject resolution.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "claude").symlink_to("/usr/bin/true")
+    monkeypatch.setenv("PATH", str(bin_dir), prepend=os.pathsep)
+    monkeypatch.setenv(claude_seat_transport.ROUTE_ENV, "tui")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    evidence = q.qualify(record=True)
+    return entry._explicit_route_key(seat_profiles.profile_for("claude"), os.environ)
+
+
+@needs_seat_uid_switch
+def test_execfind2_jail_falsifiers_pass_on_the_production_jail(claude_qualification_key):
+    from phase_loop_runtime import seat_qualification_entry as entry
+    from phase_loop_runtime.seat_route_contract import key_digest
+
+    evidence = entry.qualify()
     assert evidence["result"] == "pass", evidence.get("checks")
     assert evidence["run_outcome"] == "green_on_head"
-    assert seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("claude"))
+    assert Path(evidence["recorded_pass"]).name == f"{key_digest(claude_qualification_key)}.json"
+    assert seat_jail.pass_record_verdict(claude_qualification_key) == (True, "pass")
 
 
 def _leak_host_tmp(jail):
@@ -451,18 +471,21 @@ def _leak_host_tmp(jail):
 
 
 @needs_seat_uid_switch
-def test_execfind2_jail_falsifiers_catch_a_jail_that_exposes_the_run(tmp_path, monkeypatch):
+def test_execfind2_jail_falsifiers_catch_a_jail_that_exposes_the_run(claude_qualification_key):
     """Mutation: the jail binds the host temp dir (where the falsifier run's staged tree and
     dependency root live). The qualification FAILS: a seat mount resolves to an ancestor of
     the protected set. (The probe still cannot traverse the operator's 0700 stage or write
     into it -- the seat uid is not the operator -- which is a separate, DAC, layer.)"""
-    from phase_loop_runtime import seat_jail_qualification as q
+    from phase_loop_runtime import seat_qualification_entry as entry
+    from phase_loop_runtime.seat_route_contract import key_digest
 
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    evidence = q.qualify(record=True, _mutate_jail=_leak_host_tmp)
+    evidence = entry.qualify(_mutate_jail=_leak_host_tmp)
     assert evidence["result"] == "fail"
     assert not evidence["checks"]["no_seat_mount_resolves_to_protected_object_or_ancestor"]
-    assert not seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("claude"))
+    name = f"{key_digest(claude_qualification_key)}.json"
+    assert "recorded_pass" not in evidence
+    assert not (seat_jail.jail_pass_dir() / name).exists()
+    assert seat_jail.pass_record_verdict(claude_qualification_key) == (False, "no_record")
 
 
 def test_recording_never_repermissions_an_existing_state_directory(tmp_path, monkeypatch):

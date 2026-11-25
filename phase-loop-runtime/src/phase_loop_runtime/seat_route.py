@@ -354,6 +354,14 @@ def _capacity_grant(
     return matches[0] if len(matches) == 1 else None
 
 
+def _allowlist_digest_for_launch(profile) -> str | None:
+    from . import seat_egress_proxy
+
+    if profile.allowlist_id is None:
+        return None
+    return seat_egress_proxy.allowlist_ref(profile.allowlist_id).content_digest
+
+
 def _projection_for_launch(profile, env: Mapping[str, str]):
     """Resolve TEAMHOST's selected subject and return only its key-bound projection."""
     from .executable_dependency import ExecutableDependencyError
@@ -505,9 +513,7 @@ def resolve(
                 request, vendor, code, "L7", variant=variant, also=also,
             )
         try:
-            allowlist_digest = seat_egress_proxy.allowlist_ref(
-                profile.allowlist_id
-            ).content_digest
+            allowlist_digest = _allowlist_digest_for_launch(profile)
         except seat_egress_proxy.EgressLayerUnavailable as exc:
             return _local_failure(
                 request, vendor, exc.code, "L7", variant=variant, also=also,

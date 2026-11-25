@@ -373,7 +373,8 @@ def _frozen_interface(tmp_path, monkeypatch, *, supplier_module=None, contract=N
         return _Admitted()
 
     monkeypatch.setattr(window, "preflight", preflight)
-    monkeypatch.setattr(window.seat_jail, "execfind_pass_recorded", lambda _d: True)
+    monkeypatch.setattr(window, "_route_pass_current", lambda _: True)
+    monkeypatch.setattr(window.seat_jail, "pass_record_verdict", lambda _: (True, "pass"))
     monkeypatch.setattr(window.seat_egress_proxy, "unavailable_reason", lambda: None)
     monkeypatch.setattr(window, "_find_exec_source_attempt", lambda d, root=None: "f" * 32)
     monkeypatch.setattr(window, "_host_digest", lambda: "0" * 64)
@@ -940,7 +941,7 @@ def test_k1_f11_a_stale_key_part_fails(row_world, monkeypatch, part):
 
 def test_k1_f11_no_recorded_execfind_pass_fails(row_world, monkeypatch):
     from phase_loop_runtime import seat_window as w
-    monkeypatch.setattr(w.seat_jail, "execfind_pass_recorded", lambda digest: False)
+    monkeypatch.setattr(w.seat_jail, "pass_record_verdict", lambda _: (False, "no_record"))
     assert row_world.verify()["code"] == "window_key_stale"
 
 

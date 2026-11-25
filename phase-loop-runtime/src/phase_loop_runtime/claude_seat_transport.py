@@ -1049,7 +1049,8 @@ SDK_PROOF_REGIONS: Mapping[str, tuple[str, ...]] = MappingProxyType({
         "_window_trace_argv", "_WINDOW_TRACE_SYSCALLS"),
     _JAIL: (
         "seat_env", "secret_encodings", "contains_secret", "build_seat_jail",
-        "setpriv_drop", "BWRAP", "JAIL_CAP_ADD", "memfd_with", "_F_ADD_SEALS"),
+        "setpriv_drop", "BWRAP", "JAIL_CAP_ADD", "memfd_with", "_F_ADD_SEALS",
+        "_QUALIFICATION_PROBE_SUBJECT"),
     _UID: (
         "lease_seat_id", "seat_uid_available", "teardown_in_h", "trusted_module_argv",
         "seat_id_count", "subordinate_range", "SUBUID_FILE", "SUBGID_FILE",
