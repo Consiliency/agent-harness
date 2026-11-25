@@ -17,11 +17,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- The Grok seat credential module can publish the subscription and expiry confirmed
+  by an attended operator after sign-in. The private metadata record is bound to
+  the current auth file by filesystem metadata (agent-harness#2101).
 - Grok's jailed measurement records the owner's offline projection confirmation and
   verifies the hosted BA-J1 and BA-J5 results before opening a grant (agent-harness#2101).
 
 ### Changed
 
+- Grok measurement refuses new unjailed grants once the Grok jail profile is
+  registered (agent-harness#2101).
 - Grok jail grants reopen a counted label once after a sink-probe timeout without
   charging a request or retry. This moves the seat-window runtime and release identity
   digests. Profile and SDK proof pins stay fixed (agent-harness#2101).
