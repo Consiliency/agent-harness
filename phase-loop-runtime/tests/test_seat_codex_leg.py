@@ -3,6 +3,7 @@ import contextlib
 from dataclasses import replace
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -173,6 +174,7 @@ def test_real_liveness_output_and_post_launch_order(tmp_path, monkeypatch, codex
 
 @pytest.mark.parametrize("case,expected", [
     ("success", None), ("zero_commands", "codex_seat_tools_unavailable"),
+    ("early_exit", "codex_seat_tools_unavailable"), ("signalled", "codex_seat_tools_unavailable"),
     ("unknown", "codex_seat_unknown_event"), ("refresh", "codex_seat_token_refreshed_in_jail"),
     ("expired", "codex_seat_token_expiring"), ("secret", "codex_seat_token_in_output"),
     ("expired_no_command", "codex_seat_token_expiring"),
@@ -198,10 +200,21 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
     (seat.seat_dir / "seat-out/panel-codex.txt").write_text("Fixture read.\n\nAGREE")
     data = stream(command=case not in {"zero_commands", "expired_no_command"},
                   exit_code=1 if case == "failed_commands" else 0,
-                  extra=({"type": "new.event"},) if case == "unknown" else ())
+                  extra=({"type": "private event name"},) if case == "unknown" else ())
     if case == "secret":
         data += seat.codex_copy.secrets[0]
-    child = "import sys; sys.stdin.read(); sys.stdout.buffer.write(" + repr(data) + "); sys.exit(" + str(1 if case in {"expired", "refresh", "secret", "expired_no_command"} else 0) + ")"
+    if case == "early_exit":
+        data = b'{"type":"error","message":"private startup error","code":"private upstream code"}\n'
+    if case == "signalled":
+        data = b'{"type":"thread.started"}\n'
+    stderr = b"private stderr \xff"
+    exit_code = int(case in {"early_exit", "expired", "refresh", "secret", "expired_no_command"})
+    child = (
+        "import os, signal, sys; sys.stdin.read(); "
+        f"sys.stdout.buffer.write({data!r}); sys.stderr.buffer.write({stderr!r}); "
+        "sys.stdout.flush(); sys.stderr.flush(); "
+        + ("os.kill(os.getpid(), signal.SIGTERM)" if case == "signalled" else f"sys.exit({exit_code})")
+    )
     released = []
     lease = SimpleNamespace(seat_id=7, release=lambda: released.append(True))
     route = SimpleNamespace(jailed=True, lease=lease)
@@ -236,6 +249,8 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
         return subprocess.Popen([sys.executable, "-c", child], stdin=kwargs["stdin"],
                                 stdout=kwargs["stdout"], stderr=kwargs["stderr"], start_new_session=True)
     monkeypatch.setattr(pi, "launch_provider", launch)
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
     spawned = _brokered(monkeypatch, tmp_path, "codex", "a" * 64)
     assert tuple(spawned)[0] == ("DEGRADED" if expected else "OK")
     expected_notices = (["seat_sandbox_root_unapplied"] if not root_applied else [])
@@ -245,6 +260,45 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
         expected_notices.append(expected)
     assert tuple(spawned.seat_notices) == tuple(expected_notices)
     assert released == [True]
+
+    command_turn = {"thread.started": 1, "turn.started": 1, "item.started": 1,
+                    "item.completed": 1, "turn.completed": 1}
+    counts = {
+        "early_exit": {"error": 1},
+        "signalled": {"thread.started": 1},
+        "zero_commands": {"thread.started": 1, "turn.started": 1, "turn.completed": 1},
+        "success": command_turn,
+        "failed_commands": command_turn,
+        "unknown": {**command_turn, "unknown": 1},
+    }
+    if case in counts:
+        leg = pi.PanelLegResult("codex", spawned[0], spawned[1])
+        object.__setattr__(leg, "_leg_exec_metadata", spawned.leg_exec_metadata)
+        pi._write_incremental_verdict(tmp_path / "verdicts", 0, leg)
+        verdict = next((tmp_path / "verdicts").glob("*.verdict.json")).read_text()
+        retained = next((state / "agent-harness/seat-records").glob("leg-*.json")).read_text()
+        event_counts = counts[case]
+        tool_count = event_counts.get("item.completed", 0)
+        expected_fields = {
+            "native_exit_code": None if case == "signalled" else exit_code,
+            "native_signal": signal.SIGTERM if case == "signalled" else None,
+            "native_stdout_bytes": len(data), "native_stderr_bytes": len(stderr),
+            "provider_stage_reached": (
+                "terminal_event" if "turn.completed" in event_counts else "first_incoming_event"
+            ),
+            "provider_event_type_counts": event_counts,
+            "provider_tool_calls_attempted": tool_count,
+            "provider_tool_calls_completed": tool_count,
+            "provider_tool_calls_failed": int(case == "failed_commands"),
+            "provider_tool_error_codes": {"command_nonzero_exit": 1} if case == "failed_commands" else {},
+        }
+        for payload in (retained, verdict):
+            record = json.loads(payload)
+            assert {key: record[key] for key in expected_fields} == expected_fields
+            assert type(record["native_duration_ms"]) is int and record["native_duration_ms"] >= 0
+            for content in ("private startup error", "private upstream code", "private event name",
+                            "private stderr", "cat SENTINEL", "sentinel", "ARTIFACT", str(tmp_path)):
+                assert content not in payload
 
 
 def test_jailed_codex_keeps_real_placement_and_retention_notices(tmp_path, monkeypatch, codex_profile):

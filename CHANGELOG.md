@@ -8,6 +8,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Jailed Codex leg records and streamed verdicts retain native exit status,
+  duration, pipe byte counts, and event and tool progress on success or refusal
+  (agent-harness#2185). The diagnostics contain no provider text.
+
 - Jailed Gemini seats use a credential-free loopback proxy URL. The host front keeps
   per-launch proxy authentication on its private hop to SRT (agent-harness#2157).
   After release, run integrated W1 under the owner account on the owner's primary board host,

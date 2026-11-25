@@ -10286,6 +10286,7 @@ def _run_leg_with_liveness(
     probe_jail: "_seat_jail.SeatJail | None" = None,
     trace_output: str | None = None,
     duplex: "_ClaudeSdkDuplex | None" = None,
+    on_native_exit: Callable[[int | None, int, bytearray, int], None] | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -10318,6 +10319,9 @@ def _run_leg_with_liveness(
     launched, timed, stalled and torn down exactly as above, its stdin carries only the
     bytes the bridge writes from its own templates, and the bridge's stop ends the run.
     Worker traffic is not a heartbeat of the CLI.
+
+    The native exit observer receives wait status, elapsed milliseconds and raw
+    pipe progress after reaping, including on timeout or cancellation.
     """
     if duplex is not None and (input_text is not None or gemini_profile is not None):
         raise ValueError("a duplex leg takes no stdin text and no heartbeat profile")
@@ -10438,6 +10442,19 @@ def _run_leg_with_liveness(
         if quiescence_latch is not None:
             quiescence_latch.release(proc)
 
+    out_buf = bytearray()
+    err_buf = bytearray()
+    native_started = time.monotonic() if on_native_exit is not None else 0.0
+
+    def _reap_and_observe():
+        try:
+            _reap()
+        finally:
+            if on_native_exit is not None:
+                rc = proc.returncode if proc is not None else None
+                elapsed_ms = int((time.monotonic() - native_started) * 1000)
+                on_native_exit(rc, elapsed_ms, out_buf, len(err_buf))
+
     try:
         if quiescence_latch is None:
             proc = _popen()
@@ -10453,7 +10470,7 @@ def _run_leg_with_liveness(
                 raise ValueError("gemini_heartbeat_admission_handshake_failed")
     except BaseException:
         try:
-            _reap()
+            _reap_and_observe()
         finally:
             profile_stack.close()
             if proc is not None:
@@ -10477,8 +10494,6 @@ def _run_leg_with_liveness(
 
             threading.Thread(target=_feed, daemon=True).start()
 
-        out_buf = bytearray()
-        err_buf = bytearray()
         fd_map = {proc.stdout.fileno(): out_buf, proc.stderr.fileno(): err_buf}
         open_fds = set(fd_map)
         worker_fds = set(duplex.fds()) if duplex is not None else set()
@@ -10588,7 +10603,7 @@ def _run_leg_with_liveness(
                 return _LegRun(proc.returncode or 1, out_s, err_s + marker)
     finally:
         try:
-            _reap()
+            _reap_and_observe()
         finally:
             for pipe in (proc.stdout, proc.stderr, *((proc.stdin,) if gemini_profile is not None and gemini_profile.quiescent else ())):
                 try:
@@ -14530,6 +14545,14 @@ def _exec_jailed_codex_leg(
     observation = _EXEC_OBSERVATION.get()
     if observation is not None:
         observation["scan_secrets"] = secrets
+
+    def capture_native_exit(returncode, duration_ms, stdout, stderr_bytes):
+        diagnostics = evidence.run_diagnostics(returncode, duration_ms, stdout, stderr_bytes)
+        if observation is not None:
+            observation["codex_run"] = diagnostics
+        if broker_evidence is not None:
+            broker_evidence.update(diagnostics)
+
     tails = [b"", b""]
     longest = max((len(secret) for secret in secrets), default=1)
     secret_seen = False
@@ -14596,7 +14619,7 @@ def _exec_jailed_codex_leg(
                 command, cwd="/seat/home/workspace", env=dict(seat.jail.env),
                 deadline_s=deadline_s, input_text=prompt, stdout_guard=stdout_guard,
                 stderr_guard=stderr_guard, seat_jail=seat.jail, probe_jail=seat.probe_jail,
-                quiescence_latch=quiescence_latch,
+                quiescence_latch=quiescence_latch, on_native_exit=capture_native_exit,
                 **({"review_monitor": review_monitor} if review_monitor is not None else {}),
             )
         except subprocess.TimeoutExpired:
@@ -17874,6 +17897,9 @@ def _retained_leg_exec(function):
                 launched=_exec_launched(observation),
                 output_refused=observation.get("output_refused") is True and not accepted,
                 stream_rejection=observation.get("stream_rejection"))
+            codex_run = observation.get("codex_run")
+            if codex_run is not None:
+                record.update(codex_run)
             if result is not None and type(result[0]) is int and result[0] != 0:
                 detail = result[2] if len(result) > 2 else None
                 if type(detail) is not _HarnessCode and record["outcome"].startswith("leg_auth_"):
@@ -17890,6 +17916,8 @@ def _retained_leg_exec(function):
                 path = write_private_record("leg-" + record["attempt_id"] + ".json", record)
                 metadata = {"record_digest": sha256(path.read_bytes()).hexdigest(),
                     "outcome": record["outcome"], "attempt_id": record["attempt_id"]}
+                if codex_run is not None:
+                    metadata["codex_run"] = codex_run
                 if result is None and sys.exception() is not None:
                     setattr(sys.exception(), "_leg_exec_metadata", metadata)
                 if result is not None and type(result[0]) is str:
@@ -19616,6 +19644,11 @@ def _default_spawn(
         return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(seat_refusal),
                                     seat_notices=(seat_refusal, *_ignored_override(leg)))
     jailed = seat_route is not None and seat_route.jailed
+    if jailed and leg == "codex":
+        from .seat_codex_evidence import run_diagnostics
+        observation = _EXEC_OBSERVATION.get()
+        if observation is not None:
+            observation["codex_run"] = run_diagnostics()
     # IF-0-CLAUDE-1: the jailed Claude seat reads the selector, before any wait or staging.
     # A refused value launches nothing, never falls back, and republishes the seat's mode.
     claude_transport: str | None = None
@@ -20710,6 +20743,8 @@ def _write_incremental_verdict(
             "text": result.text,
             "detail": result.detail,
         }
+        exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
+        payload.update(exec_metadata.get("codex_run", {}))
         if result.review_monitoring is not None:
             # agent-harness#1176: heartbeat_only only; metadata, never provider text.
             payload["review_monitoring"] = dict(result.review_monitoring)
@@ -22476,6 +22511,7 @@ def invoke_board(
             monitor = _ReviewMonitor(monitor_root / invocation_id / f"seat-{index}.json",
                                      invocation_id, index, operation_cancel)
             broker_evidence = None
+            exec_metadata = None
             body_notices: tuple[str, ...] = ()
             placement_evidence = None
             try:
@@ -22485,6 +22521,7 @@ def invoke_board(
                 else:
                     result = _run_seat_body(item, monitor)
                 broker_evidence = result.harden_isolation_evidence
+                exec_metadata = getattr(result, "_leg_exec_metadata", None)
                 body_notices = getattr(result, "_seat_notice_codes", ())
                 placement_evidence = result.sandbox_placement_evidence
                 if monitor.write_failed:
@@ -22505,6 +22542,8 @@ def invoke_board(
                 raise
             if broker_evidence is not None:
                 attach_harden_isolation_evidence(result, broker_evidence)
+            if exec_metadata is not None and "codex_run" in exec_metadata:
+                object.__setattr__(result, "_leg_exec_metadata", exec_metadata)
             if not getattr(result, "_seat_notice_codes", ()) and body_notices:
                 attach_seat_notices(result, body_notices)
             if placement_evidence is not None:

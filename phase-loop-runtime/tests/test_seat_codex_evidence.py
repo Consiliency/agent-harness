@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from phase_loop_runtime.seat_codex_evidence import read_tool_record, tools_ran_code
+from phase_loop_runtime.seat_codex_evidence import read_tool_record, run_diagnostics, tools_ran_code
 
 
 def stream(*, command=True, exit_code=0, output="sentinel\n", complete=True, extra=()):
@@ -75,3 +75,28 @@ def test_failed_command_beside_successful_command_counts():
     assert record.stream_valid and record.turn_completed
     assert record.commands_completed == 1 and record.commands_failed == 1
     assert tools_ran_code(record) is None
+
+
+
+def test_diagnostics_count_distinct_tool_items_and_terminal_failures():
+    pending = {"id": "private id 1", "type": "command_execution", "status": "in_progress"}
+    failed = {"id": "private id 2", "type": "mcp_tool_call", "status": "failed",
+              "error": {"code": "private code", "message": "private message"}}
+    data = stream(command=False, complete=False, extra=(
+        {"type": "item.started", "item": pending},
+        {"type": "item.updated", "item": pending},
+        {"type": "item.completed", "item": failed},
+        {"type": "item.completed", "item": failed},
+        {"type": "turn.failed", "error": {"message": "private turn failure"}},
+    )) + b"bad json with private text"
+    record = run_diagnostics(1, 42, data)
+    assert record["provider_stage_reached"] == "terminal_event"
+    assert record["provider_event_type_counts"] == {
+        "thread.started": 1, "turn.started": 1, "item.started": 1,
+        "item.updated": 1, "item.completed": 2, "turn.failed": 1, "malformed": 1,
+    }
+    assert record["provider_tool_calls_attempted"] == 2
+    assert record["provider_tool_calls_completed"] == 1
+    assert record["provider_tool_calls_failed"] == 1
+    assert record["provider_tool_error_codes"] == {"mcp_tool_failed": 1}
+    assert "private" not in json.dumps(record)
