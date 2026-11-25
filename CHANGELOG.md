@@ -8,6 +8,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Gemini heartbeat and jailed review records retain native status, duration, pipe byte
+  counts and stream progress for diagnosing failed runs (agent-harness#2183).
+  The diagnostics carry no provider stderr content.
 - Jailed Gemini seats use a credential-free loopback proxy URL. The host front keeps
   per-launch proxy authentication on its private hop to SRT (agent-harness#2157).
   After release, run integrated W1 under the owner account on the owner's primary board host,
