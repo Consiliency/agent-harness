@@ -369,6 +369,19 @@ raise RuntimeError("caller returned without handoff")
         time.sleep(0.025)
     assert row["phase"] == "terminal" and row["owner"]["pid"] != caller.pid
     assert json.loads(row["terminal"])["code"] == "sandbox_placement_capability_unmet"
+    # The detached supervisor may still be closing its state files after recording the
+    # terminal row; let it exit before tmp_path teardown removes the state directory
+    # (agent-harness#2188). A zombie counts as exited.
+    owner = Path(f"/proc/{row['owner']['pid']}/stat")
+    end = time.monotonic() + 10
+    while time.monotonic() < end:
+        try:
+            state = owner.read_text().rsplit(")", 1)[1].split()[0]
+        except (OSError, IndexError):
+            break
+        if state in {"Z", "X"}:
+            break
+        time.sleep(0.025)
 
 
 @pytest.mark.parametrize("fault", ["timeout", "peer_uid"])
