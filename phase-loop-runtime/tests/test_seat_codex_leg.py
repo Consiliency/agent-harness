@@ -3,6 +3,7 @@ import contextlib
 from dataclasses import replace
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -173,6 +174,7 @@ def test_real_liveness_output_and_post_launch_order(tmp_path, monkeypatch, codex
 
 @pytest.mark.parametrize("case,expected", [
     ("success", None), ("zero_commands", "codex_seat_tools_unavailable"),
+    ("early_exit", "codex_seat_tools_unavailable"), ("signalled", "codex_seat_tools_unavailable"),
     ("unknown", "codex_seat_unknown_event"), ("refresh", "codex_seat_token_refreshed_in_jail"),
     ("expired", "codex_seat_token_expiring"), ("secret", "codex_seat_token_in_output"),
     ("expired_no_command", "codex_seat_token_expiring"),
@@ -198,10 +200,21 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
     (seat.seat_dir / "seat-out/panel-codex.txt").write_text("Fixture read.\n\nAGREE")
     data = stream(command=case not in {"zero_commands", "expired_no_command"},
                   exit_code=1 if case == "failed_commands" else 0,
-                  extra=({"type": "new.event"},) if case == "unknown" else ())
+                  extra=({"type": "private event name"},) if case == "unknown" else ())
     if case == "secret":
         data += seat.codex_copy.secrets[0]
-    child = "import sys; sys.stdin.read(); sys.stdout.buffer.write(" + repr(data) + "); sys.exit(" + str(1 if case in {"expired", "refresh", "secret", "expired_no_command"} else 0) + ")"
+    if case == "early_exit":
+        data = b'{"type":"error","message":"private startup error","code":"private upstream code"}\n'
+    if case == "signalled":
+        data = b'{"type":"thread.started"}\n'
+    stderr = b"private stderr \xff"
+    exit_code = int(case in {"early_exit", "expired", "refresh", "secret", "expired_no_command"})
+    child = (
+        "import os, signal, sys; sys.stdin.read(); "
+        f"sys.stdout.buffer.write({data!r}); sys.stderr.buffer.write({stderr!r}); "
+        "sys.stdout.flush(); sys.stderr.flush(); "
+        + ("os.kill(os.getpid(), signal.SIGTERM)" if case == "signalled" else f"sys.exit({exit_code})")
+    )
     released = []
     lease = SimpleNamespace(seat_id=7, release=lambda: released.append(True))
     route = SimpleNamespace(jailed=True, lease=lease)
@@ -236,6 +249,8 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
         return subprocess.Popen([sys.executable, "-c", child], stdin=kwargs["stdin"],
                                 stdout=kwargs["stdout"], stderr=kwargs["stderr"], start_new_session=True)
     monkeypatch.setattr(pi, "launch_provider", launch)
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
     spawned = _brokered(monkeypatch, tmp_path, "codex", "a" * 64)
     assert tuple(spawned)[0] == ("DEGRADED" if expected else "OK")
     expected_notices = (["seat_sandbox_root_unapplied"] if not root_applied else [])
@@ -246,8 +261,136 @@ def test_default_spawn_holds_route_lease_through_codex_leg(tmp_path, monkeypatch
     assert tuple(spawned.seat_notices) == tuple(expected_notices)
     assert released == [True]
 
+    command_turn = {"thread.started": 1, "turn.started": 1, "item.started": 1,
+                    "item.completed": 1, "turn.completed": 1}
+    counts = {
+        "early_exit": {"error": 1},
+        "signalled": {"thread.started": 1},
+        "zero_commands": {"thread.started": 1, "turn.started": 1, "turn.completed": 1},
+        "success": command_turn,
+        "failed_commands": command_turn,
+        "unknown": {**command_turn, "unknown": 1},
+    }
+    if case in counts:
+        leg = pi.PanelLegResult("codex", spawned[0], spawned[1])
+        object.__setattr__(leg, "_leg_exec_metadata", spawned.leg_exec_metadata)
+        pi._write_incremental_verdict(tmp_path / "verdicts", 0, leg)
+        verdict = next((tmp_path / "verdicts").glob("*.verdict.json")).read_text()
+        retained = next((state / "agent-harness/seat-records").glob("leg-*.json")).read_text()
+        event_counts = counts[case]
+        tool_count = event_counts.get("item.completed", 0)
+        expected_fields = {
+            "native_exit_code": None if case == "signalled" else exit_code,
+            "native_signal": signal.SIGTERM if case == "signalled" else None,
+            "native_stdout_bytes": len(data), "native_stderr_bytes": len(stderr),
+            "provider_stage_reached": (
+                "terminal_event" if "turn.completed" in event_counts else "first_incoming_event"
+            ),
+            "provider_event_type_counts": event_counts,
+            "provider_tool_calls_attempted": tool_count,
+            "provider_tool_calls_completed": tool_count,
+            "provider_tool_calls_failed": int(case == "failed_commands"),
+            "provider_tool_error_codes": {"command_nonzero_exit": 1} if case == "failed_commands" else {},
+        }
+        for payload in (retained, verdict):
+            record = json.loads(payload)
+            assert {key: record[key] for key in expected_fields} == expected_fields
+            assert type(record["native_duration_ms"]) is int and record["native_duration_ms"] >= 0
+            for content in ("private startup error", "private upstream code", "private event name",
+                            "private stderr", "cat SENTINEL", "sentinel", "ARTIFACT", str(tmp_path)):
+                assert content not in payload
+
 
 def test_jailed_codex_keeps_real_placement_and_retention_notices(tmp_path, monkeypatch, codex_profile):
     test_default_spawn_holds_route_lease_through_codex_leg(
         tmp_path, monkeypatch, codex_profile, "zero_commands", "codex_seat_tools_unavailable",
         root_applied=False, retained=True)
+
+
+@pytest.mark.parametrize("terminal", ["refused", "cancelled", "monitor_failed", "monitor_oserror"])
+def test_jailed_codex_board_streams_diagnostics_without_reusing_replaced_identity(
+    tmp_path, monkeypatch, codex_profile, terminal,
+):
+    from hashlib import sha256
+    from threading import Event
+
+    from phase_loop_runtime import seat_window
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    from harden_tdd_guard import invoke_sanctioned_board_control
+
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setattr(pi, "_publish_seat_modes", lambda *a, **kw: None)
+    seat = prepare(tmp_path, monkeypatch)
+    local_reads(monkeypatch)
+    stdout = stream(command=False)
+    child = f"import sys; sys.stdin.read(); sys.stdout.buffer.write({stdout!r})"
+
+    def launch(argv, **kwargs):
+        return subprocess.Popen(
+            [sys.executable, "-c", child], stdin=kwargs["stdin"], stdout=kwargs["stdout"],
+            stderr=kwargs["stderr"], start_new_session=True,
+        )
+
+    monkeypatch.setattr(pi, "launch_provider", launch)
+    cancel = Event()
+    finished = Event()
+    observe = pi._ReviewMonitor.observe
+    monitors = []
+
+    def observe_monitor(monitor, *args, **kwargs):
+        if not monitors:
+            monitors.append(monitor)
+        if kwargs.get("terminal") and finished.is_set() and terminal == "monitor_oserror":
+            raise OSError("fixture monitor write failed")
+        observe(monitor, *args, **kwargs)
+
+    monkeypatch.setattr(pi._ReviewMonitor, "observe", observe_monitor)
+
+    @pi._retained_leg_exec
+    def spawn(leg, prompt):
+        failures = []
+        status, text = pi._exec_jailed_codex_leg(
+            seat, deadline_s=5, model="fixture", prompt=prompt,
+            broker_evidence={}, failure_detail_sink=failures,
+        )
+        finished.set()
+        if terminal == "cancelled":
+            cancel.set()
+        elif terminal == "monitor_failed":
+            monitors[0].write_failed = True
+        return status, text, failures[-1]
+
+    board = replace(DEFAULT_BOARD, seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness == "codex"))
+    stream_dir = tmp_path / "stream"
+    result = invoke_sanctioned_board_control(
+        board, "fixture prompt", spawn=spawn, stream_dir=stream_dir,
+        cancel_event=cancel, max_concurrency=1, monitoring_policy="heartbeat_only",
+    )
+    leg, = result.legs
+    assert leg.detail == {
+        "refused": "codex_seat_tools_unavailable",
+        "cancelled": "review_operation_cancelled",
+        "monitor_failed": "review_monitoring_write_failed",
+        "monitor_oserror": "review_monitoring_write_failed",
+    }[terminal]
+    assert leg.status == ("DEGRADED" if terminal == "refused" else "UNAVAILABLE")
+
+    # The existing retention fallback gives a replaced leg its own unobserved
+    # record. The window must see that record's attempt and digest.
+    metadata = leg._leg_exec_metadata
+    record_root = state / "agent-harness/seat-records"
+    leg_record = (record_root / f"leg-{metadata['attempt_id']}.json").read_bytes()
+    expected_outcome = "leg_execution_refused" if terminal == "refused" else "leg_execution_unobserved"
+    assert json.loads(leg_record)["outcome"] == expected_outcome
+    assert metadata["record_digest"] == sha256(leg_record).hexdigest()
+    assert seat_window.candidate_observations(
+        [{"id": "codex", "kind": "vendor", "vendor": "codex"}], result.legs,
+    ) == [{"id": "codex", "outcome": "observed", "exec_record_digest": metadata["record_digest"]}]
+    assert pi.integrated_board_outcome(replace(result, president=object())) == "terminated"
+
+    verdict = json.loads(next(stream_dir.glob("*.verdict.json")).read_bytes())
+    assert verdict["native_exit_code"] == 0
+    assert verdict["native_stdout_bytes"] == len(stdout)
+    assert verdict["provider_stage_reached"] == "terminal_event"
+    assert verdict["provider_tool_calls_attempted"] == 0

@@ -469,6 +469,8 @@ def invoke_sanctioned_board_control(
             resolved_artifact,
             mode=effective_mode,
             canonical_repo_authority=canonical_repo,
+            **({"monitoring_policy": call_kwargs["monitoring_policy"]}
+               if "monitoring_policy" in call_kwargs else {}),
         )
         authorization = (
             pre_minted_authorization

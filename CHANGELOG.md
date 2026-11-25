@@ -8,6 +8,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Jailed Codex leg records and streamed verdicts retain native exit status,
+  duration, pipe byte counts, and event and tool progress on success or refusal
+  (agent-harness#2185). The diagnostics contain no provider text.
 - Gemini heartbeat and jailed review records retain native status, duration, pipe byte
   counts and stream progress for diagnosing failed runs (agent-harness#2183).
   The diagnostics carry no provider stderr content.

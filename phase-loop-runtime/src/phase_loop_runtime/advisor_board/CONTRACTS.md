@@ -1539,6 +1539,20 @@ are recorded on agent-harness#1132.
   and a copied secret in output gives `codex_seat_token_in_output`. Such legs never
   count as reviews. The staged workspace-write grant and capability retention are
   retired (agent-harness#1470, agent-harness#1003).
+  The jailed leg's private execution record and streamed verdict JSON include
+  native and stream diagnostics (agent-harness#2185). A negative process wait
+  status gives `native_signal` and a null `native_exit_code`. Bubblewrap can encode
+  a signalled payload as `128 + signal`. The record keeps that observed code with
+  a null signal because the code is ambiguous. `native_duration_ms` measures
+  elapsed wall time in the provider runner. `native_stdout_bytes` and
+  `native_stderr_bytes` count bytes drained before decoding, including partial
+  output on interruption. The stage advances from `not_launched` to `launch` when
+  the launch is attempted, then to `first_incoming_event` and `terminal_event`
+  on either turn completion or failure. Event counts use
+  known names and the fixed `unknown` and `malformed` buckets. Tool counts cover
+  distinct command, MCP and web search items observed in the stream. Completions
+  include failed tools, and failure codes count nonzero command exits or explicit
+  failed statuses. These fields contain no item IDs, commands, paths, or output.
   The non-brokered Codex route retains the agent-harness#1469 pre-run sandbox probe
   and its `seat_tool_sandbox_unavailable` refusal. Advisory and qualification-candidate
   runs retain their contract routes. Decision and evidence:
