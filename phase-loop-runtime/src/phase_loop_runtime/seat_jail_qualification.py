@@ -281,7 +281,11 @@ def _explicit_route_key(profile):
 def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None = None,
             qualification_key=None, _mutate_jail=None) -> dict[str, object]:
     """Run the EC-EXECFIND-2 jail falsifiers on this host. Returns the evidence; on a pass
-    (and ``record``), writes the evidence and pass record to this host's store."""
+    (and ``record``), writes the evidence and pass record to this host's store.
+
+    When recording an explicit Claude or Gemini qualification, the probe uses the
+    resolved launch subject and ignores the ``provider`` override.
+    """
     from .seat_profiles import profile_for
     profile = profile_for(leg)
     if profile is None:

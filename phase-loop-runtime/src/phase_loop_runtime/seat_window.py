@@ -890,6 +890,10 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
             pass
 
     def _row_bind(qualification_input):
+        try:
+            qualification_key = _launch_key(data)
+        except Exception as exc:
+            raise seat_window_supply.WindowRefused("window_key_stale") from exc
         reference = panel.window_reference_stage(qualification_input)
         if not _is_digest(reference):
             raise seat_window_supply.WindowRefused("window_stage_mismatch")
@@ -903,7 +907,7 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor
             vendor=vendor, context_id=context_id, account_label=account_label,
             attempt=row.attempt, data=data, exceptions_sha256=exceptions_sha256,
             board_input_sha256=panel.window_board_input_sha256(),
-            reference_stage_sha256=reference, qualification_key=_launch_key(data))
+            reference_stage_sha256=reference, qualification_key=qualification_key)
         run.update(binding=binding, binding_digest=binding_digest, reference=reference)
 
     def _same_stage(result):
@@ -1100,7 +1104,7 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
                 if (profile := profile_for(leg)) is not None and profile.vendor == vendor]
     profile = profiles[0] if len(profiles) == 1 else None
     if (profile is None or profile.window is None
-        or not seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest(profile.leg))
+        or not _route_pass_current(profile)
         or profile.allowlist_id is not None and seat_egress_proxy.unavailable_reason() is not None):
         return {"status": "candidate", "code": "window_host_readiness_required"}
     record = run_native_window(repo=Path(repo), monitoring_policy=monitoring_policy,
@@ -1529,36 +1533,45 @@ def _snapshot_document(vendor: str, context_id: str, board) -> dict:
 
 # --- R8: the qualification key, at launch and at verification. ---
 
+def _route_qualification_key(profile):
+    from .seat_qualification_key import key_for_launch
+    from .seat_route import _allowlist_digest_for_launch, _projection_for_launch
+
+    env = dict(os.environ)
+    variant = None
+    if profile.variant is not None:
+        variant, code = profile.variant(env)
+        if code is not None:
+            raise ValueError("window_key_stale")
+    return key_for_launch(
+        profile, variant=variant, allowlist_digest=_allowlist_digest_for_launch(profile),
+        projection=_projection_for_launch(profile, env),
+    )
+
+
+def _route_pass_current(profile) -> bool:
+    try:
+        return seat_jail.pass_record_verdict(_route_qualification_key(profile))[0]
+    except Exception:
+        return False
+
+
 def _launch_key(data) -> dict:
     from .seat_profiles import profile_for
-    from . import seat_qualification_key
+    from .seat_route_contract import record_binding
+
     profile = profile_for(data.leg)
     if profile is None:
         raise ValueError("window_key_stale")
-    variant = None
-    if profile.variant is not None:
-        variant, code = profile.variant(dict(os.environ))
-        if code is not None:
-            raise ValueError("window_key_stale")
-    allowlist = (seat_egress_proxy.allowlist_ref(profile.allowlist_id).content_digest
-                 if profile.allowlist_id is not None else None)
-    try:
-        from .seat_route import _projection_for_launch
-        projection = _projection_for_launch(profile, dict(os.environ))
-    except Exception:
-        projection = None
-    key = seat_qualification_key.key_for_launch(profile, variant=variant,
-                                                allowlist_digest=allowlist,
-                                                projection=projection)
-    return {"profile_digest": key.profile_digest, "allowlist_digest": key.allowlist_digest,
-            "falsifier_layout": key.falsifier_layout, "projection_digest": key.projection_digest,
-            "variant": key.variant, "host_identity": key.host_identity,
+    return {**record_binding(_route_qualification_key(profile)),
             "arch": seat_jail.host_arch(), "runtime_digest": runtime_digest()}
 
 
 def _key_current(record, data) -> bool:
     """R8 on the designated host: the same key over today's resolved inputs, this arch, and
     a recorded execfind pass. ``runtime_digest`` is provenance only."""
+    from .seat_route_contract import QualificationKey
+
     try:
         current = _launch_key(data)
     except Exception:
@@ -1569,7 +1582,9 @@ def _key_current(record, data) -> bool:
                    if key != "runtime_digest")):
         return False
     try:
-        return bool(seat_jail.execfind_pass_recorded(recorded["profile_digest"]))
+        key = QualificationKey(**{field.name: current[field.name]
+                                  for field in fields(QualificationKey)})
+        return seat_jail.pass_record_verdict(key)[0]
     except Exception:
         return False
 
@@ -2251,7 +2266,7 @@ def _qualify_row(*, vendor, monitoring_policy, repo, host_class, attended, model
         from .seat_profiles import profile_for
         profile = profile_for(data.leg)
         if (profile is None or profile.window is None
-                or not seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest(profile.leg))
+                or not _route_pass_current(profile)
                 or profile.allowlist_id is not None
                 and seat_egress_proxy.unavailable_reason() is not None):
             return {"status": "candidate", "code": "window_host_readiness_required"}

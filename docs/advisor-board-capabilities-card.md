@@ -701,7 +701,9 @@ transport variant, and host identity. A pass does not carry over from another ho
 An OS upgrade that changes `/lib*` or the `/etc` subset needs a new pass. With no recorded
 pass, a Claude seat qualifies the jail on first use (see below). To run the real
 falsifiers and record a pass by hand, use `phase-loop seat-sandbox qualify` for Claude
-or `phase-loop seat-sandbox qualify --leg gemini` for Gemini. At launch the built jail is re-checked
+or `phase-loop seat-sandbox qualify --leg gemini` for Gemini. Run the command in the same
+environment as the board, including the same `PATH`, managed subject or dependency
+lease, and Claude transport (`PHASE_LOOP_PANEL_CLAUDE_ROUTE`). The built jail is re-checked
 against its record, and a launch whose record does not hold is refused before any effect
 with `seat_sandbox_refused:jail_unqualified`.
 A pass record binds this host, the falsifier-run layout and the

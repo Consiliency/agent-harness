@@ -1086,7 +1086,7 @@ def _window_frozen_interface_harness(
     monkeypatch.setattr(panel, "window_board_launch", window_board_launch, raising=False)
     monkeypatch.setattr(window, "owner_w1_approved", lambda: True)
     monkeypatch.setattr(window, "preflight", lambda: _PreflightResult(status="admitted"))
-    monkeypatch.setattr(window.seat_jail, "execfind_pass_recorded", lambda _: True)
+    monkeypatch.setattr(window, "_route_pass_current", lambda _: True)
     monkeypatch.setattr(window.seat_egress_proxy, "unavailable_reason", lambda: None)
     monkeypatch.setattr(window, "_find_exec_source_attempt", lambda digest, root=None: "f" * 32)
     monkeypatch.setattr(window, "_host_digest", lambda: "0" * 64)
@@ -1313,6 +1313,40 @@ def test_explicit_qualification_passes_the_production_route(
     if leg != "codex":
         assert probes[0][-1] == current_key
     assert resolve().mode == "jailed"
+
+
+def test_explicit_gemini_pass_satisfies_window_readiness_and_r8(tmp_path, monkeypatch, capsys):
+    import json
+    from types import SimpleNamespace
+
+    from phase_loop_runtime import cli, seat_profiles, seat_route, seat_window as window
+    from phase_loop_runtime.advisor_board.composition import CompositionOutcome
+
+    _patched_sentinel_run(tmp_path, monkeypatch)
+    projection = SimpleNamespace(projection_digest="b" * 64)
+    monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_: projection)
+    monkeypatch.setattr(qualification, "_run_probe_in_jail", lambda *args: {})
+    monkeypatch.setattr(window, "owner_w1_approved", lambda: True)
+    monkeypatch.setattr(window, "preflight", lambda: CompositionOutcome("admitted", None, (), ""))
+    monkeypatch.setattr(window.seat_egress_proxy, "unavailable_reason", lambda: None)
+    measurement = {"status": "candidate", "code": "fixture_measurement_reached"}
+    monkeypatch.setattr(window, "run_native_window", lambda **_: measurement)
+
+    def readiness():
+        return window.qualify(window="W1", monitoring_policy="bounded", attended=True)
+
+    missing = {"status": "candidate", "code": "window_host_readiness_required"}
+    data = seat_profiles.window_data_for("gemini")
+    record = {"qualification_keys": window._launch_key(data)}
+    assert (readiness(), window._key_current(record, data)) == (missing, False)
+    assert cli.main(["seat-sandbox", "qualify", "--leg", "gemini"]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    path = Path(receipt["recorded_pass"])
+    assert path.name == f'{receipt["key_digest"]}.json'
+    assert (readiness(), window._key_current(record, data)) == (measurement, True)
+
+    path.unlink()
+    assert (readiness(), window._key_current(record, data)) == (missing, False)
 
 
 def test_grok_qualification_records_a_v2_pass_on_the_route_key(tmp_path, monkeypatch):

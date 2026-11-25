@@ -174,10 +174,9 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "report a defect"),
     "seat_sandbox_refused:jail_unqualified": (
         "leg refused",
-        "no EC-EXECFIND-2 pass is recorded on this host for this jail's profile digest (a new "
-        "host, a changed host layout, or a changed jail)",
+        "no EC-EXECFIND-2 pass is recorded on this host for this jail's qualification key",
         "run the per-host EC-EXECFIND-2 jail qualification, which records the pass at "
-        "$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json; the seat stays degraded "
+        "$XDG_STATE_HOME/phase-loop/seat-jail-passes/<key-digest>.json; the seat stays degraded "
         "until the qualification passes"),
     "seat_sandbox_refused:pass_store_unsafe": (
         "leg refused",
