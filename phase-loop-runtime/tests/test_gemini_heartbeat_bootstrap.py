@@ -121,6 +121,62 @@ def test_qualification_provider_error_from_stream_and_process_facts(facts, expec
     assert panel._agy_provider_error_class(**facts) == expected
 
 
+@pytest.mark.parametrize(("stdout", "stderr", "expected"), [
+    ("", "request failed with HTTP/2 401", "auth_missing"),
+    ('{"status":"uNaUtHeNtIcAtEd"}', "", "auth_missing"),
+    ("", "OAuth refresh failed: INVALID_GRANT", "auth_expired"),
+    ("the access token has expired", "", "auth_expired"),
+    ("", "HTTP status 403", "permission_denied"),
+    ('{"status":"permission_denied"}', "", "permission_denied"),
+    ('{"error":{"code":429}}', "", "quota_exhausted"),
+    ("", "RESOURCE_EXHAUSTED: quota exceeded", "quota_exhausted"),
+    ("quota exhausted", "", "quota_exhausted"),
+    ("", "getaddrinfo ENOTFOUND provider.invalid", "network"),
+    ("connect econnrefused", "", "network"),
+    ("", "TLS certificate verification failed", "network"),
+    ("proxy CONNECT failed", "", "network"),
+    ("", "connect ETIMEDOUT", "timeout"),
+    ("Error: timeout waiting for response", "", "timeout"),
+    ("", "model not supported", "model_error"),
+    ("MODEL_NOT_FOUND", "", "model_error"),
+    ("bytes 401 403 429, quota settings", "not_a_permission_denied_code", "unknown"),
+])
+def test_native_exit_classifies_fixed_markers(stdout, stderr, expected):
+    assert panel._agy_provider_error_class(
+        native_rc=1, native_stdout=stdout, native_stderr=stderr,
+    ) == expected
+
+
+@pytest.mark.parametrize(("rc", "stdout", "stderr", "expected"), [
+    (1, "invalid_grant", "HTTP 401", "auth_expired"),
+    (1, "HTTP 401", "RESOURCE_EXHAUSTED", "auth_missing"),
+    (1, "quota exceeded", "HTTP 403", "quota_exhausted"),
+    (1, "permission_denied", "ETIMEDOUT", "permission_denied"),
+    (1, "ECONNREFUSED", "ETIMEDOUT", "timeout"),
+    (1, "MODEL_NOT_FOUND", "ECONNREFUSED", "network"),
+    (124, "invalid_grant", "", "timeout"),
+    (0, "invalid_grant", "", "unknown"),
+    (-9, "invalid_grant", "", "unknown"),
+])
+def test_native_exit_class_precedence_and_exit_gate(rc, stdout, stderr, expected):
+    assert panel._agy_provider_error_class(
+        native_rc=rc, native_stdout=stdout, native_stderr=stderr,
+    ) == expected
+
+
+def test_native_exit_class_inspects_only_the_bounded_tail():
+    cap = panel._LEG_LOG_MAX_BYTES
+    marker = "HTTP 401 "
+    multibyte_padding = "é" * (cap // 2)
+    assert panel._agy_provider_error_class(
+        native_rc=1, native_stdout=marker + multibyte_padding,
+        native_stderr=marker + multibyte_padding,
+    ) == "unknown"
+    assert panel._agy_provider_error_class(
+        native_rc=1, native_stderr=multibyte_padding + " " + marker,
+    ) == "auth_missing"
+
+
 @pytest.mark.parametrize(("code", "login_wait_state", "expected"), [
     ("gemini_seat_credential_missing", None, "auth_missing"),
     ("gemini_seat_token_expired", None, "auth_expired"),
@@ -526,7 +582,7 @@ def test_the_qualification_worker_spawns_agy_from_a_non_git_cwd(fixture_cli, tmp
     ("empty", "EMPTY", "empty_response"),
     ("denied-empty", "ERROR", "empty_response"),
     ("empty-timeout", "ERROR", "empty_response"),
-    ("native-timeout", "ERROR", "unknown"),
+    ("native-timeout", "ERROR", "timeout"),
     ("final", "ERROR", "unknown"),
 ])
 def test_qualification_worker_retains_only_structured_error_class(
@@ -535,10 +591,22 @@ def test_qualification_worker_retains_only_structured_error_class(
     fixture_cli.mode.write_text(mode)
     _, root, _, run = _qualification_worker(fixture_cli, tmp_path, monkeypatch)
     run()
-    terminal = json.loads((root / "terminal.json").read_text())
+    raw_terminal = (root / "terminal.json").read_text()
+    terminal = json.loads(raw_terminal)
     assert terminal["result"]["status"] == status
     assert terminal["broker"]["provider_response_status"] == status
     assert terminal["broker"]["provider_error_class"] == error_class
+    assert terminal["broker"]["provider_response_bytes"] == 0
+    if mode == "native-timeout":
+        assert terminal["broker"]["native_exit_code"] == 1
+        assert terminal["broker"]["native_stdout_bytes"] == 0
+        assert terminal["broker"]["native_stderr_bytes"] == len(
+            b"Error: timeout waiting for response PRIVATE_FIXTURE_SENTINEL\n"
+        )
+        raw_verdict = next((root / "stream").glob("leg-*.verdict.json")).read_text()
+        assert json.loads(raw_verdict)["provider_error_class"] == error_class
+        for raw in (raw_terminal, raw_verdict):
+            assert "PRIVATE_FIXTURE_SENTINEL" not in raw
 
 
 @pytest.mark.parametrize(("mode", "code", "events", "results", "stage", "outcome"), [

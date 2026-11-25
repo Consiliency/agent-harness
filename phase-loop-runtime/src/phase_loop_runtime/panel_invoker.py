@@ -8041,7 +8041,7 @@ _AGY_RUN_FIELDS = (
     "native_exit_code", "native_signal", "native_duration_ms",
     "native_stdout_bytes", "native_stderr_bytes", "provider_stage_reached",
     "provider_stream_incoming_event_count", "provider_stream_result_count",
-    "provider_stream_output_bytes", "provider_stream_outcome",
+    "provider_stream_output_bytes", "provider_stream_outcome", "provider_error_class",
 )
 
 
@@ -17378,6 +17378,12 @@ def _exec_jailed_gemini_leg(
     expired = seat.expires_at is not None and time.time() >= seat.expires_at
     if proc.returncode != 0:
         if broker_evidence is not None:
+            error_class = (
+                ProviderErrorClass.AUTH_EXPIRED if expired else _agy_provider_error_class(
+                    native_rc=proc.returncode, native_stdout=proc.stdout, native_stderr=proc.stderr,
+                )
+            )
+            broker_evidence["provider_error_class"] = error_class.value
             _retain_agy_stream_progress(broker_evidence, proc.stdout, protocol, tooled=True)
         return _jailed_failure("gemini_seat_token_expired" if expired
                                else "Gemini broker native exit without an accepted review",
@@ -18447,12 +18453,42 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
     return receipt
 
 
+_AGY_HTTP_STATUS = (
+    rb'(?:\bHTTP(?:/[0-9]+(?:\.[0-9]+)?)?(?:[ \t]+(?:status(?:[ _]code)?|error))?[ \t:=]+'
+    rb'|\b(?:status(?:[ _]code)?|code)"?[ \t]*[:=][ \t]*"?)'
+)
+# Structured facts take priority. For native output the first class below that matches
+# either stream wins, independent of stream or message order. Quota precedes permission
+# because a quota failure can carry HTTP 403. Timeouts precede other transport failures.
+_AGY_NATIVE_EXIT_PATTERNS = tuple((error_class, re.compile(pattern, re.IGNORECASE)) for error_class, pattern in (
+    (ProviderErrorClass.AUTH_EXPIRED,
+     rb"\b(?:invalid_grant|(?:access |oauth )?token (?:has )?expired)\b"),
+    (ProviderErrorClass.AUTH_MISSING,
+     _AGY_HTTP_STATUS + rb"401\b|\b(?:unauthenticated|not logged in|no credentials found)\b"),
+    (ProviderErrorClass.QUOTA_EXHAUSTED,
+     _AGY_HTTP_STATUS + rb"429\b|\b(?:resource_exhausted|quota (?:has been )?(?:exceeded|exhausted))\b"),
+    (ProviderErrorClass.PERMISSION_DENIED,
+     _AGY_HTTP_STATUS + rb"403\b|\bpermission_denied\b"),
+    (ProviderErrorClass.TIMEOUT,
+     rb"\b(?:etimedout|deadline_exceeded|timeout waiting for response|connection timed out)\b"),
+    (ProviderErrorClass.NETWORK,
+     rb"\b(?:econnrefused|econnreset|enotfound|eai_again|err_tls_cert_altname_invalid|"
+     rb"cert_has_expired|unable_to_verify_leaf_signature|self-signed certificate|"
+     rb"certificate verif(?:y|ication) failed|tls handshake (?:failed|failure|error)|"
+     rb"proxy connect (?:failed|failure|error|refused|aborted)|connect tunnel failed)\b"),
+    (ProviderErrorClass.MODEL_ERROR,
+     rb"\b(?:model_not_found|unsupported_model|model_unavailable|unknown model|"
+     rb"model (?:is )?(?:not found|not supported|unavailable))\b"),
+))
+
+
 def _agy_provider_error_class(
     *, native_rc: int | None = None, stream: Mapping[str, object] | None = None,
     response_present: bool | None = None, timed_out: bool = False,
     failure: BaseException | None = None, login_wait_state: object = None,
+    native_stdout: str = "", native_stderr: str = "",
 ) -> ProviderErrorClass:
-    """Classify only parent-observed facts from a failed qualification turn."""
+    """Return an allowlisted diagnostic for a failed agy turn."""
     refusal = _typed_refusal_code(failure) if failure is not None else None
     if refusal == "gemini_seat_credential_missing":
         return ProviderErrorClass.AUTH_MISSING
@@ -18471,13 +18507,22 @@ def _agy_provider_error_class(
         return ProviderErrorClass.AUTH_EXPIRED
     if timed_out or (type(native_rc) is int and native_rc == 124) or refusal == "gemini_credential_refresh_timeout":
         return ProviderErrorClass.TIMEOUT
+    if type(native_rc) is int and native_rc > 0:
+        # Reuse the leg diagnostic byte cap per stream. Slicing first also bounds the
+        # temporary encoding for multibyte text. These tails and their matches stay private.
+        tails = tuple(
+            output[-_LEG_LOG_MAX_BYTES:].encode("utf-8", errors="replace")[-_LEG_LOG_MAX_BYTES:]
+            for output in (native_stdout, native_stderr)
+        )
+        for error_class, pattern in _AGY_NATIVE_EXIT_PATTERNS:
+            if any(pattern.search(tail) for tail in tails):
+                return error_class
     if type(native_rc) is int and native_rc == 0 and stream is not None:
         output_bytes = stream.get("provider_stream_output_bytes")
         if (type(output_bytes) is int and output_bytes == 0) or (
             stream.get("provider_stream_outcome") == "accepted" and response_present is False
         ):
             return ProviderErrorClass.EMPTY_RESPONSE
-    # The current agy stream has no verified quota, model-failure or network error code.
     return ProviderErrorClass.UNKNOWN
 
 
@@ -19009,9 +19054,13 @@ def _exec_leg(
             if brokered:
                 if review_monitor is not None and review_monitor.cancel.is_set():
                     return 1, "", _HarnessCode("review_operation_cancelled")
-                if qualification_evidence is not None:
-                    qualification_evidence["provider_error_class"] = _agy_provider_error_class(
+                error_evidence = (
+                    broker_evidence if native_rc != 0 and review_monitor is not None else qualification_evidence
+                )
+                if error_evidence is not None:
+                    error_evidence["provider_error_class"] = _agy_provider_error_class(
                         native_rc=native_rc, stream=stream_metadata, response_present=bool(review_text.strip()),
+                        native_stdout=raw_stream, native_stderr=original_log,
                     ).value
                 native_timeout = "timeout waiting for response" in original_log.lower() or (
                     len(raw_stream.strip()) < 200 and "timeout waiting for response" in raw_stream.lower()
