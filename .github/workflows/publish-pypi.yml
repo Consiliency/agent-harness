@@ -23,17 +23,14 @@ jobs:
     runs-on: ubuntu-24.04  # pinned: test.yml's Gate A image; ubuntu-latest moved to 26.04 (agent-harness#1763)
     # A pull_request run deselects the CONFORM chronology node and is measured at
     # 7-12 minutes (docs/releases/publish-pypi-build-timeout.md). A tag or
-    # workflow_dispatch run executes the FULL standalone suite in Gate A and is
-    # measured at 70 minutes (v0.7.14); the 25-minute cap cancelled the v0.7.15 tag
-    # run at 50% of that suite. The tag bound is about twice its measured worst case
-    # (the headroom agent-harness#757 applied): 140 = 2 x 70. The pull_request bound
+    # workflow_dispatch run executes the FULL standalone suite in Gate A. Tag runs
+    # v0.7.38-v0.7.44 took 97-110 minutes; v0.7.45 was cancelled at the old 140-minute
+    # bound with Gate A 88% done (about 160 minutes projected; agent-harness#2191). The
+    # tag bound is about twice a typical run and 1.3x that projection: 210. The pull_request bound
     # must outlast the agy gate's own step bound plus the always-run scratch teardown
     # and evidence upload, so a slow gate is reported with its evidence instead of the
     # job being killed first (agent-harness#1993): 5 (setup) + 40 + 3 + 5 = 53 <= 55.
     # (`a && b || c` is a value-select; it is safe because 55 != 0.)
-    # Tag pushes run the full clean-room suite against the built wheel: about 104-108 min
-    # on a typical hosted runner, but a slow runner needed over 150 min for v0.7.45 and the
-    # job was cancelled at 140 before publishing (agent-harness#2191). Keep real headroom.
     timeout-minutes: ${{ github.event_name == 'pull_request' && 55 || 210 }}
     steps:
       - uses: actions/checkout@v4
