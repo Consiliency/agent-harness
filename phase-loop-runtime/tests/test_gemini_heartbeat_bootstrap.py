@@ -20,6 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from test_seat_resource_caps import isolated as isolated, memory_host as memory_host, _memory_readings
+
 from phase_loop_runtime import panel_invoker as panel
 from phase_loop_runtime.advisor_board import backing
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
@@ -595,15 +597,20 @@ def test_qualification_retains_native_run_facts(
         assert "\\ufffd" not in raw
 
 
-def test_jailed_board_leg_retains_a_signal_reported_by_wait_status(monkeypatch, tmp_path):
+@pytest.mark.real_seat_caps
+def test_jailed_board_leg_retains_a_signal_reported_by_wait_status(monkeypatch, tmp_path, memory_host):
     # Use a real child with the launch owner stubbed so its wait status reaches the
     # board runner without Bubblewrap's translation.
     def launch(command, **kwargs):
-        return subprocess.Popen(
-            command, cwd=tmp_path, stdout=kwargs["stdout"], stderr=kwargs["stderr"],
+        process = memory_host.launch(
+            "gemini", command[2], stdout=kwargs["stdout"], stderr=kwargs["stderr"],
             stdin=kwargs["stdin"], start_new_session=kwargs["start_new_session"],
         )
+        _memory_readings(memory_host.scope(process).parent, current=500, peak=1200, oom_kill=3)
+        memory_host.drain(process)
+        return process
 
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(panel, "launch_provider", launch)
     monkeypatch.setattr(panel, "_cleanup_jailed_seat", lambda *a, **kw: None)
     command = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"]
@@ -614,10 +621,16 @@ def test_jailed_board_leg_retains_a_signal_reported_by_wait_status(monkeypatch, 
                            jail=jail, probe_jail=None, image_sha256="a" * 64, notices=[],
                            admission_class="release_qualified", expires_at=None)
     evidence, failures = {}, []
-    status, text = panel._exec_jailed_gemini_leg(
-        seat, deadline_s=5, model="fixture", prompt="fixture", broker_evidence=evidence,
-        failure_detail_sink=failures,
-    )
+    @panel._retained_leg_exec
+    def run(leg):
+        assert leg == "gemini"
+        return panel._exec_jailed_gemini_leg(
+            seat, deadline_s=5, model="fixture", prompt="fixture", broker_evidence=evidence,
+            failure_detail_sink=failures,
+        )
+
+    result = run("gemini")
+    status, text = result
     assert (status, text) == ("DEGRADED", "")
     assert failures[-1].template == "Gemini broker native exit without an accepted review"
     assert evidence["native_exit_code"] is None
@@ -625,6 +638,16 @@ def test_jailed_board_leg_retains_a_signal_reported_by_wait_status(monkeypatch, 
     assert evidence["native_stdout_bytes"] == evidence["native_stderr_bytes"] == 0
     assert evidence["provider_stage_reached"] == "launch"
     assert evidence["provider_stream_outcome"] == "session_reset"
+    leg = panel.PanelLegResult("gemini", status, text)
+    object.__setattr__(leg, "_leg_exec_metadata", result.leg_exec_metadata)
+    records = tmp_path / "stream"
+    panel._write_incremental_verdict(records, 0, leg)
+    verdict = json.loads(next(records.glob("*.verdict.json")).read_text())
+    record = json.loads(next((tmp_path / "state").rglob("leg-*.json")).read_text())
+    assert verdict["seat_memory"] == record["seat_memory"]
+    assert verdict["seat_memory"]["peak_bytes"] == 1200
+    assert verdict["seat_memory"]["state"] == "final"
+    assert verdict["seat_memory_notice"] == "seat_memory_max_reached"
 
 
 def test_a_change_after_verification_cannot_reach_a_qualification_record(fixture_cli, tmp_path, monkeypatch):

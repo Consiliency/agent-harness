@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- Local review seats report cgroup memory peaks, event counts, and pressure stall
+  time in private leg records and streamed verdicts. A once-per-attempt notice
+  flags local cap hits with sustained full memory stall or attributable OOM
+  events (agent-harness#2186).
+
 ### Fixed
 
 - The `publish-pypi` tag and dispatch build job now allows 210 minutes instead of 140.

@@ -1610,3 +1610,260 @@ def test_systemctl_connects_from_clean_environment(monkeypatch, runtime, returnc
     assert kwargs["env"] == {**before, "XDG_RUNTIME_DIR": expected,
                              "DBUS_SESSION_BUS_ADDRESS": f"unix:path={expected}/bus"}
     assert kwargs["timeout"] == 15.0
+
+
+def _memory_readings(parent, *, current=0, peak=0, high=4, maximum=10, local=5,
+                     oom=1, oom_kill=2, some=200, full=100):
+    (parent / "memory.current").write_text(f"{current}\n")
+    (parent / "memory.peak").write_text(f"{peak}\n")
+    (parent / "memory.events").write_text(
+        f"low 0\nhigh {high}\nmax {maximum}\noom {oom}\noom_kill {oom_kill}\n")
+    (parent / "memory.events.local").write_text(f"max {local}\n")
+    (parent / "memory.pressure").write_text(
+        f"some avg10=0.02 avg60=0.00 avg300=0.00 total={some}\n"
+        f"full avg10=0.01 avg60=0.00 avg300=0.00 total={full}\n")
+
+
+@pytest.fixture
+def memory_host(monkeypatch, tmp_path, isolated):
+    root, _proc, configured, stopped = _install_fake_cap_host(monkeypatch, tmp_path, isolated)
+    systemctl = caps._systemctl
+
+    def prepare(*args, **kwargs):
+        systemctl(*args, **kwargs)
+        if args[0] == "set-property":
+            parent = caps._seat_slice_chain(args[2])[-1]
+            cap_file = parent / "memory.max"
+            cap_file.write_text(cap_file.read_text() + "\n")
+            (parent / "cgroup.events").write_text("populated 0\nfrozen 0\n")
+            _memory_readings(parent)
+
+    monkeypatch.setattr(caps, "_systemctl", prepare)
+
+    def launch(leg, script="pass", **kwargs):
+        kwargs.pop("cwd", None)
+        return caps.capped_popen([sys.executable, "-c", script], seat_key=leg, **kwargs)
+
+    def scope(process):
+        return root / caps._proc_cgroup_of(process.pid).lstrip("/")
+
+    def drain(process):
+        (scope(process) / "cgroup.events").write_text("populated 0\nfrozen 0\n")
+
+    return SimpleNamespace(root=root, launch=launch, scope=scope, drain=drain,
+                           configured=configured, stopped=stopped)
+
+
+@pytest.mark.parametrize(("expected_state", "proof_state"), [
+    ("final", "empty"), ("final", "removed"), ("partial", "populated"), ("partial", "missing"),
+])
+def test_seat_memory_terminal_read_requires_every_witness(
+    memory_host, monkeypatch, caplog, expected_state, proof_state,
+):
+    import errno
+    from phase_loop_runtime import provider_tree_proof as proof
+
+    with caps._seat_memory_attempt() as attempt:
+        first = memory_host.launch("fixture", "import time; time.sleep(.15)")
+        second = memory_host.launch("fixture")
+        parent = memory_host.scope(first).parent
+        assert memory_host.scope(second).parent == parent
+        first.wait(timeout=5)
+        second.wait(timeout=5)
+        memory_host.drain(first)
+        if proof_state == "empty":
+            memory_host.drain(second)
+        elif proof_state == "removed":
+            def removed(_fd):
+                raise OSError(errno.ENODEV, "removed")
+            # Use the real TreeProof transition for the removal witness.
+            second_proof = proof.proof_of(second)
+            pread = os.pread
+
+            def pread_scope(fd, amount, offset):
+                if os.path.samestat(os.fstat(fd), (memory_host.scope(second) / "cgroup.events").stat()):
+                    return removed(fd)
+                return pread(fd, amount, offset)
+            monkeypatch.setattr(os, "pread", pread_scope)
+        elif proof_state == "missing":
+            monkeypatch.delattr(second, "_phase_loop_proof")
+        _memory_readings(parent, current=120, peak=888, high=6, maximum=20, local=9,
+                         some=3_000_000, full=1_000_101)
+        snapshot, notice = attempt.finish()
+        assert memory_host.stopped == []
+        assert snapshot == {
+            "max_bytes": 4294967296, "peak_bytes": 888, "peak_source": "kernel",
+            "max": 10, "high": 2, "local_max": 4, "oom": 0, "oom_kill": 0,
+            "some_stall_us": 2_999_800, "full_stall_us": 1_000_001, "state": expected_state,
+        }
+        if proof_state == "removed":
+            assert second_proof.reason == "enodev"
+        assert notice and caplog.text.count("seat_memory_max_reached") == 1
+
+
+def test_seat_memory_seal_does_not_close_the_parent_to_later_attempts(memory_host):
+    with caps._seat_scope("fixture"):
+        with caps._seat_memory_attempt() as attempt:
+            first = memory_host.launch("fixture")
+            first.wait(timeout=5)
+            memory_host.drain(first)
+            _memory_readings(memory_host.scope(first).parent, current=10, peak=300)
+            assert attempt.finish()[0]["peak_source"] == "kernel"
+            with pytest.raises(seat_jail.SeatSandboxRefused):
+                memory_host.launch("fixture")
+        # Cleanup launches and later recorded attempts can reuse the retained slice.
+        cleanup = memory_host.launch("fixture")
+        cleanup.wait(timeout=5)
+        memory_host.drain(cleanup)
+        with caps._seat_memory_attempt() as later:
+            child = memory_host.launch("fixture")
+            child.wait(timeout=5)
+            memory_host.drain(child)
+            _memory_readings(memory_host.scope(child).parent, current=20, peak=305)
+            snapshot, notice = later.finish()
+        assert snapshot["peak_source"] == "sampled"
+        assert snapshot["peak_bytes"] == 20
+        assert snapshot["state"] == "partial"
+        assert not notice
+        assert len(memory_host.configured) == 1
+
+
+@pytest.mark.parametrize(("local_delta", "full_delta", "oom_delta", "kill_delta", "notice"), [
+    (1, 0, 0, 0, False),
+    (1, 1_000_000, 0, 0, False),
+    (1, 1_000_001, 0, 0, True),
+    (0, 2_000_000, 0, 0, False),
+    (0, 0, 1, 0, True),
+    (0, 0, 0, 1, True),
+])
+def test_seat_memory_notice_threshold_and_terminal_read(
+    memory_host, caplog, local_delta, full_delta, oom_delta, kill_delta, notice,
+):
+    with caps._seat_memory_attempt() as attempt:
+        child = memory_host.launch("fixture")
+        child.wait(timeout=5)
+        memory_host.drain(child)
+        _memory_readings(memory_host.scope(child).parent, current=299, peak=300, maximum=20,
+                         local=5 + local_delta, full=100 + full_delta, oom=1 + oom_delta,
+                         oom_kill=2 + kill_delta)
+        result, emitted = attempt.finish()
+    assert result["max"] == 10
+    assert result["local_max"] == local_delta
+    assert emitted is notice
+    assert caplog.text.count("seat_memory_max_reached") == int(notice)
+
+
+def test_seat_memory_live_sample_fallback_preserves_last_good(memory_host, caplog, monkeypatch):
+    monkeypatch.setattr(caps, "_MEMORY_SAMPLE_S", 0.01)
+    with caps._seat_memory_attempt() as attempt:
+        child = memory_host.launch("fixture")
+        parent = memory_host.scope(child).parent
+        _memory_readings(parent, current=512, peak=0, maximum=17, local=8, full=1_000_101)
+        (parent / "memory.peak").unlink()
+        deadline = time.monotonic() + 3
+        while "seat_memory_max_reached" not in caplog.text and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert caplog.text.count("seat_memory_max_reached") == 1
+        child.wait(timeout=5)
+        memory_host.drain(child)
+        _memory_readings(parent, current=64, peak=0, maximum=15, local=7, full=1_000_001)
+        (parent / "memory.events.local").write_text("max 8\nmax 9\n")
+        (parent / "memory.peak").write_text("18446744073709551616\n")
+        (parent / "memory.pressure").write_text("some PRIVATE_FIXTURE_SENTINEL\n")
+        snapshot, notice = attempt.finish()
+    assert snapshot["state"] == "partial" and notice
+    assert (snapshot["peak_source"], snapshot["peak_bytes"]) == ("sampled", 512)
+    assert snapshot["max"] == 7
+    assert snapshot["local_max"] == 3
+    assert snapshot["full_stall_us"] == 1_000_001
+    assert caplog.text.count("seat_memory_max_reached") == 1
+    assert "PRIVATE_FIXTURE_SENTINEL" not in json.dumps(snapshot) + caplog.text
+
+
+@pytest.mark.parametrize("damage", ["foreign_scope", "preexisting", "symlink", "unreadable"])
+def test_seat_memory_unattributed_or_unavailable_does_not_break_launch(
+    memory_host, caplog, monkeypatch, damage, tmp_path,
+):
+    configure = caps._systemctl
+
+    def setup(*args, **kwargs):
+        configure(*args, **kwargs)
+        if args[0] == "start" and damage == "unreadable":
+            parent = caps._seat_slice_chain(args[1])[-1]
+            for name in ("memory.events", "memory.events.local", "memory.pressure",
+                         "memory.peak", "memory.current"):
+                (parent / name).unlink()
+
+    monkeypatch.setattr(caps, "_systemctl", setup)
+    if damage == "preexisting":
+        nonce = "a" * 32
+        monkeypatch.setattr(caps.uuid, "uuid4", lambda: SimpleNamespace(hex=nonce))
+        unit = f"phase-loop-seat-{caps._unit_key('fixture')}{nonce}.slice"
+        caps._seat_slice_chain(unit)[-1].mkdir(parents=True)
+    if damage == "symlink":
+        real_root = memory_host.root.rename(tmp_path / "cgroup-moved")
+        memory_host.root.symlink_to(real_root, target_is_directory=True)
+    with caps._seat_memory_attempt() as attempt:
+        child = memory_host.launch("fixture")
+        assert child.wait(timeout=5) == 0
+        memory_host.drain(child)
+        parent = memory_host.scope(child).parent
+        if damage != "unreadable":
+            _memory_readings(parent, current=321, peak=654, oom=8)
+        if damage == "foreign_scope":
+            (parent / "foreign.scope").mkdir()
+        if damage == "unreadable":
+            # A symlink in place of an optional metric never lends its target to the observer.
+            unrelated = parent / "memory.max"
+            (parent / "memory.current").symlink_to(unrelated)
+        snapshot, notice = attempt.finish()
+    assert not notice and "seat_memory_max_reached" not in caplog.text
+    if damage in {"foreign_scope", "preexisting"}:
+        assert snapshot["state"] == "partial"
+        assert (snapshot["peak_source"], snapshot["peak_bytes"]) == ("sampled", 321)
+    else:
+        assert snapshot["state"] == "unavailable"
+        assert snapshot["peak_bytes"] is None
+
+
+def test_seat_memory_terminal_read_does_not_wait_for_a_blocked_sampler(
+    memory_host, monkeypatch, caplog,
+):
+    from threading import Event
+
+    sampled = Event()
+    terminal_started = Event()
+    terminal_allowed = Event()
+    real_sample = caps._SeatMemoryObserver.sample
+    monkeypatch.setattr(caps, "_MEMORY_SAMPLE_S", 0.01)
+
+    def controlled_sample(observer, children, *, drained=False):
+        if drained:
+            terminal_started.set()
+            terminal_allowed.wait(timeout=5)
+        snapshot = real_sample(observer, children, drained=drained)
+        if not drained and snapshot["peak_bytes"] == 120:
+            sampled.set()
+        return snapshot
+
+    monkeypatch.setattr(caps._SeatMemoryObserver, "sample", controlled_sample)
+    with caps._seat_memory_attempt() as attempt:
+        child = memory_host.launch("fixture")
+        assert child.wait(timeout=5) == 0
+        memory_host.drain(child)
+        parent = memory_host.scope(child).parent
+        _memory_readings(parent, current=75, peak=120)
+        assert sampled.wait(timeout=3)
+        try:
+            snapshot, notice = attempt.finish()
+            assert terminal_started.is_set()
+            assert attempt.sampler.is_alive()
+            assert snapshot["state"] == "partial"
+            assert snapshot["peak_bytes"] == 120
+            assert not notice
+            _memory_readings(parent, current=125, peak=180, oom=9)
+        finally:
+            terminal_allowed.set()
+            attempt.sampler.join(timeout=3)
+        assert not attempt.sampler.is_alive()
+    assert "seat_memory_max_reached" not in caplog.text

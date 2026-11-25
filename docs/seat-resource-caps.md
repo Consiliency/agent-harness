@@ -1,7 +1,7 @@
 # Per-seat resource caps
 
 Local review seats fail closed unless the runtime can put every provider process and SDK
-worker for one `seat_key` below one capped cgroup parent. Each process uses a distinct child
+worker for a seat attempt below one capped cgroup parent. Each process uses a distinct child
 scope, so the record limits their combined use. A failed setup or readback reports
 `seat_resource_caps_unavailable`; the seat does not run and has no uncapped fallback.
 
@@ -48,6 +48,33 @@ refuses because no block device can carry `io.max`. The runtime recognizes a des
 the staging lifecycle does not yet remove launch-created content before parent collection.
 An operator `io_paths` entry is never eligible for a carve-out. Until the cleanup wiring lands,
 every automatic tmpfs path fails closed with `seat_resource_caps_unavailable`.
+
+## Memory telemetry
+
+The runtime baselines the capped parent before starting a local child, samples once
+per second, and samples again at leg finalization. The private `leg_exec.v1` record and
+each streamed verdict include an optional `seat_memory` object. It reports the
+parent's effective cap and peak in bytes, deltas for the hierarchical `max`, `high`,
+`oom`, and `oom_kill` counters, the parent's `local_max` delta, and cumulative
+`some_stall_us` and `full_stall_us` deltas from Linux memory pressure totals.
+
+`peak_source` is `kernel` for a fresh, empty, exclusively attributable parent with
+a zero peak at baseline and a continuous cgroup identity. New observed parents
+have an attempt-specific unit suffix because a seat key can recur across runtime
+processes. An existing parent or inaccessible kernel peak falls back to the
+largest observed `memory.current` (`sampled`, a lower bound). Missing values are null.
+The state is `final` when every launched scope has a positive drain witness and the
+terminal sample is complete and attributable. `partial` retains usable readings
+when any part of the observation is incomplete or attribution is uncertain.
+`unavailable` means there were no usable measurements. Unlaunched and nonlocal
+legs omit the object.
+
+The runtime emits `seat_memory_max_reached` at most once during an attempt and
+includes it in the streamed verdict as `seat_memory_notice`. The condition is
+a positive parent-local `max` delta with more than 1,000,000 microseconds of full
+memory stall, or any attributable `oom` or `oom_kill` delta. A hierarchical `max`
+delta alone remains a metric. The telemetry does not change the launch decision
+or its cleanup outcome.
 
 ## Host prerequisite
 

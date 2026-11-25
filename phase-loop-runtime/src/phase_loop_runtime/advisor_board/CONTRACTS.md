@@ -2303,6 +2303,22 @@ refusals (a stream, verdict, leak or token refusal) is `leg_execution_refused`, 
 that still ends accepted, a nonzero or unobserved exit, a cancellation, and a clean exit
 that fails ordinary review classification without such a refusal (as on the jailed Claude
 and Codex routes).
+For a launched, locally capped leg, the optional closed `seat_memory` object
+(agent-harness#2186) carries `max_bytes` and `peak_bytes`, hierarchical counter
+deltas `max`, `high`, `oom`, `oom_kill`, the parent's `local_max` delta, and
+`some_stall_us` and `full_stall_us` deltas from the memory pressure `total` counters.
+Each number is a nonnegative integer or null. `peak_source` is `kernel`, `sampled`,
+or null. `state` is `final`, `partial`, or `unavailable`. Older records and legs
+without a capped launch may omit the entire object. A final snapshot requires
+positive cgroup drain proof for every launched child scope. The seal applies to
+the retained leg attempt, so cleanup and later attempts can still launch in the
+same live seat scope. A later attempt takes its own baseline and ordinarily uses
+a sampled peak when it reuses the parent. Streamed verdicts carry the same
+snapshot, including after an error, cancellation, or monitor replacement.
+A positive, attributable `oom` or `oom_kill` delta, or a positive parent-local
+`max` delta together with more than 1,000,000 microseconds of full stall,
+emits `seat_memory_max_reached` once per attempt. The verdict includes that
+literal as `seat_memory_notice` when emitted.
 Two closed fields say where a leg stopped (agent-harness#1823): `stage`, the last
 checkpoint reached (`subject`, `prepare`, `admission`, `credential`, `jail_build`,
 `launch`, `stream`, `cleanup`, `broker`, `unlaunched`, or null), and `refusal`, the
