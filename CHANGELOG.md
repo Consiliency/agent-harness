@@ -16,6 +16,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   was cancelled at 140 with the suite 88% done, before anything was published
   (agent-harness#2191).
 
+### Added
+
+- Local review seats report cgroup memory peaks, event counts, and pressure stall
+  time in private leg records and streamed verdicts. A once-per-attempt notice
+  flags local cap hits with sustained full memory stall or attributable OOM
+  events (agent-harness#2186).
+
 ## [0.7.45] - 2026-11-25
 
 ### Fixed

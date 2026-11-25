@@ -238,3 +238,32 @@ def test_projection_object_and_host_identity_are_closed(monkeypatch):
             allowlist_digest=None,
             projection=object(),
         )
+
+
+def test_caps_only_configuration_preserves_the_review_qualification_identities(monkeypatch):
+    from dataclasses import replace
+
+    from phase_loop_runtime import agy_qualification, seat_jail, seat_resource_caps, seat_profiles
+
+    def identities():
+        keys = tuple(
+            seat_qualification_key.key_for_launch(
+                seat_profiles.profile_for(vendor), variant=variant,
+                allowlist_digest="fixture", projection=None,
+            )
+            for vendor, variant in (
+                ("claude", "tui"), ("claude", "sdk"), ("gemini", None),
+                ("codex", None), ("grok", None),
+            )
+        )
+        jail_digests = tuple(seat_jail.jail_profile_digest(vendor)
+                             for vendor in ("claude", "gemini", "codex", "grok"))
+        return keys, jail_digests, seat_jail.falsifier_layout_identity(), agy_qualification.seat_qci()
+
+    baseline_caps = seat_resource_caps.DEFAULT_CAPS
+    original = identities()
+    changed_caps = replace(baseline_caps, memory_max_bytes=2 * 1024**3)
+    monkeypatch.setattr(seat_resource_caps, "DEFAULT_CAPS", changed_caps)
+    monkeypatch.setattr(seat_resource_caps, "load_caps", lambda: changed_caps)
+    assert seat_resource_caps.caps_sha256(baseline_caps) != seat_resource_caps.caps_sha256(changed_caps)
+    assert identities() == original

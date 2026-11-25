@@ -17898,19 +17898,31 @@ def leg_exec_record(leg, rc, argv, *, auth_state="unavailable", model_turn=None,
 
 def _retain_panel_leg(result):
     """Retain returns that never reached a process adapter, without inventing an exit."""
-    if getattr(result, "_leg_exec_metadata", None) is not None:
+    metadata = getattr(result, "_leg_exec_metadata", None) or {}
+    seat_memory = getattr(result, "_seat_memory_metadata", metadata)
+    if seat_memory.get("seat_memory_notice") == _seat_jail.SEAT_MEMORY_NOTICE:
+        attach_seat_notices(result, (*getattr(result, "_seat_notice_codes", ()),
+                                     _seat_jail.SEAT_MEMORY_NOTICE))
+    if "record_digest" in metadata:
         return result
     from .president_adapter import write_private_record
     record = leg_exec_record(result.leg, None, [], scan_secrets=None)
     record["outcome"] = "leg_execution_unobserved"
+    if "seat_memory" in seat_memory:
+        record["seat_memory"] = seat_memory["seat_memory"]
     try:
         path = write_private_record("leg-" + record["attempt_id"] + ".json", record)
         record_digest = sha256(path.read_bytes()).hexdigest()
     except (OSError, ValueError):
-        return replace(result, status="DEGRADED", text="", detail="leg_exec_record_unavailable")
+        result = replace(result, status="DEGRADED", text="", detail="leg_exec_record_unavailable")
+        if seat_memory:
+            object.__setattr__(result, "_seat_memory_metadata", seat_memory)
+            if seat_memory.get("seat_memory_notice") == _seat_jail.SEAT_MEMORY_NOTICE:
+                attach_seat_notices(result, (_seat_jail.SEAT_MEMORY_NOTICE,))
+        return result
     object.__setattr__(result, "_leg_exec_metadata", {
         "record_digest": record_digest, "outcome": record["outcome"],
-        "attempt_id": record["attempt_id"],
+        "attempt_id": record["attempt_id"], **seat_memory,
     })
     return result
 
@@ -17940,71 +17952,87 @@ def _retained_leg_exec(function):
     @wraps(function)
     def retained(leg, *args, **kwargs):
         from .president_adapter import write_private_record
+        from .seat_resource_caps import _seat_memory_attempt, SEAT_MEMORY_NOTICE
         # Nested launch helpers contribute to the parent's single leg record.
         if _EXEC_OBSERVATION.get() is not None:
             return function(leg, *args, **kwargs)
         observation = {"argv": [], "returncode": None, "model_turn": None, "verdict": None,
-                       "vendor": leg, "auth_state": "unavailable", "auth_probed": False}
-        token = _EXEC_OBSERVATION.set(observation)
-        result = None
-        try:
-            result = function(leg, *args, **kwargs)
-        finally:
-            _EXEC_OBSERVATION.reset(token)
-            rc = observation["returncode"]
-            if (type(rc) is int and rc != 0 and observation["model_turn"] is False
-                    and observation["verdict"] is False and not observation["auth_probed"]):
-                # The host probe runs with the caller's host env: the env a leg recorded may
-                # be its jail's, whose paths exist only inside the jail.
-                try:
-                    host_env = signature.bind_partial(leg, *args, **kwargs).arguments.get("env")
-                except TypeError:
-                    host_env = None
-                observation["auth_state"] = _parent_auth_state(leg, host_env)
-            # A refusal counts only when the leg did not end accepted after all.
-            accepted = result is not None and (
-                result[0] == "OK" or (type(result[0]) is int and result[0] == 0))
-            record = leg_exec_record(leg, rc, observation["argv"], auth_state=observation["auth_state"],
-                model_turn=observation["model_turn"], verdict=observation["verdict"],
-                scan_secrets=observation.get("scan_secrets"), stage=observation.get("stage"),
-                refusal=observation.get("refusal"), secret_match=observation.get("secret_match"),
-                launched=_exec_launched(observation),
-                output_refused=observation.get("output_refused") is True and not accepted,
-                stream_rejection=observation.get("stream_rejection"))
-            codex_run = observation.get("codex_run")
-            if codex_run is not None:
-                record.update(codex_run)
-            if result is not None and type(result[0]) is int and result[0] != 0:
-                detail = result[2] if len(result) > 2 else None
-                if type(detail) is not _HarnessCode and record["outcome"].startswith("leg_auth_"):
-                    result = (result[0], result[1], _HarnessCode(record["outcome"]))
-            elif result is not None and result[0] in {"DEGRADED", "ERROR", "EMPTY"}:
-                detail = result[2] if len(result) > 2 else None
-                if ((record["outcome"].startswith("leg_auth_") and not _typed_leg_failure(detail))
-                    or isinstance(detail, _LegFailure) and detail.template == "auth_failure"):
-                    result = _BrokeredSpawnResult(result[0], result[1], _HarnessCode(record["outcome"]),
-                        evidence=getattr(result, "harden_isolation_evidence", None),
-                        seat_notices=getattr(result, "seat_notices", ()),
-                        placement=getattr(result, "sandbox_placement_evidence", None))
+                       "vendor": leg, "auth_state": "unavailable", "auth_probed": False,
+                       "seat_memory": None}
+        with _seat_memory_attempt() as memory_attempt:
+            token = _EXEC_OBSERVATION.set(observation)
+            result = None
             try:
-                path = write_private_record("leg-" + record["attempt_id"] + ".json", record)
-                metadata = {"record_digest": sha256(path.read_bytes()).hexdigest(),
-                    "outcome": record["outcome"], "attempt_id": record["attempt_id"]}
+                result = function(leg, *args, **kwargs)
+            finally:
+                _EXEC_OBSERVATION.reset(token)
+                leg_error = sys.exception()
+                seat_memory, seat_memory_notice = memory_attempt.finish()
+                observation["seat_memory"] = seat_memory
+                rc = observation["returncode"]
+                if (type(rc) is int and rc != 0 and observation["model_turn"] is False
+                        and observation["verdict"] is False and not observation["auth_probed"]):
+                    # The host probe runs with the caller's host env: the env a leg recorded may
+                    # be its jail's, whose paths exist only inside the jail.
+                    try:
+                        host_env = signature.bind_partial(leg, *args, **kwargs).arguments.get("env")
+                    except TypeError:
+                        host_env = None
+                    observation["auth_state"] = _parent_auth_state(leg, host_env)
+                # A refusal counts only when the leg did not end accepted after all.
+                accepted = result is not None and (
+                    result[0] == "OK" or (type(result[0]) is int and result[0] == 0))
+                record = leg_exec_record(leg, rc, observation["argv"], auth_state=observation["auth_state"],
+                    model_turn=observation["model_turn"], verdict=observation["verdict"],
+                    scan_secrets=observation.get("scan_secrets"), stage=observation.get("stage"),
+                    refusal=observation.get("refusal"), secret_match=observation.get("secret_match"),
+                    launched=_exec_launched(observation),
+                    output_refused=observation.get("output_refused") is True and not accepted,
+                    stream_rejection=observation.get("stream_rejection"))
+                codex_run = observation.get("codex_run")
                 if codex_run is not None:
-                    metadata["codex_run"] = codex_run
-                if result is None and sys.exception() is not None:
-                    setattr(sys.exception(), "_leg_exec_metadata", metadata)
-                if result is not None and type(result[0]) is str:
-                    if not isinstance(result, _BrokeredSpawnResult):
-                        result = _BrokeredSpawnResult(*result)
-                    result.leg_exec_metadata = metadata
-            except (OSError, ValueError):
-                if result is not None:
-                    if type(result[0]) is int:
-                        result = (1, "", _HarnessCode("leg_exec_record_unavailable"))
-                    else:
-                        result = _BrokeredSpawnResult("DEGRADED", "", "leg_exec_record_unavailable")
-        return result
+                    record.update(codex_run)
+                memory_metadata = {}
+                if observation["seat_memory"] is not None:
+                    record["seat_memory"] = memory_metadata["seat_memory"] = observation["seat_memory"]
+                    if seat_memory_notice:
+                        memory_metadata["seat_memory_notice"] = SEAT_MEMORY_NOTICE
+                if result is not None and type(result[0]) is int and result[0] != 0:
+                    detail = result[2] if len(result) > 2 else None
+                    if type(detail) is not _HarnessCode and record["outcome"].startswith("leg_auth_"):
+                        result = (result[0], result[1], _HarnessCode(record["outcome"]))
+                elif result is not None and result[0] in {"DEGRADED", "ERROR", "EMPTY"}:
+                    detail = result[2] if len(result) > 2 else None
+                    if ((record["outcome"].startswith("leg_auth_") and not _typed_leg_failure(detail))
+                        or isinstance(detail, _LegFailure) and detail.template == "auth_failure"):
+                        result = _BrokeredSpawnResult(result[0], result[1], _HarnessCode(record["outcome"]),
+                            evidence=getattr(result, "harden_isolation_evidence", None),
+                            seat_notices=getattr(result, "seat_notices", ()),
+                            placement=getattr(result, "sandbox_placement_evidence", None))
+                try:
+                    path = write_private_record("leg-" + record["attempt_id"] + ".json", record)
+                    metadata = {"record_digest": sha256(path.read_bytes()).hexdigest(),
+                        "outcome": record["outcome"], "attempt_id": record["attempt_id"],
+                        **memory_metadata}
+                    if codex_run is not None:
+                        metadata["codex_run"] = codex_run
+                    if result is None and leg_error is not None:
+                        setattr(leg_error, "_leg_exec_metadata", metadata)
+                    if result is not None and type(result[0]) is str:
+                        if not isinstance(result, _BrokeredSpawnResult):
+                            result = _BrokeredSpawnResult(*result)
+                        result.leg_exec_metadata = metadata
+                except (OSError, ValueError):
+                    if result is not None:
+                        if type(result[0]) is int:
+                            result = (1, "", _HarnessCode("leg_exec_record_unavailable"))
+                        else:
+                            result = _BrokeredSpawnResult("DEGRADED", "", "leg_exec_record_unavailable")
+                            if memory_metadata:
+                                result.leg_exec_metadata = memory_metadata
+                    elif memory_metadata and leg_error is not None:
+                        setattr(leg_error, "_leg_exec_metadata", memory_metadata)
+            return result
     return retained
 
 
@@ -20793,6 +20821,9 @@ def _default_spawn_via_provider(
                 else exc
             )
             raise
+        except Exception as exc:
+            _exec_metadata[0] = getattr(exc, "_leg_exec_metadata", None)
+            raise
         finally:
             if seat_token is not None:
                 _SEAT_SESSION_SEAT.reset(seat_token)
@@ -20880,8 +20911,11 @@ def _write_incremental_verdict(
             "text": result.text,
             "detail": result.detail,
         }
+        exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
+        memory_metadata = getattr(result, "_seat_memory_metadata", exec_metadata)
+        payload.update({key: memory_metadata[key] for key in ("seat_memory", "seat_memory_notice")
+                        if key in memory_metadata})
         if result.leg == "codex":
-            exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
             run_fields = getattr(result, "_codex_run", None) or exec_metadata.get("codex_run", {})
         else:
             evidence = result.harden_isolation_evidence or {}
@@ -22655,6 +22689,7 @@ def invoke_board(
                                      invocation_id, index, operation_cancel)
             broker_evidence = None
             codex_run = None
+            seat_memory = {}
             body_notices: tuple[str, ...] = ()
             placement_evidence = None
             try:
@@ -22666,6 +22701,8 @@ def invoke_board(
                 broker_evidence = result.harden_isolation_evidence
                 exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
                 codex_run = exec_metadata.get("codex_run")
+                seat_memory = {key: exec_metadata[key] for key in ("seat_memory", "seat_memory_notice")
+                               if key in exec_metadata}
                 body_notices = getattr(result, "_seat_notice_codes", ())
                 placement_evidence = result.sandbox_placement_evidence
                 if monitor.write_failed:
@@ -22675,7 +22712,10 @@ def invoke_board(
                 monitor.observe(terminal="monitoring_write_failed" if monitor.write_failed else
                                 "user_cancel" if operation_cancel.is_set() else
                                 "completed" if result.status == "OK" else "process_exit_or_failure")
-            except OSError:
+            except OSError as exc:
+                error_metadata = getattr(exc, "_leg_exec_metadata", None) or {}
+                seat_memory.update({key: error_metadata[key] for key in ("seat_memory", "seat_memory_notice")
+                                    if key in error_metadata})
                 result = _skip(seat, seat.harness, "review_monitoring_write_failed")
                 monitor.record["terminal_reason"] = "monitoring_write_failed"
             except BaseException:
@@ -22689,6 +22729,8 @@ def invoke_board(
             if codex_run is not None:
                 # A replacement keeps diagnostics but gets its own retention decision.
                 object.__setattr__(result, "_codex_run", codex_run)
+            if seat_memory:
+                object.__setattr__(result, "_seat_memory_metadata", seat_memory)
             if not getattr(result, "_seat_notice_codes", ()) and body_notices:
                 attach_seat_notices(result, body_notices)
             if placement_evidence is not None:
