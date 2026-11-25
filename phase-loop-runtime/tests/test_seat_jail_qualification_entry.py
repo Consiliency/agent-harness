@@ -70,8 +70,18 @@ def test_codex_qualification_records_a_v2_pass(tmp_path, monkeypatch, codex_prof
     assert seat_jail.pass_record_verdict(key) == (True, "pass")
 
 
-@pytest.mark.parametrize("launch_error", [False, True])
-def test_codex_probe_closes_its_managed_dependency(tmp_path, monkeypatch, codex_profile, launch_error):
+@pytest.mark.parametrize(("leg", "outcome"), [
+    ("codex", "pass"),
+    ("codex", "launch_error"),
+    ("claude", "pass"),
+    ("claude", "launch_error"),
+    ("claude", "projection_changed"),
+    ("gemini", "pass"),
+    ("gemini", "projection_changed"),
+])
+def test_probe_uses_and_closes_its_managed_dependency(
+    tmp_path, monkeypatch, codex_profile, leg, outcome,
+):
     import contextlib
     import os
     import subprocess
@@ -82,35 +92,46 @@ def test_codex_probe_closes_its_managed_dependency(tmp_path, monkeypatch, codex_
 
     closed = []
     dependency = SimpleNamespace(
-        _jailcore_owned=True, subject_source="/fixture/codex",
+        _jailcore_owned=True, subject_source=f"/fixture/{leg}", projection_digest="a" * 64,
         subject_destination=CODEX_RUNTIME_DESTINATIONS[0],
         entries=tuple(SimpleNamespace(kind="file", destination=path) for path in CODEX_RUNTIME_DESTINATIONS),
         close=lambda: closed.append(True))
-    subject = SeatSubject("codex", "managed_release", None, None, None)
+    subject = SeatSubject(leg, "managed_release", None, None, None)
+    key = None if leg == "codex" else SimpleNamespace(
+        projection_digest="b" * 64 if outcome == "projection_changed" else dependency.projection_digest)
     monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (subject, dependency))
     monkeypatch.setattr(qualification.seat_uid, "subordinate_range", lambda _: SimpleNamespace(count=65536))
     monkeypatch.setattr(qualification.seat_uid, "lease_seat_id", lambda _: contextlib.nullcontext(7))
     monkeypatch.setattr(qualification.sandbox_egress, "isolated_network", lambda **k: contextlib.nullcontext(("fixture",)))
     monkeypatch.setattr(qualification.seat_uid, "holder_pid_from_prefix", lambda _: 42)
-    def build(leg, directory, provider, **kwargs):
-        assert leg == "codex" and provider == Path(dependency.subject_source)
+    def build(probe_leg, directory, provider, **kwargs):
+        assert outcome != "projection_changed"
+        assert probe_leg == leg and provider == Path(dependency.subject_source)
         assert kwargs["dependency"] is dependency
-        return SimpleNamespace(pass_fds=(kwargs["bundle_memfd"], kwargs["instructions_memfd"]))
+        pass_fds = [kwargs["bundle_memfd"], kwargs["instructions_memfd"]]
+        if kwargs["token_fd"] is not None:
+            pass_fds.append(kwargs["token_fd"])
+        return SimpleNamespace(pass_fds=pass_fds)
     monkeypatch.setattr(seat_jail, "build_seat_jail", build)
     monkeypatch.setattr(seat_jail, "close_jail_fds", lambda jail: [os.close(fd) for fd in jail.pass_fds])
     monkeypatch.setattr(qualification.seat_uid, "teardown_in_h", lambda *a: ())
     monkeypatch.setattr(pi, "_require_canonical_jail", lambda _: None)
     monkeypatch.setattr(pi, "_compose_seat_jail_prefix", lambda _: ())
     def run(*a, **kwargs):
-        if launch_error:
+        if outcome == "launch_error":
             raise OSError("fixture launch unavailable")
         return subprocess.CompletedProcess(a[0], 0, "{}\n", "")
     monkeypatch.setattr(qualification.subprocess, "run", run)
-    if launch_error:
+    def probe():
+        return qualification._run_probe_in_jail(leg, tmp_path, {}, None, None, key)
+    if outcome == "projection_changed":
+        with pytest.raises(qualification.QualificationError, match="does not match the route key"):
+            probe()
+    elif outcome == "launch_error":
         with pytest.raises(OSError, match="fixture launch unavailable"):
-            qualification._run_probe_in_jail("codex", tmp_path, {}, None, None)
+            probe()
     else:
-        assert qualification._run_probe_in_jail("codex", tmp_path, {}, None, None) == {}
+        assert probe() == {}
     assert closed == [True]
 
 
@@ -1218,6 +1239,80 @@ def _patched_sentinel_run(tmp_path, monkeypatch):
     monkeypatch.setattr(qualification.review_stage, "_run_bounded_falsifier_node", sentinel)
     monkeypatch.setattr(falsifier, "_outcome_from_report", lambda *a: "green_on_head")
     monkeypatch.setattr(qualification, "_find_host_pid", lambda *a: 42)
+
+
+@pytest.mark.parametrize(("leg", "variant", "managed"), [
+    ("claude", "tui", False),
+    ("claude", "print", True),
+    ("gemini", None, True),
+    ("codex", None, True),
+])
+def test_explicit_qualification_passes_the_production_route(
+    tmp_path, monkeypatch, capsys, codex_profile, leg, variant, managed,
+):
+    import datetime as dt
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from test_seat_route import Capacity, Native, Remote, policy, request
+
+    from phase_loop_runtime import cli, claude_seat_transport, seat_egress_proxy
+    from phase_loop_runtime import seat_jail, seat_jail_autoqualify, seat_profiles, seat_route
+    from phase_loop_runtime.seat_route_contract import NamedException, key_digest
+
+    _patched_sentinel_run(tmp_path, monkeypatch)
+    profile = replace(seat_profiles.profile_for(leg), credential_present=lambda: True,
+                      preconditions=())
+    monkeypatch.setitem(seat_profiles._REGISTRY, leg, profile)
+    if variant == "tui":
+        monkeypatch.delenv(claude_seat_transport.ROUTE_ENV, raising=False)
+    elif variant is not None:
+        monkeypatch.setenv(claude_seat_transport.ROUTE_ENV, variant)
+        monkeypatch.setattr(claude_seat_transport, "is_admitted", lambda _: True)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
+    monkeypatch.setattr(qualification.sandbox_egress, "egress_required", lambda: True)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
+    projection = SimpleNamespace(projection_digest="b" * 64) if managed else None
+    monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_: projection)
+    probes = []
+    monkeypatch.setattr(qualification, "_run_probe_in_jail",
+                        lambda *args: probes.append(args) or {})
+    expiry = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)
+    route_policy = policy(exceptions={
+        "claude": NamedException("claude", "open egress", expiry, "fixture"),
+    })
+
+    def check_pass(leg, *, qualification_key):
+        passed, _ = seat_jail.pass_record_verdict(qualification_key)
+        return seat_jail_autoqualify.Outcome(
+            seat_jail_autoqualify.QUALIFIED if passed else seat_jail_autoqualify.FAILED)
+
+    # Through L8 with autoqualification disabled so first use cannot supply the pass.
+    monkeypatch.setattr(seat_jail_autoqualify, "ensure_qualified", check_pass)
+
+    def resolve():
+        return seat_route.resolve(request(leg, env=os.environ), policy=route_policy,
+                                  remote=Remote(), native=Native(), capacity=Capacity())
+
+    current_key = resolve().qualification_key
+    assert current_key.variant == variant
+    assert current_key.projection_digest == getattr(projection, "projection_digest", None)
+    assert seat_jail.pass_record_verdict(current_key) == (False, "no_record")
+    assert cli.main(["seat-sandbox", "qualify", "--leg", leg]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["result"] == "pass"
+    path = Path(receipt["recorded_pass"])
+    assert seat_jail.pass_record_verdict(current_key) == (True, "pass"), (
+        f"CLI reported pass at {path.name} "
+        f"(legacy profile name: {path.name == current_key.profile_digest + '.json'})"
+    )
+    assert path.name == f"{key_digest(current_key)}.json"
+    assert receipt["key_digest"] == key_digest(current_key)
+    assert len(probes) == 1
+    if leg != "codex":
+        assert probes[0][-1] == current_key
+    assert resolve().mode == "jailed"
 
 
 def test_grok_qualification_records_a_v2_pass_on_the_route_key(tmp_path, monkeypatch):

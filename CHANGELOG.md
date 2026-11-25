@@ -8,6 +8,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- `phase-loop seat-sandbox qualify` records Claude and Gemini passes for the same
+  qualification keys their jailed routes check (agent-harness#2181).
+
 - Jailed Gemini seats use a credential-free loopback proxy URL. The host front keeps
   per-launch proxy authentication on its private hop to SRT (agent-harness#2157).
   After release, run integrated W1 under the owner account on the owner's primary board host,

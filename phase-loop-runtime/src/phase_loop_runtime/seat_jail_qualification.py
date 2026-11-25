@@ -254,12 +254,37 @@ def _find_host_pid(marker: str, deadline: float) -> int:
     raise QualificationError("sentinel process not found")
 
 
+def _explicit_route_key(profile):
+    from .executable_dependency import ExecutableDependencyError
+    from .seat_qualification_key import key_for_launch
+    from .seat_route import _allowlist_digest_for_launch, _projection_for_launch
+
+    env = os.environ
+    variant = None
+    if profile.variant is not None:
+        variant, code = profile.variant(env)
+        if code is not None:
+            raise QualificationError(code)
+    try:
+        allowlist_digest = _allowlist_digest_for_launch(profile)
+        projection = _projection_for_launch(profile, env)
+    except seat_egress_proxy.EgressLayerUnavailable as exc:
+        raise QualificationError(exc.code) from exc
+    except FileNotFoundError as exc:
+        raise QualificationError("seat_provider_unavailable") from exc
+    except ExecutableDependencyError as exc:
+        raise QualificationError(seat_jail.refused("identity")) from exc
+    return key_for_launch(profile, variant=variant, allowlist_digest=allowlist_digest,
+                          projection=projection)
+
+
 def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None = None,
             qualification_key=None, _mutate_jail=None) -> dict[str, object]:
     """Run the EC-EXECFIND-2 jail falsifiers on this host. Returns the evidence; on a pass
     (and ``record``), writes the evidence and pass record to this host's store."""
     from .seat_profiles import profile_for
-    if profile_for(leg) is None:
+    profile = profile_for(leg)
+    if profile is None:
         raise QualificationError(f"no {leg} jail is shipped")
     if not seat_uid.seat_uid_available():
         raise QualificationError(seat_uid.PREREQUISITE)
@@ -284,6 +309,9 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
             allowlist_digest=seat_egress_proxy.allowlist_ref("codex").content_digest,
             projection=_projection_for_launch(profile_for(leg), os.environ),
         )
+    probe_key = None
+    if leg in {"claude", "gemini"} and qualification_key is None and record:
+        probe_key = qualification_key = _explicit_route_key(profile)
     nonce = secrets.token_hex(12)
     base = Path(tempfile.mkdtemp(prefix="pl-jail-qualify-"))
     evidence: dict[str, object] = {
@@ -349,7 +377,7 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
                 "tcp": ready["tcp"], "udp": ready["udp"], "abstract": ready["abstract"],
                 "unix_path": str(staged / "sentinel.sock"),
             }
-            probe = _run_probe_in_jail(leg, base, config, provider, _mutate_jail)
+            probe = _run_probe_in_jail(leg, base, config, provider, _mutate_jail, probe_key)
             evidence["probe"] = probe
             # Release the sentinel and collect the run's own outcome.
             (staged / _RELEASE).write_text("done", encoding="utf-8")
@@ -412,7 +440,8 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
     return evidence
 
 
-def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mutate) -> dict:
+def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mutate,
+                       qualification_key=None) -> dict:
     """The probe, as the seat, in the production jail on the D8 chain."""
     from . import panel_invoker as pi
 
@@ -448,6 +477,19 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
                  "egress_proxy": "http://srt:qualification@127.0.0.1:3128",
                  "dependency": dependency}
     try:
+        if qualification_key is not None:
+            from .executable_dependency import ExecutableDependencyError
+
+            try:
+                subject, dependency = pi._resolved_jail_subject(leg, os.environ)
+            except (FileNotFoundError, ExecutableDependencyError) as exc:
+                raise QualificationError("qualification subject is no longer available") from exc
+            # Admission may have changed since the route key was resolved.
+            if getattr(dependency, "projection_digest", None) != qualification_key.projection_digest:
+                raise QualificationError("qualification probe projection does not match the route key")
+            provider = (Path(dependency.subject_source) if dependency is not None
+                        else subject.subject_path)
+            shape["dependency"] = dependency
         with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
                 sandbox_egress.isolated_network(timeout_s=900, required=True, seat_uid_map=True) as egress:
             token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
