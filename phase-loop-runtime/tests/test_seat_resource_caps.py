@@ -1796,9 +1796,7 @@ def test_seat_memory_unattributed_or_unavailable_does_not_break_launch(
 
     monkeypatch.setattr(caps, "_systemctl", setup)
     if damage == "preexisting":
-        nonce = "a" * 32
-        monkeypatch.setattr(caps.uuid, "uuid4", lambda: SimpleNamespace(hex=nonce))
-        unit = f"phase-loop-seat-{caps._unit_key('fixture')}{nonce}.slice"
+        unit = f"phase-loop-seat-{caps._unit_key('fixture')}.slice"
         caps._seat_slice_chain(unit)[-1].mkdir(parents=True)
     if damage == "symlink":
         real_root = memory_host.root.rename(tmp_path / "cgroup-moved")
@@ -1826,44 +1824,76 @@ def test_seat_memory_unattributed_or_unavailable_does_not_break_launch(
         assert snapshot["peak_bytes"] is None
 
 
-def test_seat_memory_terminal_read_does_not_wait_for_a_blocked_sampler(
-    memory_host, monkeypatch, caplog,
-):
-    from threading import Event
+def test_seat_memory_finish_uses_the_finalizing_thread(memory_host, monkeypatch):
+    from threading import current_thread
 
-    sampled = Event()
-    terminal_started = Event()
-    terminal_allowed = Event()
+    reads = []
     real_sample = caps._SeatMemoryObserver.sample
-    monkeypatch.setattr(caps, "_MEMORY_SAMPLE_S", 0.01)
 
-    def controlled_sample(observer, children, *, drained=False):
+    def sample(observer, children, *, drained=False):
         if drained:
-            terminal_started.set()
-            terminal_allowed.wait(timeout=5)
-        snapshot = real_sample(observer, children, drained=drained)
-        if not drained and snapshot["peak_bytes"] == 120:
-            sampled.set()
-        return snapshot
+            reads.append(current_thread())
+            time.sleep(0.06)
+        return real_sample(observer, children, drained=drained)
 
-    monkeypatch.setattr(caps._SeatMemoryObserver, "sample", controlled_sample)
+    monkeypatch.setattr(caps._SeatMemoryObserver, "sample", sample)
     with caps._seat_memory_attempt() as attempt:
         child = memory_host.launch("fixture")
         assert child.wait(timeout=5) == 0
         memory_host.drain(child)
-        parent = memory_host.scope(child).parent
-        _memory_readings(parent, current=75, peak=120)
-        assert sampled.wait(timeout=3)
+        snapshot, _notice = attempt.finish()
+    assert reads == [current_thread()]
+    assert snapshot["state"] == "final"
+
+
+def test_seat_memory_finish_retains_last_sample_when_sampler_is_blocked(
+    memory_host, monkeypatch, caplog,
+):
+    from threading import Event
+
+    blocked = Event()
+    release = Event()
+    real_sample = caps._SeatMemoryObserver.sample
+    monkeypatch.setattr(caps, "_MEMORY_SAMPLE_S", 0.01)
+    monkeypatch.setattr(caps, "_MEMORY_SAMPLER_JOIN_S", 0.05)
+    reads = 0
+
+    def controlled_sample(observer, children, *, drained=False):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            blocked.set()
+            release.wait(timeout=5)
+        return real_sample(observer, children, drained=drained)
+
+    monkeypatch.setattr(caps._SeatMemoryObserver, "sample", controlled_sample)
+    with caps._seat_memory_attempt() as attempt:
         try:
+            child = memory_host.launch("fixture")
+            assert child.wait(timeout=5) == 0
+            memory_host.drain(child)
+            assert blocked.wait(timeout=3)
             snapshot, notice = attempt.finish()
-            assert terminal_started.is_set()
             assert attempt.sampler.is_alive()
             assert snapshot["state"] == "partial"
-            assert snapshot["peak_bytes"] == 120
+            assert snapshot["peak_bytes"] == 0
             assert not notice
-            _memory_readings(parent, current=125, peak=180, oom=9)
+            _memory_readings(memory_host.scope(child).parent, oom=9)
         finally:
-            terminal_allowed.set()
+            release.set()
             attempt.sampler.join(timeout=3)
         assert not attempt.sampler.is_alive()
     assert "seat_memory_max_reached" not in caplog.text
+
+
+def test_seat_memory_spawn_hook_can_start_another_scoped_child(memory_host):
+    children = []
+    with caps._seat_memory_attempt() as attempt:
+        outer = memory_host.launch(
+            "fixture", before_spawn=lambda: children.append(memory_host.launch("fixture")),
+        )
+        for child in (outer, *children):
+            assert child.wait(timeout=5) == 0
+            memory_host.drain(child)
+        assert len(children) == 1
+        assert attempt.finish()[0]["state"] == "final"

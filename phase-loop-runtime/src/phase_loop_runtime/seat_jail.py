@@ -126,12 +126,16 @@ CLAUDE_TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
 REFUSED_PREFIX = "seat_sandbox_refused:"
 
 REVIEW_BUNDLE_TOO_LARGE = "seat_review_bundle_too_large"
+SEAT_MEMORY_NOTICE = "seat_memory_max_reached"
 
 NOTICES: Mapping[str, tuple[str, str, str]] = {
     REVIEW_BUNDLE_TOO_LARGE: (
         "seat unavailable", "the staged review bundle exceeds the caller's byte limit",
         "supply a short index and use staged tree reads where available, or raise "
         "--max-staged-bundle-bytes"),
+    SEAT_MEMORY_NOTICE: (
+        "seat memory pressure", "the seat hit its memory cap with sustained stall or an OOM event",
+        "inspect the seat memory metrics in the streamed verdict"),
     "seat_resource_caps_unavailable": (
         "seat unavailable", "the host could not prove the required per-seat resource caps",
         "install the delegated-cgroup host prerequisite and check "
@@ -641,14 +645,14 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
 
 # The board-wide bundle check runs before route resolution. Its diagnostic is
 # renderable in board results and cannot enter the seat route's OD-10 vocabulary.
-# NOTICES also includes the launch-time Gemini board notices; NOTICE_CODES supplies
-# the closed OD-10 vocabulary used by route resolver mode lines.
+# NOTICES also includes the launch-time Gemini board notices and seat memory telemetry.
+# NOTICE_CODES supplies the closed OD-10 vocabulary used by route resolver mode lines.
 _GEMINI_PROXY_REFUSALS = frozenset({
     "seat_sandbox_refused:gemini_proxy_token_missing",
     "seat_sandbox_refused:gemini_proxy_url_invalid",
 })
 NOTICE_CODES: frozenset[str] = (
-    frozenset(NOTICES) - {REVIEW_BUNDLE_TOO_LARGE} - _GEMINI_PROXY_REFUSALS
+    frozenset(NOTICES) - {REVIEW_BUNDLE_TOO_LARGE, SEAT_MEMORY_NOTICE} - _GEMINI_PROXY_REFUSALS
 )
 
 #: SEATS CODEX IF-0-CODEX-5: the jailed Codex seat's nine codes, each a row above. The

@@ -17893,12 +17893,15 @@ def leg_exec_record(leg, rc, argv, *, auth_state="unavailable", model_turn=None,
 def _retain_panel_leg(result):
     """Retain returns that never reached a process adapter, without inventing an exit."""
     metadata = getattr(result, "_leg_exec_metadata", None) or {}
+    seat_memory = getattr(result, "_seat_memory_metadata", metadata)
+    if seat_memory.get("seat_memory_notice") == _seat_jail.SEAT_MEMORY_NOTICE:
+        attach_seat_notices(result, (*getattr(result, "_seat_notice_codes", ()),
+                                     _seat_jail.SEAT_MEMORY_NOTICE))
     if "record_digest" in metadata:
         return result
     from .president_adapter import write_private_record
     record = leg_exec_record(result.leg, None, [], scan_secrets=None)
     record["outcome"] = "leg_execution_unobserved"
-    seat_memory = getattr(result, "_seat_memory_metadata", metadata)
     if "seat_memory" in seat_memory:
         record["seat_memory"] = seat_memory["seat_memory"]
     try:
@@ -17908,6 +17911,8 @@ def _retain_panel_leg(result):
         result = replace(result, status="DEGRADED", text="", detail="leg_exec_record_unavailable")
         if seat_memory:
             object.__setattr__(result, "_seat_memory_metadata", seat_memory)
+            if seat_memory.get("seat_memory_notice") == _seat_jail.SEAT_MEMORY_NOTICE:
+                attach_seat_notices(result, (_seat_jail.SEAT_MEMORY_NOTICE,))
         return result
     object.__setattr__(result, "_leg_exec_metadata", {
         "record_digest": record_digest, "outcome": record["outcome"],
@@ -22641,7 +22646,10 @@ def invoke_board(
                 monitor.observe(terminal="monitoring_write_failed" if monitor.write_failed else
                                 "user_cancel" if operation_cancel.is_set() else
                                 "completed" if result.status == "OK" else "process_exit_or_failure")
-            except OSError:
+            except OSError as exc:
+                error_metadata = getattr(exc, "_leg_exec_metadata", None) or {}
+                seat_memory.update({key: error_metadata[key] for key in ("seat_memory", "seat_memory_notice")
+                                    if key in error_metadata})
                 result = _skip(seat, seat.harness, "review_monitoring_write_failed")
                 monitor.record["terminal_reason"] = "monitoring_write_failed"
             except BaseException:

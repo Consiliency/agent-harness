@@ -16,7 +16,6 @@ import stat
 import subprocess
 import threading
 import time
-import uuid
 from typing import TYPE_CHECKING, Literal, Sequence
 
 if TYPE_CHECKING:
@@ -468,6 +467,7 @@ def _unit_key(seat_key: str) -> str:
 _MEMORY_READ_CAP = 4096
 _MEMORY_COUNTER_MAX = (1 << 64) - 1
 _MEMORY_SAMPLE_S = 1.0
+_MEMORY_SAMPLER_JOIN_S = 1.0
 SEAT_MEMORY_NOTICE_FULL_STALL_US = 1_000_000
 SEAT_MEMORY_NOTICE = "seat_memory_max_reached"
 _MEMORY_EVENTS = {"max": "max", "high": "high", "oom": "oom", "oom_kill": "oom_kill"}
@@ -681,6 +681,8 @@ class _SeatMemoryAttempt:
         self.identity = object()
         self.stop = threading.Event()
         self.finished = False
+        self.sampler_done = False
+        self.closing = False
         self.parent = None
         self.seat_key = ""
         self.carved = ()
@@ -713,16 +715,22 @@ class _SeatMemoryAttempt:
             except (OSError, ValueError):
                 pass
 
+    def reserve_scope(self, child_unit: str) -> None:
+        with self.lock:
+            if self.sealed:
+                _refuse("the seat attempt has already ended")
+            self.expected_scopes.add(child_unit)
+
     def started(self, child_unit: str, process: subprocess.Popen[bytes]) -> None:
-        # The caller holds lock from before Popen to here.
-        self.children[child_unit] = process
-        if self.observer is not None and self.sampler is None:
-            sampler = threading.Thread(target=self._sample_live, daemon=True, name="seat-memory")
-            try:
-                sampler.start()
-            except RuntimeError:
-                return  # A terminal read still works.
-            self.sampler = sampler
+        with self.lock:
+            self.children[child_unit] = process
+            if not self.sealed and self.observer is not None and self.sampler is None:
+                sampler = threading.Thread(target=self._sample_live, daemon=True, name="seat-memory")
+                try:
+                    sampler.start()
+                except RuntimeError:
+                    return  # A terminal read still works.
+                self.sampler = sampler
 
     def _sample(self, *, terminal: bool = False) -> None:
         snapshot = self.observer.sample(self.expected_scopes, drained=terminal and self.drained)
@@ -733,33 +741,39 @@ class _SeatMemoryAttempt:
             notice = not already_noticed and self.observer.reached_memory_max(snapshot)
             self.result = (snapshot, already_noticed or notice)
         if notice:
-            logging.getLogger(__name__).warning("%s for seat %s", SEAT_MEMORY_NOTICE, self.seat_key)
+            logging.getLogger(__name__).warning("%s for seat %s", SEAT_MEMORY_NOTICE, _unit_key(self.seat_key))
 
     def _sample_live(self) -> None:
         try:
             while not self.stop.wait(_MEMORY_SAMPLE_S):
                 self._sample()
-            if self.sealed:
-                self._sample(terminal=True)
         finally:
-            os.close(self.observer.directory)
+            with self.lock:
+                self.sampler_done = True
+                if self.closing:
+                    os.close(self.observer.directory)
 
     def finish(self) -> tuple[dict[str, object] | None, bool]:
         from . import provider_tree_proof
         with self.lock:
             self.sealed = True
-        if not self.children:
+            pending = self.expected_scopes - self.children.keys()
+            children = tuple(self.children.values())
+        self.stop.set()
+        if not children:
             return None, False
-        deadline = time.monotonic() + provider_tree_proof.SLICE_S
-        proofs = [provider_tree_proof.proof_of(process) for process in self.children.values()]
-        self.drained = all([
+        deadline = time.monotonic() + provider_tree_proof.TEARDOWN_BUDGET_S
+        proofs = [provider_tree_proof.proof_of(process) for process in children]
+        drained = all([
             proof is not None and proof.kind == provider_tree_proof.CGROUP and proof.observe(deadline)
             for proof in proofs
         ])
-        self.stop.set()
+        self.drained = drained and not pending
         if self.sampler is not None:
-            self.sampler.join(max(0.0, deadline - time.monotonic()))
-        elif self.observer is not None:  # thread creation failed
+            self.sampler.join(min(_MEMORY_SAMPLER_JOIN_S, max(0.0, deadline - time.monotonic())))
+        # A live sampler may still own the observer's mutable counters. Otherwise the
+        # finalizing thread can read directly, independent of sampler scheduling.
+        if self.observer is not None and (self.sampler is None or self.sampler_done):
             self._sample(terminal=True)
         with self.lock:
             self.finished = True
@@ -767,9 +781,10 @@ class _SeatMemoryAttempt:
 
     def close(self) -> None:
         self.stop.set()
-        # If a sampler is still inside a bounded read, it owns the descriptor.
-        if self.observer is not None and self.sampler is None:
-            os.close(self.observer.directory)
+        with self.lock:
+            self.closing = True
+            if self.observer is not None and (self.sampler is None or self.sampler_done):
+                os.close(self.observer.directory)
         if self.parent is not None:
             _release_parent(self.seat_key, self.parent, self.carved)
 
@@ -850,10 +865,6 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
         parent = _PARENTS.get(seat_key)
         if parent is None:
             unit = f"phase-loop-seat-{_unit_key(seat_key)}.slice"
-            if attempt is not None:
-                # The stable seat key can be reused by another runtime process.
-                # A distinct leaf keeps an attempt's charges attributable across processes.
-                unit = f"{unit.removesuffix('.slice')}{uuid.uuid4().hex}.slice"
             fresh = attempt is not None and _memory_parent_absent(unit)
             _systemctl("set-property", "--runtime", unit,
                        *_parent_properties(caps, devices, carved))
@@ -1069,17 +1080,19 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
         popen_kwargs.setdefault("close_fds", True)
         try:
             try:
-                with attempt.lock if attempt is not None else nullcontext():
-                    if attempt is not None and attempt.sealed:
-                        _refuse("the seat attempt has already ended")
+                if attempt is not None:
+                    attempt.reserve_scope(child_unit)
+                try:
                     if before_spawn is not None:
                         before_spawn()
-                    if attempt is not None:
-                        # Publish the name before the runner can create the scope.
-                        attempt.expected_scopes.add(child_unit)
                     process = subprocess.Popen(argv, **popen_kwargs)
+                except BaseException:
                     if attempt is not None:
-                        attempt.started(child_unit, process)
+                        with attempt.lock:
+                            attempt.expected_scopes.discard(child_unit)
+                    raise
+                if attempt is not None:
+                    attempt.started(child_unit, process)
             except BaseException:
                 os.close(read_fd)
                 os.close(diagnostic_read)

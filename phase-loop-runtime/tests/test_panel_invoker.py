@@ -1663,7 +1663,7 @@ def test_seats_firstseat_exec_record_tui_prelaunch(tmp_path, monkeypatch, failur
 
 @pytest.mark.real_seat_caps
 @pytest.mark.parametrize("vendor", ["claude", "codex", "gemini", "grok"])
-@pytest.mark.parametrize("outcome", ["success", "raised", "cancelled", "monitor_failed", "no_launch"])
+@pytest.mark.parametrize("outcome", ["success", "raised", "cancelled", "monitor_failed", "no_launch", "body_oserror"])
 def test_seat_memory_survives_board_verdict_paths(
     memory_host, tmp_path, monkeypatch, vendor, outcome,
 ):
@@ -1679,6 +1679,8 @@ def test_seat_memory_survives_board_verdict_paths(
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
     monkeypatch.setattr(caps, "_MEMORY_SAMPLE_S", 60.0, raising=False)
     monkeypatch.setattr(pi, "_publish_seat_modes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda **_kwargs: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda *_args: (True, ""))
     monkeypatch.setattr(pi, "board_preflight_requalify", lambda *args, **kwargs: None)
     monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", lambda *args, **kwargs: None)
     body_done = Event()
@@ -1708,10 +1710,24 @@ def test_seat_memory_survives_board_verdict_paths(
             raise OSError("PRIVATE_FIXTURE_SENTINEL")
         return "OK", "Fixture review.\n\nAGREE"
 
+    if outcome == "body_oserror":
+        retain_spawn = spawn
+
+        def spawn(leg, prompt):
+            result = retain_spawn(leg, prompt)
+
+            def fail_body(*_args, **_kwargs):
+                error = OSError("PRIVATE_FIXTURE_SENTINEL")
+                error._leg_exec_metadata = result.leg_exec_metadata
+                raise error
+
+            monkeypatch.setattr(pi, "_resolve_leg_detail", fail_body)
+            return result
+
     board = replace(DEFAULT_BOARD, seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness == vendor))
     board = replace(board, seats=(board.seats[0],))
     records = tmp_path / "records"
-    monitored = outcome in {"cancelled", "monitor_failed"}
+    monitored = outcome in {"cancelled", "monitor_failed", "body_oserror"}
     result = invoke_sanctioned_board_control(
         board, "fixture prompt", spawn=spawn, stream_dir=records,
         cancel_event=cancel, max_concurrency=1, **({"monitoring_policy": "heartbeat_only"}
@@ -1720,7 +1736,7 @@ def test_seat_memory_survives_board_verdict_paths(
     leg, = result.legs
     assert leg.status == {
         "success": "OK", "raised": "DEGRADED", "cancelled": "UNAVAILABLE",
-        "monitor_failed": "UNAVAILABLE", "no_launch": "UNAVAILABLE",
+        "monitor_failed": "UNAVAILABLE", "no_launch": "UNAVAILABLE", "body_oserror": "UNAVAILABLE",
     }[outcome]
     verdict = json.loads(next(records.glob("*.verdict.json")).read_text())
     retained = [json.loads(path.read_text()) for path in state.rglob("leg-*.json")]
@@ -1735,6 +1751,7 @@ def test_seat_memory_survives_board_verdict_paths(
         }
         assert retained and all(record["seat_memory"] == verdict["seat_memory"] for record in retained)
         assert verdict["seat_memory_notice"] == "seat_memory_max_reached"
+        assert sum(notice.code == "seat_memory_max_reached" for notice in leg.seat_notices) == 1
         assert "PRIVATE_FIXTURE_SENTINEL" not in json.dumps(verdict) + json.dumps(retained)
 
 
