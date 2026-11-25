@@ -6,19 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- Gemini self-qualification and jailed agy seats now classify failed native exits
+  from bounded stdout and stderr, retaining only the allowlisted failure class and
+  existing metadata (agent-harness#2195).
+- The `publish-pypi` tag and dispatch build job now allows 210 minutes instead of 140.
+  The full clean-room suite took 97-110 minutes for recent tags, and the v0.7.45 tag run
+  was cancelled at 140 with the suite 88% done, before anything was published
+  (agent-harness#2191).
+
 ### Added
 
 - Local review seats report cgroup memory peaks, event counts, and pressure stall
   time in private leg records and streamed verdicts. A once-per-attempt notice
   flags local cap hits with sustained full memory stall or attributable OOM
   events (agent-harness#2186).
-
-### Fixed
-
-- The `publish-pypi` tag and dispatch build job now allows 210 minutes instead of 140.
-  The full clean-room suite took 97-110 minutes for recent tags, and the v0.7.45 tag run
-  was cancelled at 140 with the suite 88% done, before anything was published
-  (agent-harness#2191).
 
 ## [0.7.45] - 2026-11-25
 
