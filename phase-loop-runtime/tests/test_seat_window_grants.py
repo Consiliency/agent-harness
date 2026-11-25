@@ -290,3 +290,13 @@ def test_k1_f8_w1_is_unchanged():
     assert w.OWNER_W1_PACKET_SHA256 == "bfc7b22c3cf60cc41a9a400397ffdf23d46f2154001554046b23410fd097e361"
     assert w.W1_GRANT_FIELDS == ("schema", "host_digest", "not_before", "not_after", "vendor",
                                  "host_class", "max_attempts", "packet_sha256", "nonce")
+
+
+def test_tests_never_reach_the_real_w1_owner_grant():
+    import os
+    import pwd
+    from pathlib import Path
+    from phase_loop_runtime import seat_window as w
+    real = (Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local" / "state" / "agent-harness"
+            / "w1-admission")
+    assert w._w1_grant_dir() != real

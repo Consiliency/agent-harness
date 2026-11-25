@@ -2044,6 +2044,11 @@ if argv[0] == "--parse":
     print(json.dumps({"action": args.action, "vendor": args.vendor, "window": args.window,
                       "loaded": loaded}))
     raise SystemExit(0)
+import os
+from pathlib import Path
+from phase_loop_runtime import seat_window
+# Never reach the passwd-home W1 grant from a test (see conftest _isolate_w1_owner_grant).
+seat_window._w1_grant_dir = lambda: Path(os.environ["TEST_W1_GRANT_DIR"])
 raise SystemExit(cli.main(argv))
 '''
 
@@ -2052,6 +2057,7 @@ def _fresh(tmp_path, argv):
     import subprocess
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "home"),
            "XDG_STATE_HOME": str(tmp_path / "state"),
+           "TEST_W1_GRANT_DIR": str(tmp_path / "w1-admission"),
            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
     done = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, %r); "
                            % env["PYTHONPATH"] + _FRESH, json.dumps(argv)],
