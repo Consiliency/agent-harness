@@ -31,7 +31,10 @@ jobs:
     # and evidence upload, so a slow gate is reported with its evidence instead of the
     # job being killed first (agent-harness#1993): 5 (setup) + 40 + 3 + 5 = 53 <= 55.
     # (`a && b || c` is a value-select; it is safe because 55 != 0.)
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 55 || 140 }}
+    # Tag pushes run the full clean-room suite against the built wheel: about 104-108 min
+    # on a typical hosted runner, but a slow runner needed over 150 min for v0.7.45 and the
+    # job was cancelled at 140 before publishing (agent-harness#2191). Keep real headroom.
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 55 || 210 }}
     steps:
       - uses: actions/checkout@v4
         with:
