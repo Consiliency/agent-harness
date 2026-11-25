@@ -309,7 +309,8 @@ class DependencyStartupSession:
         return self._run("skill-eval", argv, bool(argv and argv[0] == "run"), invoke)
 
     def run_seat_jail_qualification(self, argv: Sequence[str]) -> int:
-        from .seat_jail_qualification import main, qualification_provider_capable
+        from .seat_jail_qualification import qualification_provider_capable
+        from .seat_qualification_entry import main
 
         return self._run(
             "seat-jail-qualification",

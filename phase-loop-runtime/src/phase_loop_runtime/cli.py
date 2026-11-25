@@ -2931,13 +2931,13 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
         return _seat_token_status()
 
     if args.seat_sandbox_action == "qualify":
-        from . import seat_jail_autoqualify, seat_jail_qualification
+        from . import seat_jail_autoqualify, seat_jail_qualification, seat_qualification_entry
 
         try:
             # The same host lock as a first-use run, so the two never race the store.
             with seat_jail_autoqualify.qualification_lock():
                 leg = getattr(args, "seat_sandbox_leg", None)
-                return seat_jail_qualification.main([] if leg is None else ["--leg", leg])
+                return seat_qualification_entry.main([] if leg is None else ["--leg", leg])
         except seat_jail_qualification.QualificationError as exc:
             print(f"seat-sandbox qualify: cannot run: {exc}", file=sys.stderr)
             if seat_jail_autoqualify.classify_failure(exc) == "prerequisite_missing":

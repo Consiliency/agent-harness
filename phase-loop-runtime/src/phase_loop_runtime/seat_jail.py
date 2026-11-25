@@ -36,6 +36,7 @@ import re
 import stat
 import struct
 import sys
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -174,9 +175,10 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "report a defect"),
     "seat_sandbox_refused:jail_unqualified": (
         "leg refused",
-        "no EC-EXECFIND-2 pass is recorded on this host for this jail's qualification key",
+        "no EC-EXECFIND-2 pass is recorded on this host for this jail's profile digest (a new "
+        "host, a changed host layout, or a changed jail)",
         "run the per-host EC-EXECFIND-2 jail qualification, which records the pass at "
-        "$XDG_STATE_HOME/phase-loop/seat-jail-passes/<key-digest>.json; the seat stays degraded "
+        "$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json; the seat stays degraded "
         "until the qualification passes"),
     "seat_sandbox_refused:pass_store_unsafe": (
         "leg refused",
@@ -1807,6 +1809,11 @@ def _gemini_binds(home: str, gemini_config: str | None, egress_ca: str | None) -
     return [*binds, "--ro-bind", egress_ca, SEAT_EGRESS_CA]
 
 
+_QUALIFICATION_PROBE_SUBJECT: ContextVar[Callable[[str], tuple[Path, object | None]] | None] = (
+    ContextVar("_QUALIFICATION_PROBE_SUBJECT", default=None)
+)
+
+
 def build_seat_jail(
     leg: str,
     review_dir: Path,
@@ -1843,9 +1850,14 @@ def build_seat_jail(
     profile = profile_for(leg)
     if profile is None:
         raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
+    resolve_probe_subject = _QUALIFICATION_PROBE_SUBJECT.get()
     dependency_projection = None
     seccomp_fd = None
     try:
+        if resolve_probe_subject is not None:
+            if dependency is not None:
+                raise SeatSandboxRefused(refused("identity"), "unexpected qualification dependency")
+            provider_executable, dependency = resolve_probe_subject(leg)
         if dependency is not None:
             _require_safe_dependency_destinations(
                 leg,
@@ -1943,6 +1955,14 @@ def build_seat_jail(
                 pass
         if dependency_projection is not None:
             dependency_projection.close()
+        if resolve_probe_subject is not None:
+            # The frozen probe only gains ownership of these inputs after a successful build.
+            for fd in (bundle_memfd, instructions_memfd, token_fd):
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
         raise
 
 

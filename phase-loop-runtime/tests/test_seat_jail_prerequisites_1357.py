@@ -148,13 +148,13 @@ def test_other_reasons_keep_their_fixes_and_fix_for_never_raises(monkeypatch):
 def test_the_qualify_command_prints_the_literal_fix_for_a_missing_pytest(monkeypatch, capsys):
     import contextlib
 
-    from phase_loop_runtime import cli
+    from phase_loop_runtime import cli, seat_qualification_entry
 
     _pytest_status(monkeypatch, "missing")
     _fix_rows(monkeypatch, pytest="missing")
     _host_ready(monkeypatch)
     monkeypatch.setattr(aq, "qualification_lock", contextlib.nullcontext)
-    monkeypatch.setattr(qualification, "main",
+    monkeypatch.setattr(seat_qualification_entry, "main",
                         lambda argv: (_ for _ in ()).throw(QualificationError(qualification.PYTEST_MISSING)))
     assert cli.main(["seat-sandbox", "qualify"]) == 1
     err = capsys.readouterr().err
@@ -166,10 +166,10 @@ def test_the_qualify_command_prints_the_literal_fix_for_a_missing_pytest(monkeyp
 def test_the_qualify_command_adds_no_fix_line_for_other_failures(monkeypatch, capsys):
     import contextlib
 
-    from phase_loop_runtime import cli
+    from phase_loop_runtime import cli, seat_qualification_entry
 
     monkeypatch.setattr(aq, "qualification_lock", contextlib.nullcontext)
-    monkeypatch.setattr(qualification, "main",
+    monkeypatch.setattr(seat_qualification_entry, "main",
                         lambda argv: (_ for _ in ()).throw(QualificationError("sentinel process not found")))
     assert cli.main(["seat-sandbox", "qualify"]) == 1
     assert "fix:" not in capsys.readouterr().err

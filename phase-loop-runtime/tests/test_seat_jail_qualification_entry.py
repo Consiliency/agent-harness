@@ -15,6 +15,7 @@ codex_profile = _codex_profile
 from phase_loop_runtime import __version__
 from phase_loop_runtime import executable_dependency_startup as startup
 from phase_loop_runtime import seat_jail_qualification as qualification
+from phase_loop_runtime import seat_qualification_entry
 from phase_loop_runtime.executable_dependency_startup import (
     DependencyStartupSession,
     QualifiedRuntimePackage,
@@ -86,44 +87,60 @@ def test_probe_uses_and_closes_its_managed_dependency(
     import os
     import subprocess
     from types import SimpleNamespace
-    from phase_loop_runtime import panel_invoker as pi, seat_jail
+    from phase_loop_runtime import panel_invoker as pi, seat_jail, seat_route
     from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
     from phase_loop_runtime.seat_subject import SeatSubject
 
     closed = []
+    destination = CODEX_RUNTIME_DESTINATIONS[0] if leg == "codex" else f"/seat/bin/{leg}"
+    destinations = CODEX_RUNTIME_DESTINATIONS if leg == "codex" else (destination,)
+
+    def reopen_projection():
+        fd = seat_jail.memfd_with("fixture-subject", b"fixture")
+        return SimpleNamespace(
+            digest=dependency.projection_digest, pass_fds=(fd,),
+            files=(SimpleNamespace(destination=destination),), destinations=(destination,),
+            mount_args=lambda: ("--perms", "0555", "--ro-bind-data", str(fd), destination),
+            close=lambda: os.close(fd),
+        )
+
     dependency = SimpleNamespace(
         _jailcore_owned=True, subject_source=f"/fixture/{leg}", projection_digest="a" * 64,
-        subject_destination=CODEX_RUNTIME_DESTINATIONS[0],
-        entries=tuple(SimpleNamespace(kind="file", destination=path) for path in CODEX_RUNTIME_DESTINATIONS),
+        subject_destination=destination,
+        entries=tuple(SimpleNamespace(kind="file", destination=path) for path in destinations),
+        revalidate=lambda: None, reopen_projection=reopen_projection,
         close=lambda: closed.append(True))
     subject = SeatSubject(leg, "managed_release", None, None, None)
     key = None if leg == "codex" else SimpleNamespace(
         projection_digest="b" * 64 if outcome == "projection_changed" else dependency.projection_digest)
+    monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_: key)
     monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (subject, dependency))
     monkeypatch.setattr(qualification.seat_uid, "subordinate_range", lambda _: SimpleNamespace(count=65536))
     monkeypatch.setattr(qualification.seat_uid, "lease_seat_id", lambda _: contextlib.nullcontext(7))
     monkeypatch.setattr(qualification.sandbox_egress, "isolated_network", lambda **k: contextlib.nullcontext(("fixture",)))
     monkeypatch.setattr(qualification.seat_uid, "holder_pid_from_prefix", lambda _: 42)
-    def build(probe_leg, directory, provider, **kwargs):
+    def check_jail(jail):
         assert outcome != "projection_changed"
-        assert probe_leg == leg and provider == Path(dependency.subject_source)
-        assert kwargs["dependency"] is dependency
-        pass_fds = [kwargs["bundle_memfd"], kwargs["instructions_memfd"]]
-        if kwargs["token_fd"] is not None:
-            pass_fds.append(kwargs["token_fd"])
-        return SimpleNamespace(pass_fds=pass_fds)
-    monkeypatch.setattr(seat_jail, "build_seat_jail", build)
-    monkeypatch.setattr(seat_jail, "close_jail_fds", lambda jail: [os.close(fd) for fd in jail.pass_fds])
+        assert jail.leg == leg and jail.provider_path == dependency.subject_source
+        assert jail.dependency is dependency
+        assert jail.dependency_projection_digest == dependency.projection_digest
+        assert jail.dependency_fds
+
     monkeypatch.setattr(qualification.seat_uid, "teardown_in_h", lambda *a: ())
-    monkeypatch.setattr(pi, "_require_canonical_jail", lambda _: None)
+    monkeypatch.setattr(pi, "_require_canonical_jail", check_jail)
     monkeypatch.setattr(pi, "_compose_seat_jail_prefix", lambda _: ())
     def run(*a, **kwargs):
         if outcome == "launch_error":
             raise OSError("fixture launch unavailable")
         return subprocess.CompletedProcess(a[0], 0, "{}\n", "")
     monkeypatch.setattr(qualification.subprocess, "run", run)
+    prefix_before = pi._EGRESS_LAUNCH_PREFIX.get()
     def probe():
-        return qualification._run_probe_in_jail(leg, tmp_path, {}, None, None, key)
+        if leg == "codex":
+            return qualification._run_probe_in_jail(leg, tmp_path, {}, None, None)
+        return seat_qualification_entry.qualify(leg)["probe"]
+    if leg != "codex":
+        _patched_sentinel_run(tmp_path, monkeypatch)
     if outcome == "projection_changed":
         with pytest.raises(qualification.QualificationError, match="does not match the route key"):
             probe()
@@ -133,6 +150,10 @@ def test_probe_uses_and_closes_its_managed_dependency(
     else:
         assert probe() == {}
     assert closed == [True]
+    assert pi._EGRESS_LAUNCH_PREFIX.get() == prefix_before
+    assert seat_jail._QUALIFICATION_PROBE_SUBJECT.get() is None
+    if outcome != "pass":
+        assert not list(seat_jail.jail_pass_dir().glob("*.json"))
 
 
 def test_seats_firstseat_window_cli(tmp_path, monkeypatch, capsys):
@@ -668,7 +689,7 @@ def test_no_argument_qualification_reaches_effect_boundary_with_required_lease(m
         assert current_dependency_for_provider("synthetic") is dependency
         raise QualificationBoundaryReached
 
-    monkeypatch.setattr(qualification, "qualify", qualification_boundary)
+    monkeypatch.setattr(seat_qualification_entry, "qualify", qualification_boundary)
     rejecting_boundaries = {
         "_record_pass": "qualification write",
         "_write_private": "qualification file write",
@@ -1241,6 +1262,28 @@ def _patched_sentinel_run(tmp_path, monkeypatch):
     monkeypatch.setattr(qualification, "_find_host_pid", lambda *a: 42)
 
 
+def _stub_explicit_probe(monkeypatch, projection):
+    from types import SimpleNamespace
+    from phase_loop_runtime import panel_invoker, seat_jail
+
+    dependency = None if projection is None else SimpleNamespace(
+        projection_digest=projection.projection_digest, subject_source="/fixture/provider",
+    )
+    monkeypatch.setattr(panel_invoker, "_resolved_jail_subject",
+                        lambda *_: (SimpleNamespace(subject_path=Path("/fixture/provider")), dependency))
+    probes = []
+
+    def probe(leg, *args):
+        probes.append(leg)
+        if leg != "codex":
+            resolver = seat_jail._QUALIFICATION_PROBE_SUBJECT.get()
+            assert resolver(leg) == (Path("/fixture/provider"), dependency)
+        return {}
+
+    monkeypatch.setattr(qualification, "_run_probe_in_jail", probe)
+    return probes
+
+
 @pytest.mark.parametrize(("leg", "variant", "managed"), [
     ("claude", "tui", False),
     ("claude", "print", True),
@@ -1275,9 +1318,7 @@ def test_explicit_qualification_passes_the_production_route(
     monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
     projection = SimpleNamespace(projection_digest="b" * 64) if managed else None
     monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_: projection)
-    probes = []
-    monkeypatch.setattr(qualification, "_run_probe_in_jail",
-                        lambda *args: probes.append(args) or {})
+    probes = _stub_explicit_probe(monkeypatch, projection)
     expiry = dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)
     route_policy = policy(exceptions={
         "claude": NamedException("claude", "open egress", expiry, "fixture"),
@@ -1309,9 +1350,7 @@ def test_explicit_qualification_passes_the_production_route(
     )
     assert path.name == f"{key_digest(current_key)}.json"
     assert receipt["key_digest"] == key_digest(current_key)
-    assert len(probes) == 1
-    if leg != "codex":
-        assert probes[0][-1] == current_key
+    assert probes == [leg]
     assert resolve().mode == "jailed"
 
 
@@ -1325,7 +1364,7 @@ def test_explicit_gemini_pass_satisfies_window_readiness_and_r8(tmp_path, monkey
     _patched_sentinel_run(tmp_path, monkeypatch)
     projection = SimpleNamespace(projection_digest="b" * 64)
     monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_: projection)
-    monkeypatch.setattr(qualification, "_run_probe_in_jail", lambda *args: {})
+    _stub_explicit_probe(monkeypatch, projection)
     monkeypatch.setattr(window, "owner_w1_approved", lambda: True)
     monkeypatch.setattr(window, "preflight", lambda: CompositionOutcome("admitted", None, (), ""))
     monkeypatch.setattr(window.seat_egress_proxy, "unavailable_reason", lambda: None)
@@ -1466,11 +1505,12 @@ def test_qualify_leg_grok_names_the_leg_and_its_key_and_the_bare_command_is_clau
                 "key_digest": "k" * 64 if args else None}
 
     monkeypatch.setattr(qualification, "qualify", qualify)
+    monkeypatch.setattr(seat_qualification_entry, "qualify", qualify)
     assert qualification.qualification_provider_capable(["--leg", "grok"])
-    assert qualification.main(["--leg", "grok"]) == 0
+    assert seat_qualification_entry.main(["--leg", "grok"]) == 0
     summary = json.loads(capsys.readouterr().out)
     assert (summary["leg"], summary["key_digest"]) == ("grok", "k" * 64)
-    assert qualification.main([]) == 0
+    assert seat_qualification_entry.main([]) == 0
     bare = json.loads(capsys.readouterr().out)
     assert "leg" not in bare and "key_digest" not in bare
     assert calls == [("grok",), ()]
@@ -1491,6 +1531,6 @@ def test_seat_sandbox_qualify_forwards_the_leg(monkeypatch, argv, forwarded):
 
     seen = []
     monkeypatch.setattr(seat_jail_autoqualify, "qualification_lock", contextlib.nullcontext)
-    monkeypatch.setattr(qualification, "main", lambda args: seen.append(args) or 0)
+    monkeypatch.setattr(seat_qualification_entry, "main", lambda args: seen.append(args) or 0)
     assert cli.main(argv) == 0
     assert seen == [forwarded]
