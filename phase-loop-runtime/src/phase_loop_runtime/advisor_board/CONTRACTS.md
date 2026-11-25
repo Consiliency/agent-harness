@@ -1414,7 +1414,9 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   can include the same label in `notice.detail`. Structured process and credential
   diagnostics take precedence. On a positive native exit, the heartbeat and jailed agy
   routes also match fixed, case-insensitive markers in up to the last 64 KiB per stream.
-  Across both streams, the first matching class in this order wins: `auth_expired`,
+  Stderr is checked first. If stderr has no match, stdout is checked for plain
+  diagnostics, skipping JSON-shaped lines and any partial line at the byte boundary.
+  Within each stream, the first matching class in this order wins: `auth_expired`,
   `auth_missing`, `quota_exhausted`, `permission_denied`, `timeout`, `network`,
   `model_error`. Opaque provider failures use `unknown`. The broker evidence and
   streamed verdict can retain the label. Matched text and stream excerpts stay in

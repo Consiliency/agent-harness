@@ -18457,9 +18457,9 @@ _AGY_HTTP_STATUS = (
     rb'(?:\bHTTP(?:/[0-9]+(?:\.[0-9]+)?)?(?:[ \t]+(?:status(?:[ _]code)?|error))?[ \t:=]+'
     rb'|\b(?:status(?:[ _]code)?|code)"?[ \t]*[:=][ \t]*"?)'
 )
-# Structured facts take priority. For native output the first class below that matches
-# either stream wins, independent of stream or message order. Quota precedes permission
-# because a quota failure can carry HTTP 403. Timeouts precede other transport failures.
+# Structured facts take priority, then stderr, then plain diagnostics on stdout.
+# Within each stream, quota precedes permission because a quota failure can carry
+# HTTP 403. Timeouts precede other transport failures.
 _AGY_NATIVE_EXIT_PATTERNS = tuple((error_class, re.compile(pattern, re.IGNORECASE)) for error_class, pattern in (
     (ProviderErrorClass.AUTH_EXPIRED,
      rb"\b(?:invalid_grant|(?:access |oauth )?token (?:has )?expired)\b"),
@@ -18480,6 +18480,27 @@ _AGY_NATIVE_EXIT_PATTERNS = tuple((error_class, re.compile(pattern, re.IGNORECAS
      rb"\b(?:model_not_found|unsupported_model|model_unavailable|unknown model|"
      rb"model (?:is )?(?:not found|not supported|unavailable))\b"),
 ))
+
+
+def _agy_native_diagnostic_class(output: str, *, stream_json: bool = False) -> ProviderErrorClass | None:
+    # Bound the temporary encoding as well as the bytes scanned. The extra byte
+    # tells the stdout fallback whether the first line starts inside a record.
+    limit = _LEG_LOG_MAX_BYTES
+    tail = output[-(limit + 1):].encode("utf-8", errors="replace")[-(limit + 1):]
+    clipped = len(tail) > limit
+    if clipped:
+        preceding, tail = tail[:1], tail[1:]
+        if stream_json and preceding != b"\n":
+            tail = tail.partition(b"\n")[2]
+    if stream_json:
+        # agy's NDJSON payloads can carry arbitrary model, tool, and file content.
+        # Keep only non-JSON diagnostics. Skip malformed JSON-shaped lines too.
+        tail = b"\n".join(
+            line for line in tail.split(b"\n")
+            if not line.lstrip().startswith((b"{", b"[", b'"'))
+        )
+    return next((error_class for error_class, pattern in _AGY_NATIVE_EXIT_PATTERNS
+                 if pattern.search(tail)), None)
 
 
 def _agy_provider_error_class(
@@ -18508,15 +18529,11 @@ def _agy_provider_error_class(
     if timed_out or (type(native_rc) is int and native_rc == 124) or refusal == "gemini_credential_refresh_timeout":
         return ProviderErrorClass.TIMEOUT
     if type(native_rc) is int and native_rc > 0:
-        # Reuse the leg diagnostic byte cap per stream. Slicing first also bounds the
-        # temporary encoding for multibyte text. These tails and their matches stay private.
-        tails = tuple(
-            output[-_LEG_LOG_MAX_BYTES:].encode("utf-8", errors="replace")[-_LEG_LOG_MAX_BYTES:]
-            for output in (native_stdout, native_stderr)
+        return (
+            _agy_native_diagnostic_class(native_stderr)
+            or _agy_native_diagnostic_class(native_stdout, stream_json=True)
+            or ProviderErrorClass.UNKNOWN
         )
-        for error_class, pattern in _AGY_NATIVE_EXIT_PATTERNS:
-            if any(pattern.search(tail) for tail in tails):
-                return error_class
     if type(native_rc) is int and native_rc == 0 and stream is not None:
         output_bytes = stream.get("provider_stream_output_bytes")
         if (type(output_bytes) is int and output_bytes == 0) or (

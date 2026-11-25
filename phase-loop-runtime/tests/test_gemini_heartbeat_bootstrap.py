@@ -123,12 +123,12 @@ def test_qualification_provider_error_from_stream_and_process_facts(facts, expec
 
 @pytest.mark.parametrize(("stdout", "stderr", "expected"), [
     ("", "request failed with HTTP/2 401", "auth_missing"),
-    ('{"status":"uNaUtHeNtIcAtEd"}', "", "auth_missing"),
+    ("", '{"status":"uNaUtHeNtIcAtEd"}', "auth_missing"),
     ("", "OAuth refresh failed: INVALID_GRANT", "auth_expired"),
     ("the access token has expired", "", "auth_expired"),
     ("", "HTTP status 403", "permission_denied"),
-    ('{"status":"permission_denied"}', "", "permission_denied"),
-    ('{"error":{"code":429}}', "", "quota_exhausted"),
+    ("", '{"status":"permission_denied"}', "permission_denied"),
+    ("", '{"error":{"code":429}}', "quota_exhausted"),
     ("", "RESOURCE_EXHAUSTED: quota exceeded", "quota_exhausted"),
     ("quota exhausted", "", "quota_exhausted"),
     ("", "getaddrinfo ENOTFOUND provider.invalid", "network"),
@@ -148,10 +148,10 @@ def test_native_exit_classifies_fixed_markers(stdout, stderr, expected):
 
 
 @pytest.mark.parametrize(("rc", "stdout", "stderr", "expected"), [
-    (1, "invalid_grant", "HTTP 401", "auth_expired"),
-    (1, "HTTP 401", "RESOURCE_EXHAUSTED", "auth_missing"),
-    (1, "quota exceeded", "HTTP 403", "quota_exhausted"),
-    (1, "permission_denied", "ETIMEDOUT", "permission_denied"),
+    (1, "", "HTTP 401\ninvalid_grant", "auth_expired"),
+    (1, "", "RESOURCE_EXHAUSTED\nHTTP 401", "auth_missing"),
+    (1, "HTTP 403\nquota exceeded", "", "quota_exhausted"),
+    (1, "", "ETIMEDOUT\npermission_denied", "permission_denied"),
     (1, "ECONNREFUSED", "ETIMEDOUT", "timeout"),
     (1, "MODEL_NOT_FOUND", "ECONNREFUSED", "network"),
     (124, "invalid_grant", "", "timeout"),
@@ -161,6 +161,22 @@ def test_native_exit_classifies_fixed_markers(stdout, stderr, expected):
 def test_native_exit_class_precedence_and_exit_gate(rc, stdout, stderr, expected):
     assert panel._agy_provider_error_class(
         native_rc=rc, native_stdout=stdout, native_stderr=stderr,
+    ) == expected
+
+
+@pytest.mark.parametrize(("stdout", "stderr", "expected"), [
+    ("the fix handles invalid_grant", "HTTP 429", "quota_exhausted"),
+    ('{"event":"result","result":{"response":"the fix handles invalid_grant"}}',
+     "HTTP 429", "quota_exhausted"),
+    ('{"event":"step_update","step_update":{"text":"quota exceeded"}}', "", "unknown"),
+    ('{"event":"result","result":{"response":"if the user is not logged in"}}', "", "unknown"),
+    (' {"event":"step_update","step_update":{"text":"quota exceeded', "", "unknown"),
+    ('{"event":"result","result":{"response":"invalid_grant"}}\nMODEL_NOT_FOUND',
+     "unrecognized diagnostic", "model_error"),
+])
+def test_native_exit_class_prefers_stderr_and_ignores_stdout_events(stdout, stderr, expected):
+    assert panel._agy_provider_error_class(
+        native_rc=1, native_stdout=stdout, native_stderr=stderr,
     ) == expected
 
 
@@ -175,6 +191,14 @@ def test_native_exit_class_inspects_only_the_bounded_tail():
     assert panel._agy_provider_error_class(
         native_rc=1, native_stderr=multibyte_padding + " " + marker,
     ) == "auth_missing"
+    assert panel._agy_provider_error_class(
+        native_rc=1, native_stdout=multibyte_padding + "\n" + marker,
+    ) == "auth_missing"
+    assert panel._agy_provider_error_class(
+        native_rc=1,
+        native_stdout='{"event":"step_update","step_update":{"text":"' + multibyte_padding
+        + ' quota exceeded"}}\n',
+    ) == "unknown"
 
 
 @pytest.mark.parametrize(("code", "login_wait_state", "expected"), [
@@ -586,10 +610,10 @@ def test_the_qualification_worker_spawns_agy_from_a_non_git_cwd(fixture_cli, tmp
     ("final", "ERROR", "unknown"),
 ])
 def test_qualification_worker_retains_only_structured_error_class(
-    fixture_cli, tmp_path, monkeypatch, mode, status, error_class,
+    fixture_cli, tmp_path, monkeypatch, mode, status, error_class, caplog,
 ):
     fixture_cli.mode.write_text(mode)
-    _, root, _, run = _qualification_worker(fixture_cli, tmp_path, monkeypatch)
+    q, root, _, run = _qualification_worker(fixture_cli, tmp_path, monkeypatch)
     run()
     raw_terminal = (root / "terminal.json").read_text()
     terminal = json.loads(raw_terminal)
@@ -605,7 +629,14 @@ def test_qualification_worker_retains_only_structured_error_class(
         )
         raw_verdict = next((root / "stream").glob("leg-*.verdict.json")).read_text()
         assert json.loads(raw_verdict)["provider_error_class"] == error_class
-        for raw in (raw_terminal, raw_verdict):
+        exc = q.QualificationFailure(q.ENDED_BEFORE_ADMISSION)
+        q.write_failure(root, exc, "terminal_observation", q.HelperObserver("0" * 64, {}), {})
+        raw_failure = (root / "failure.json").read_text()
+        projected = q.ProviderErrorClass.read(json.loads(raw_failure)["provider_error_class"])
+        assert projected is q.ProviderErrorClass.TIMEOUT
+        notice = q.qualification_notice(q.QualificationUnavailable(projected))
+        assert notice["detail"] == {"provider_error_class": error_class}
+        for raw in (raw_terminal, raw_verdict, raw_failure, json.dumps(notice["detail"]), caplog.text):
             assert "PRIVATE_FIXTURE_SENTINEL" not in raw
 
 
