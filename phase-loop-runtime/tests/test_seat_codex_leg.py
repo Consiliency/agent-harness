@@ -305,3 +305,92 @@ def test_jailed_codex_keeps_real_placement_and_retention_notices(tmp_path, monke
     test_default_spawn_holds_route_lease_through_codex_leg(
         tmp_path, monkeypatch, codex_profile, "zero_commands", "codex_seat_tools_unavailable",
         root_applied=False, retained=True)
+
+
+@pytest.mark.parametrize("terminal", ["refused", "cancelled", "monitor_failed", "monitor_oserror"])
+def test_jailed_codex_board_streams_diagnostics_without_reusing_replaced_identity(
+    tmp_path, monkeypatch, codex_profile, terminal,
+):
+    from hashlib import sha256
+    from threading import Event
+
+    from phase_loop_runtime import seat_window
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    from harden_tdd_guard import invoke_sanctioned_board_control
+
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setattr(pi, "_publish_seat_modes", lambda *a, **kw: None)
+    seat = prepare(tmp_path, monkeypatch)
+    local_reads(monkeypatch)
+    stdout = stream(command=False)
+    child = f"import sys; sys.stdin.read(); sys.stdout.buffer.write({stdout!r})"
+
+    def launch(argv, **kwargs):
+        return subprocess.Popen(
+            [sys.executable, "-c", child], stdin=kwargs["stdin"], stdout=kwargs["stdout"],
+            stderr=kwargs["stderr"], start_new_session=True,
+        )
+
+    monkeypatch.setattr(pi, "launch_provider", launch)
+    cancel = Event()
+    finished = Event()
+    observe = pi._ReviewMonitor.observe
+    monitors = []
+
+    def observe_monitor(monitor, *args, **kwargs):
+        if not monitors:
+            monitors.append(monitor)
+        if kwargs.get("terminal") and finished.is_set() and terminal == "monitor_oserror":
+            raise OSError("fixture monitor write failed")
+        observe(monitor, *args, **kwargs)
+
+    monkeypatch.setattr(pi._ReviewMonitor, "observe", observe_monitor)
+
+    @pi._retained_leg_exec
+    def spawn(leg, prompt):
+        failures = []
+        status, text = pi._exec_jailed_codex_leg(
+            seat, deadline_s=5, model="fixture", prompt=prompt,
+            broker_evidence={}, failure_detail_sink=failures,
+        )
+        finished.set()
+        if terminal == "cancelled":
+            cancel.set()
+        elif terminal == "monitor_failed":
+            monitors[0].write_failed = True
+        return status, text, failures[-1]
+
+    board = replace(DEFAULT_BOARD, seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness == "codex"))
+    stream_dir = tmp_path / "stream"
+    result = invoke_sanctioned_board_control(
+        board, "fixture prompt", spawn=spawn, stream_dir=stream_dir,
+        cancel_event=cancel, max_concurrency=1, monitoring_policy="heartbeat_only",
+    )
+    leg, = result.legs
+    assert leg.detail == {
+        "refused": "codex_seat_tools_unavailable",
+        "cancelled": "review_operation_cancelled",
+        "monitor_failed": "review_monitoring_write_failed",
+        "monitor_oserror": "review_monitoring_write_failed",
+    }[terminal]
+    assert leg.status == ("DEGRADED" if terminal == "refused" else "UNAVAILABLE")
+
+    # The existing retention fallback gives a replaced leg its own unobserved
+    # record. The window must see that record's attempt and digest.
+    metadata = leg._leg_exec_metadata
+    record_root = state / "agent-harness/seat-records"
+    leg_record = (record_root / f"leg-{metadata['attempt_id']}.json").read_bytes()
+    expected_outcome = "leg_execution_refused" if terminal == "refused" else "leg_execution_unobserved"
+    assert json.loads(leg_record)["outcome"] == expected_outcome
+    assert metadata["record_digest"] == sha256(leg_record).hexdigest()
+    assert seat_window.candidate_observations(
+        [{"id": "codex", "kind": "vendor", "vendor": "codex"}], result.legs,
+    ) == [{"id": "codex", "outcome": "observed", "exec_record_digest": metadata["record_digest"]}]
+    assert pi.integrated_board_outcome(replace(result, president=object())) == "terminated"
+
+    verdict = json.loads(next(stream_dir.glob("*.verdict.json")).read_bytes())
+    assert verdict["native_exit_code"] == 0
+    assert verdict["native_stdout_bytes"] == len(stdout)
+    assert verdict["provider_stage_reached"] == "terminal_event"
+    assert verdict["provider_tool_calls_attempted"] == 0

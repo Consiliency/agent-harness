@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from phase_loop_runtime.seat_codex_evidence import read_tool_record, run_diagnostics, tools_ran_code
+from phase_loop_runtime.seat_codex_evidence import read_tool_record, tools_ran_code
 
 
 def stream(*, command=True, exit_code=0, output="sentinel\n", complete=True, extra=()):
@@ -79,6 +79,8 @@ def test_failed_command_beside_successful_command_counts():
 
 
 def test_diagnostics_count_distinct_tool_items_and_terminal_failures():
+    from phase_loop_runtime.seat_codex_evidence import run_diagnostics
+
     pending = {"id": "private id 1", "type": "command_execution", "status": "in_progress"}
     failed = {"id": "private id 2", "type": "mcp_tool_call", "status": "failed",
               "error": {"code": "private code", "message": "private message"}}

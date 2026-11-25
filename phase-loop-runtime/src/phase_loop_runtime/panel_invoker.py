@@ -20744,7 +20744,8 @@ def _write_incremental_verdict(
             "detail": result.detail,
         }
         exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
-        payload.update(exec_metadata.get("codex_run", {}))
+        codex_run = getattr(result, "_codex_run", None)
+        payload.update(codex_run if codex_run is not None else exec_metadata.get("codex_run", {}))
         if result.review_monitoring is not None:
             # agent-harness#1176: heartbeat_only only; metadata, never provider text.
             payload["review_monitoring"] = dict(result.review_monitoring)
@@ -22511,7 +22512,7 @@ def invoke_board(
             monitor = _ReviewMonitor(monitor_root / invocation_id / f"seat-{index}.json",
                                      invocation_id, index, operation_cancel)
             broker_evidence = None
-            exec_metadata = None
+            codex_run = None
             body_notices: tuple[str, ...] = ()
             placement_evidence = None
             try:
@@ -22521,7 +22522,8 @@ def invoke_board(
                 else:
                     result = _run_seat_body(item, monitor)
                 broker_evidence = result.harden_isolation_evidence
-                exec_metadata = getattr(result, "_leg_exec_metadata", None)
+                exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
+                codex_run = exec_metadata.get("codex_run")
                 body_notices = getattr(result, "_seat_notice_codes", ())
                 placement_evidence = result.sandbox_placement_evidence
                 if monitor.write_failed:
@@ -22542,8 +22544,9 @@ def invoke_board(
                 raise
             if broker_evidence is not None:
                 attach_harden_isolation_evidence(result, broker_evidence)
-            if exec_metadata is not None and "codex_run" in exec_metadata:
-                object.__setattr__(result, "_leg_exec_metadata", exec_metadata)
+            if codex_run is not None:
+                # A replacement keeps diagnostics but gets its own retention decision.
+                object.__setattr__(result, "_codex_run", codex_run)
             if not getattr(result, "_seat_notice_codes", ()) and body_notices:
                 attach_seat_notices(result, body_notices)
             if placement_evidence is not None:
