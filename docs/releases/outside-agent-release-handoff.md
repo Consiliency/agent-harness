@@ -18,6 +18,59 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.46 release preparation
+
+Expected unpublished artifacts are `phase_loop_runtime-0.7.46-py3-none-any.whl`
+and `phase_loop_runtime-0.7.46.tar.gz`. The runtime requires Python 3.12 or newer.
+The lock is unchanged apart from the package version.
+
+This release carries the owner-approved W1 pins for agent-harness#2157, seat memory telemetry for agent-harness#2186 and agy failure classification for agent-harness#2195. It sets
+`seat_window.OWNER_W1_GRANT_SHA256` and `OWNER_W1_PACKET_SHA256`, but it does not
+run W1. The grant allows exactly one attempt on the designated `standard` host,
+inside its start window, and never at or after 2026-12-04T00:00Z. `seat-window
+qualify` claims the attempt before its preflight and attendance checks, so run it
+once, attended, only after the installed release, the admitted image, the Gemini
+pass, egress and logins are confirmed. The test suite can no longer read or spend
+a real W1 grant. It also includes the publish build job's 210-minute limit
+(agent-harness#2191).
+
+Gemini self-qualification and jailed agy seats now classify a failed native agy
+exit into the existing `provider_error_class` labels (`auth_missing`,
+`auth_expired`, `quota_exhausted`, `permission_denied`, `timeout`, `network`,
+`model_error`), instead of always recording `unknown` (agent-harness#2195).
+Stderr is checked first. Stdout is a fallback that skips stream-json records, so
+model, tool and file content cannot set the label. Only the label and the
+existing counts are retained. After installing 0.7.46, an account whose agy
+self-qualification failed with `unknown` can make one new attempt to learn the
+cause.
+
+Local capped seats now record a closed `seat_memory` object in private leg records
+and streamed verdicts: effective cap, peak (kernel or sampled), memory event deltas
+and full/some memory-pressure stall time. The state is `final` only after every
+launched child scope has positive drain proof. A typed `seat_memory_max_reached`
+notice fires at most once per attempt, on attributable OOM, or on a parent-local
+cap hit with more than one second of full stall (agent-harness#2186, telemetry
+only). Caps and their values are unchanged. Raised per-vendor caps are deferred
+to agent-harness#2197. `seat_resource_caps.py` is a Claude SDK proof input, so an
+SDK-admitting install needs refreshed SDK audit evidence. The default TUI transport
+is unaffected.
+
+Qualification inputs compared with the `v0.7.45` tag:
+
+| Seat | Inputs that moved | Stable inputs |
+| --- | --- | --- |
+| Gemini | The seat-window runtime digest and release identity move with `seat_window.py`. Verify W1 against the installed 0.7.46. Agy native-exit classification changes verdict metadata only (`panel_invoker._agy_provider_error_class`, `_exec_leg`, `_exec_jailed_gemini_leg`). | Production jail profile, all six `QualificationKey` fields for the same launch inputs, and the agy validator closure and QCI. |
+| Claude | The seat-window runtime digest and release identity move. The Claude SDK proof input `seat_resource_caps.py` changes, so SDK admission requires a fresh boundary proof. | Production jail profile and all six `QualificationKey` fields for the same launch inputs. TUI remains the default. |
+| Codex | The seat-window runtime digest and release identity move. | Production jail profile and all six `QualificationKey` fields for the same launch inputs. |
+
+**Erratum for 0.7.45.** The 0.7.45 table lists the `QualificationKey` fields as
+stable for the same launch inputs. On a managed host, the installed 0.7.44 and
+0.7.45 runtimes, each measured with its own runtime and front doors, produced a
+different `projection_digest` for Claude, Codex and Gemini. The results matched
+across two accounts. So managed installs moving from 0.7.44 to 0.7.45 need a fresh
+pass for every leg on every account, not only Gemini. A host that already holds
+0.7.45 passes for each leg needs nothing further for 0.7.46.
+
 ## 0.7.45 release preparation
 
 Expected unpublished artifacts are `phase_loop_runtime-0.7.45-py3-none-any.whl`

@@ -669,7 +669,7 @@ wheels = [
 
 [[package]]
 name = "phase-loop-runtime"
-version = "0.7.45"
+version = "0.7.46"
 source = { editable = "." }
 dependencies = [
     { name = "baml-bridge" },

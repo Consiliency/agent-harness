@@ -6,15 +6,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Fixed
-
-- Gemini self-qualification and jailed agy seats now classify failed native exits
-  from bounded stdout and stderr, retaining only the allowlisted failure class and
-  existing metadata (agent-harness#2195).
-- The `publish-pypi` tag and dispatch build job now allows 210 minutes instead of 140.
-  The full clean-room suite took 97-110 minutes for recent tags, and the v0.7.45 tag run
-  was cancelled at 140 with the suite 88% done, before anything was published
-  (agent-harness#2191).
+## [0.7.46] - 2026-11-25
 
 ### Added
 
@@ -33,6 +25,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   still spends it; run it once, attended (agent-harness#2157).
 - Tests can no longer read or spend a real W1 owner grant: the test suite redirects the
   passwd-home W1 admission directory to a per-test temporary directory.
+
+### Fixed
+
+- Gemini self-qualification and jailed agy seats now classify failed native exits
+  from bounded stdout and stderr, retaining only the allowlisted failure class and
+  existing metadata (agent-harness#2195).
+- The `publish-pypi` tag and dispatch build job now allows 210 minutes instead of 140.
+  The full clean-room suite took 97-110 minutes for recent tags, and the v0.7.45 tag run
+  was cancelled at 140 with the suite 88% done, before anything was published
+  (agent-harness#2191).
 
 ## [0.7.45] - 2026-11-25
 
