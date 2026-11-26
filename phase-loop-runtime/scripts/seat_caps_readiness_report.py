@@ -365,6 +365,8 @@ def report(label: str) -> list[dict[str, Any]]:
             if not ok:
                 first_failing = name
         records.append(record)
+    records.append({"check": "seat_owner_records", "informational": True,
+                    **caps._reap_dead_seats(dry_run=True)})
     verdict: dict[str, Any] = {"check": "verdict"}
     try:
         code = caps.readiness_code()

@@ -623,3 +623,19 @@ def test_pass_env_skips_an_unset_name_and_refuses_a_malformed_one(world):
     assert "GITHUB_TOKEN" not in launch
     assert world.run("run", "--pass-env", "lower=x", "--", "true").returncode == 2
     assert world.run("run", "--pass-env").returncode == 2
+
+
+def test_teardown_bulk_stops_an_unrecorded_new_slice_after_the_exact_pass(world):
+    _provision(world)
+    sweep = world.bin / "python3"
+    sweep.write_text('#!/bin/sh\necho "owner sweep" >> "$FAKE_LOG"\nexit 1\n')
+    sweep.chmod(0o755)
+    unit = f"phase-loop-seat-03{'a' * 32}.slice"
+    gate = "ci-seat-caps-run-1-2.service"
+    units = f"{unit} loaded active active x\\n{gate} loaded active running y\\n"
+    world.run("teardown", clean=True, env={"FAKE_UNITS": units}, check=0)
+    calls = _calls(world)
+    assert calls.index(f"systemctl --user stop {gate}") < calls.index("owner sweep")
+    assert calls.index("owner sweep") < calls.index(f"systemctl --user stop {unit}")
+    assert calls.index(f"systemctl --user stop {unit}") < calls.index(f"sudo umount {world.mnt}")
+    _assert_clean(world)

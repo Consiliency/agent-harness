@@ -58,6 +58,8 @@ if TYPE_CHECKING:
         WindowLaunchResult,
     )
 
+from .seat_resource_caps import _LaunchClass, _reap_dead_seats
+
 try:
     import fcntl
     import pty
@@ -16086,7 +16088,7 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
     try:
         from .seat_resource_caps import _seat_scope
         with contextlib.ExitStack() as stack:
-            stack.enter_context(_seat_scope(f"window:{spec.kind}:{uuid.uuid4().hex}"))
+            stack.enter_context(_seat_scope(f"window:{spec.kind}:{uuid.uuid4().hex}", _LaunchClass.QUALIFICATION))
             session = stack.enter_context(_open_window_launch(spec))
             proxy = session.proxy
             if spec.kind in _WINDOW_RUNTIME_KINDS:
@@ -16293,7 +16295,7 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
     try:
         from .seat_resource_caps import _seat_scope
         with contextlib.ExitStack() as stack:
-            stack.enter_context(_seat_scope(f"window:{spec.leg}:{spec.kind}:{uuid.uuid4().hex}"))
+            stack.enter_context(_seat_scope(f"window:{spec.leg}:{spec.kind}:{uuid.uuid4().hex}", _LaunchClass.QUALIFICATION))
             session = stack.enter_context(_open_window_launch(spec))
             proxy = session.proxy
             if spec.kind in _WINDOW_RUNTIME_KINDS:
@@ -21189,6 +21191,8 @@ def invoke_panel(
     """
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    if spawn is None:
+        _reap_dead_seats(_LaunchClass.BOARD)
     # 'reference, don't inline': resolve the artifact at the TOP so timeout /
     # staging / metadata all see the resolved content. A ref reads from disk (a
     # missing path fails closed); no ref keeps ``artifact`` byte-for-byte. Warn on a
@@ -21583,6 +21587,7 @@ def invoke_board(
     on_seat_preflight: "Callable[[tuple[_seat_preflight.SeatPreflightNotice, ...]], None] | None" = None,
     on_seat_modes: "Callable[[tuple[_seat_preflight.SeatMode, ...]], None] | None" = None,
     max_staged_bundle_bytes: int | None = None,
+    _seat_launch_class: _LaunchClass = _LaunchClass.BOARD,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -21676,6 +21681,8 @@ def invoke_board(
     written when there is no ``stream_dir``. It enables nothing else: no verdict file,
     seat-mode file or monitoring record is written there.
     """
+    if spawn is None and _seat_launch_class is _LaunchClass.BOARD:
+        _reap_dead_seats(_LaunchClass.BOARD)
     leg_log_root = stream_dir if stream_dir is not None else leg_log_dir
     if brief_ref is not None and not _brief_pinned(brief_ref) and (
         landing_tier is not None or review_policy is not None
@@ -22537,7 +22544,7 @@ def invoke_board(
                     seat_token = _SEAT_SESSION_SEAT.set(str(seat.seat_key))
                     try:
                         from .seat_resource_caps import _seat_scope
-                        with _seat_scope(str(seat.seat_key)):
+                        with _seat_scope(str(seat.seat_key), _seat_launch_class):
                             spawned = _default_spawn_via_provider(
                                 leg,
                                 artifact,

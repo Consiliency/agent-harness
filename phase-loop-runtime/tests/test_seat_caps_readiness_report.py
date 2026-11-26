@@ -373,3 +373,19 @@ def test_host_facts_never_dump_the_api_token(monkeypatch):
     assert "ghs_fake-token-value" not in json.dumps(facts, default=str)
     assert set(facts["env"]) == {"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_CACHE_HOME",
                                  "PHASE_LOOP_SANDBOX_STAGING_DIR", "HOME"}
+
+
+def test_stale_and_unknown_owners_are_advisory(host, monkeypatch):
+    called = []
+
+    def census(*, dry_run):
+        called.append(dry_run)
+        return {"stale": 2, "unknown": 1}
+
+    monkeypatch.setattr(caps, "_reap_dead_seats", census)
+    records = _by_check(report_mod.report("owner-census"))
+    assert called == [True]
+    assert records["seat_owner_records"] == {
+        "check": "seat_owner_records", "informational": True, "stale": 2, "unknown": 1,
+    }
+    assert records["verdict"]["verdict"] is None

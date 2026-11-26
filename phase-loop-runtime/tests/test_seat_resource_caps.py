@@ -414,7 +414,7 @@ def test_parent_requests_io_before_systemd_realizes_the_slice(
               not item.startswith("IOWeight=")}
         assert calls[1] == ("start", parent.unit)
     finally:
-        caps._release_parent("io-propagation", parent, ())
+        caps._release_parent(parent)
 
 
 def test_real_helper_refuses_each_missing_or_differing_readback(tmp_path):
@@ -497,10 +497,23 @@ def _install_fake_cap_host(monkeypatch, tmp_path, isolated, *, runner_body=None,
     configured: list[str] = []
     stopped: list[str] = []
 
+    runtime_control = _runtime / "systemd/user.control"
+    runtime_control.mkdir(parents=True)
+
     def systemctl(*args, **_kwargs):
+        if args[:2] == ("show", "--property=UnitPath"):
+            return SimpleNamespace(returncode=0, stdout=str(runtime_control).encode())
+        if args[0] == "show":
+            active = args[-1] not in stopped
+            return SimpleNamespace(returncode=0, stdout=(
+                b"LoadState=loaded\nJob=\nActiveState=" + (b"active" if active else b"inactive")
+            ))
         if args[0] == "stop":
-            stopped.append(args[1])
-            return
+            unit = args[1]
+            stopped.append(unit)
+            if caps._ISOLATED_UNIT.fullmatch(unit):
+                shutil.rmtree(caps._seat_slice_chain(unit)[-1], ignore_errors=True)
+            return SimpleNamespace(returncode=0)
         if args[0] == "start":
             return
         assert args[:2] == ("set-property", "--runtime")
@@ -706,7 +719,7 @@ def test_concurrent_children_share_one_parent_and_use_distinct_scopes(
     sleeper = [sys.executable, "-c", "import time; time.sleep(.3)"]
     first = caps.capped_popen(sleeper, seat_key="claude:review")
     second = caps.capped_popen(sleeper, seat_key="claude:review")
-    parent = caps._PARENTS["claude:review"]
+    parent = caps._PARENTS[f"phase-loop-seat-{caps._unit_key('claude:review')}.slice"]
     assert parent.refs == 2
     assert configured == [parent.unit]
     scopes = launches.read_text().splitlines()
@@ -726,9 +739,9 @@ def test_sequential_children_keep_the_same_parent_for_the_live_seat_scope(
         first = caps.capped_popen(command, seat_key=caps.live_seat_key())
         assert first.wait(timeout=5) == 0
         deadline = time.monotonic() + 5
-        while caps._PARENTS["claude:attempt"].refs != 1 and time.monotonic() < deadline:
+        while caps._CURRENT_SEAT_SCOPE.get().parent.refs != 1 and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert caps._PARENTS["claude:attempt"].refs == 1
+        assert caps._CURRENT_SEAT_SCOPE.get().parent.refs == 1
         second = caps.capped_popen(command, seat_key=caps.live_seat_key())
         assert second.wait(timeout=5) == 0
         assert len(configured) == 1 and stopped == []
@@ -818,14 +831,14 @@ def test_tmpfs_refusal_is_typed_and_never_starts_the_target(monkeypatch, tmp_pat
 
 def test_parent_collection_failure_is_logged(monkeypatch, tmp_path, isolated, caplog):
     parent = caps._Parent("fixture.slice", "digest", refs=1)
-    caps._PARENTS["seat"] = parent
+    caps._PARENTS[parent.unit] = parent
 
     def fail_stop(*_args, **_kwargs):
         caps._refuse("fixture stop failed")
 
     monkeypatch.setattr(caps, "_systemctl", fail_stop)
     with caplog.at_level("WARNING", logger=caps.__name__):
-        caps._release_parent("seat", parent, ())
+        caps._release_parent(parent)
     assert "parent collection failed for fixture.slice" in caplog.text
 
 
@@ -1085,13 +1098,13 @@ def test_host_probe(monkeypatch):
     def run(argv, seat_key, *, timeout=45, cleanup=(), observe_oom=False):
         started = time.monotonic()
         oom_kills = 0
-        with caps._seat_scope(seat_key):
+        with caps._seat_scope(seat_key, caps._LaunchClass.TEST):
             process = caps.capped_popen(
                 argv, seat_key=seat_key, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             stdout, stderr = process.communicate(timeout=timeout)
             if observe_oom:
-                parent = caps._PARENTS[seat_key]
+                parent = caps._CURRENT_SEAT_SCOPE.get().parent
                 events = dict(
                     line.split() for line in
                     (caps._seat_slice_chain(parent.unit)[-1] / "memory.events")
@@ -1503,6 +1516,7 @@ def test_each_gemini_president_route_has_its_own_live_seat_key(monkeypatch, tmp_
     seen = []
 
     def run_leg(*_args, **_kwargs):
+        assert caps._CURRENT_SEAT_SCOPE.get().launch_class is caps._LaunchClass.BOARD
         seen.append(caps.live_seat_key())
         return panel_invoker._LegRun(1, "", "")
 
@@ -1542,10 +1556,12 @@ def test_each_claude_president_route_has_its_own_live_seat_key(monkeypatch, tmp_
     seen = []
 
     def print_session(*_args, **_kwargs):
+        assert caps._CURRENT_SEAT_SCOPE.get().launch_class is caps._LaunchClass.BOARD
         seen.append(caps.live_seat_key())
         return 1, "", "", ""
 
     def tui_session(**_kwargs):
+        assert caps._CURRENT_SEAT_SCOPE.get().launch_class is caps._LaunchClass.BOARD
         seen.append(caps.live_seat_key())
         return 1, "", "", ""
 
@@ -1640,13 +1656,14 @@ def memory_host(monkeypatch, tmp_path, isolated):
     systemctl = caps._systemctl
 
     def prepare(*args, **kwargs):
-        systemctl(*args, **kwargs)
+        result = systemctl(*args, **kwargs)
         if args[0] == "set-property":
             parent = caps._seat_slice_chain(args[2])[-1]
             cap_file = parent / "memory.max"
             cap_file.write_text(cap_file.read_text() + "\n")
             (parent / "cgroup.events").write_text("populated 0\nfrozen 0\n")
             _memory_readings(parent)
+        return result
 
     monkeypatch.setattr(caps, "_systemctl", prepare)
 
@@ -1757,18 +1774,19 @@ def test_reused_seat_slice_replaces_stale_scratch_device_limits(memory_host, mon
     systemctl = caps._systemctl
     io_limits = {}
 
-    def persistent_systemctl(*args):
-        systemctl(*args)
+    def persistent_systemctl(*args, **kwargs):
+        result = systemctl(*args, **kwargs)
         if args[:2] == ("set-property", "--runtime"):
             parent = caps._seat_slice_chain(args[2])[-1]
             expected = _expected_from_properties(args[3:], io_limits=io_limits)
             _parent_files(parent, expected)
+        return result
 
     monkeypatch.setattr(caps, "_systemctl", persistent_systemctl)
     key = "gemini:qualification"
     for device in ("7:0", "8:0"):
         monkeypatch.setattr(caps, "_device_plan", lambda caps: ((device,), ()))
-        with caps._seat_scope(key), caps._seat_memory_attempt():
+        with caps._seat_memory_attempt():
             child = memory_host.launch(key, stderr=subprocess.PIPE)
             _, stderr = child.communicate(timeout=5)
             assert child.returncode == 0, stderr
@@ -1945,3 +1963,384 @@ def test_seat_memory_spawn_hook_can_start_another_scoped_child(memory_host):
             memory_host.drain(child)
         assert len(children) == 1
         assert attempt.finish()[0]["state"] == "final"
+
+
+def _owner_record(unit):
+    with caps._owner_directory(create=True) as directory:
+        return Path(f"/proc/self/fd/{directory}").resolve() / unit
+
+
+def _runtime_dropins(unit):
+    return caps._runtime_dir() / "systemd/user.control" / (unit + ".d")
+
+
+def _wait_until(predicate, timeout=10):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+
+
+@pytest.fixture(params=[
+    pytest.param("fake", id="fake"),
+    pytest.param("systemd", id="systemd"),
+])
+def namespace_manager(request, monkeypatch, tmp_path):
+    if request.param == "systemd":
+        if os.environ.get("PHASE_LOOP_SEAT_CAPS_PROBE") != "1":
+            pytest.skip("set PHASE_LOOP_SEAT_CAPS_PROBE=1 on the designated systemd host")
+        assert caps.readiness_code() is None
+        from contextlib import contextmanager
+        import tempfile
+
+        # The manager is shared. Make even the test sweeper see only our records.
+        with tempfile.TemporaryDirectory(prefix="seat-probe-", dir=caps._runtime_dir()) as records:
+            @contextmanager
+            def owner_directory(*, create=False):
+                fd = os.open(records, os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    yield fd
+                finally:
+                    os.close(fd)
+
+            monkeypatch.setattr(caps, "_owner_directory", owner_directory)
+            yield
+        return
+
+    # A fake manager with persistent drop-ins and cgroup files shared by all owners.
+    request.getfixturevalue("isolated")
+    _install_fake_cap_host(monkeypatch, tmp_path, None)
+    systemctl = caps._systemctl
+
+    def persistent_dropins(*args, **kwargs):
+        if args[:2] == ("--no-reload", "revert"):
+            shutil.rmtree(_runtime_dropins(args[2]))
+            return SimpleNamespace(returncode=0)
+        if args[0] == "set-property":
+            unit = args[2]
+            assert _owner_record(unit).is_file()
+            dropins = _runtime_dropins(unit)
+            dropins.mkdir()
+            (dropins / "50-MemoryMax.conf").write_text(args[3])
+        return systemctl(*args, **kwargs)
+
+    monkeypatch.setattr(caps, "_systemctl", persistent_dropins)
+    yield
+
+
+def _overlap_owner(connection, launch_class):
+    key = "same-logical-seat"
+    with caps._seat_scope(key, launch_class):
+        with caps._seat_memory_attempt():
+            child = caps.capped_popen(["/usr/bin/sleep", "30"], seat_key=key)
+            parent = caps._CURRENT_SEAT_SCOPE.get().parent
+            child_unit = Path(caps._proc_cgroup_of(child.pid)).name
+            connection.send((parent.unit, child_unit, child.pid))
+            try:
+                if connection.poll(20):
+                    connection.recv()
+            finally:
+                child.terminate()
+                child.wait(timeout=5)
+    _wait_until(lambda: not _owner_record(parent.unit).exists())
+
+
+@pytest.mark.parametrize("classes", [("BOARD", "BOARD"), ("TEST", "TEST"),
+                                    ("BOARD", "QUALIFICATION")])
+@pytest.mark.parametrize("first", [0, 1])
+def test_per_attempt_namespaces_overlap(namespace_manager, classes, first, monkeypatch):
+    import multiprocessing
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("seat caps require Linux")
+    process_context = multiprocessing.get_context("fork")
+    children = []
+    receivers = []
+    owners = []
+    limits = (64 << 20, 96 << 20)
+    try:
+        for name, maximum in zip(classes, limits):
+            selected = replace(caps.DEFAULT_CAPS, memory_max_bytes=maximum)
+            monkeypatch.setattr(caps, "load_caps", lambda: selected)
+            receiver, sender = process_context.Pipe()
+            owner = process_context.Process(
+                target=_overlap_owner, args=(sender, getattr(caps._LaunchClass, name)),
+            )
+            owner.start()
+            sender.close()
+            owners.append(owner)
+            receivers.append(receiver)
+            assert receiver.poll(10), f"{name} owner failed to start its capped child"
+            children.append(receiver.recv())
+        assert len({unit for unit, _, _ in children}) == 2
+        assert len({child for _, child, _ in children}) == 2
+        for (unit, child, pid), maximum in zip(children, limits):
+            assert _runtime_dropins(unit).is_dir()
+            assert child.startswith(unit.removesuffix(".slice") + "-")
+            assert (caps._seat_slice_chain(unit)[-1] / "memory.max").read_text().strip() == str(maximum)
+            os.kill(pid, 0)
+        receivers[first].send("collect")
+        owners[first].join(10)
+        assert owners[first].exitcode == 0
+        collected = children[first][0]
+        assert not _runtime_dropins(collected).exists()
+        assert not _owner_record(collected).exists()
+        second = 1 - first
+        survivor, child, pid = children[second]
+        os.kill(pid, 0)
+        assert Path(caps._proc_cgroup_of(pid)).name == child
+        assert _runtime_dropins(survivor).exists()
+        assert (caps._seat_slice_chain(survivor)[-1] / "memory.max").read_text().strip() == str(limits[second])
+    finally:
+        for owner, receiver in zip(owners, receivers):
+            if owner.is_alive():
+                receiver.send("collect")
+                owner.join(5)
+            if owner.is_alive():
+                owner.kill()
+                owner.join(5)
+            receiver.close()
+    for unit, _, _ in children:
+        assert not _owner_record(unit).exists()
+        assert not _runtime_dropins(unit).exists()
+
+
+def test_attempt_class_is_internal_and_uses_one_hex_leaf(monkeypatch):
+    monkeypatch.setenv("PHASE_LOOP_SEAT_LAUNCH_CLASS", "test")
+    key = "qualification:../../test"
+    with caps._seat_scope(key):
+        scope = caps._CURRENT_SEAT_SCOPE.get()
+        assert scope.launch_class is caps._LaunchClass.BOARD
+        assert caps._ISOLATED_UNIT.fullmatch(scope.unit)[1] == "01"
+        legacy = f"phase-loop-seat-{caps._unit_key(key)}.slice"
+        assert caps._seat_slice_chain(scope.unit)[:-1] == caps._seat_slice_chain(legacy)[:-1]
+        with caps._seat_scope(key):
+            assert caps._CURRENT_SEAT_SCOPE.get() is scope
+        with pytest.raises(caps.CapsUnavailable, match="two launch classes"):
+            with caps._seat_scope(key, caps._LaunchClass.TEST):
+                pytest.fail("an explicit nested mismatch reached the launch")
+    with caps._seat_scope(key):
+        assert caps._CURRENT_SEAT_SCOPE.get().unit != scope.unit
+
+
+def test_isolated_memory_attempts_start_fresh(memory_host):
+    units = []
+    for peak in (123, 456):
+        with caps._seat_memory_attempt() as attempt, caps._seat_scope("same-key"):
+            child = memory_host.launch("same-key")
+            assert child.wait(timeout=5) == 0
+            memory_host.drain(child)
+            parent = memory_host.scope(child).parent
+            units.append(parent.name)
+            _memory_readings(parent, current=10, peak=peak)
+            assert attempt.finish()[0]["peak_source"] == "kernel"
+            assert attempt.finish()[0]["peak_bytes"] == peak
+        _wait_for_parent_collection()
+    assert units[0] != units[1]
+
+
+def test_reaper_collects_crashed_owner_and_preserves_live_owner(namespace_manager):
+    import multiprocessing
+
+    process_context = multiprocessing.get_context("fork")
+    owners = []
+    try:
+        launched = []
+        for _ in range(2):
+            receiver, sender = process_context.Pipe()
+            owner = process_context.Process(
+                target=_overlap_owner, args=(sender, caps._LaunchClass.BOARD),
+            )
+            owner.start()
+            sender.close()
+            owners.append((owner, receiver))
+            assert receiver.poll(10)
+            launched.append(receiver.recv())
+        dead, live = launched
+        owners[0][0].kill()
+        owners[0][0].join(5)
+        assert caps._reap_dead_seats(caps._LaunchClass.BOARD, dry_run=True) == {
+            "stale": 1, "unknown": 0,
+        }
+        assert caps._reap_dead_seats(caps._LaunchClass.BOARD) == {"stale": 1, "unknown": 0}
+        assert not _owner_record(dead[0]).exists()
+        assert not _runtime_dropins(dead[0]).exists()
+        assert _owner_record(live[0]).exists()
+        assert _runtime_dropins(live[0]).exists()
+        assert Path(caps._proc_cgroup_of(live[2])).name == live[1]
+        assert (caps._seat_slice_chain(live[0])[-1] / "memory.max").read_text().strip() == str(
+            caps.DEFAULT_CAPS.memory_max_bytes)
+    finally:
+        for owner, receiver in owners:
+            if owner.is_alive():
+                receiver.send("collect")
+                owner.join(5)
+            if owner.is_alive():
+                owner.kill()
+                owner.join(5)
+            receiver.close()
+        # The fake manager does not send stop signals to its fake cgroup members.
+        if len(launched) == 2 and caps._CGROUP_ROOT != Path("/sys/fs/cgroup"):
+            try:
+                os.kill(launched[0][2], signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+
+def _record_existing_owner(unit, *, pid=None, started=None, launch_class="board"):
+    pid = os.getpid() if pid is None else pid
+    if started is None:
+        started = caps._owner_stat(pid)[1]
+    owner = caps._SeatOwner(unit, launch_class, pid, started, caps._boot_id())
+    with caps._owner_directory(create=True) as directory, caps._register_owner(directory, owner):
+        pass
+    return owner
+
+
+def test_reaper_handles_pid_reuse_unknowns_and_unloaded_records(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    runtime_control = runtime / "systemd/user.control"
+    runtime_control.mkdir(parents=True)
+    start = caps._owner_stat(os.getpid())[1]
+    reused, unknown, forged, unloaded = [
+        f"phase-loop-seat-01{index:032x}.slice" for index in range(4)
+    ]
+    _record_existing_owner(reused, started=start + 1)
+    _record_existing_owner(unknown, pid=13, started=1)
+    _record_existing_owner(forged, started=start + 1, launch_class="test")
+    _record_existing_owner(unloaded, started=start + 1)
+    for unit in (reused, unloaded):
+        _runtime_dropins(unit).mkdir()
+        (_runtime_dropins(unit) / "50-MemoryMax.conf").touch()
+    read_stat = caps._owner_stat
+
+    def read_owner(pid):
+        if pid == 13:
+            raise PermissionError
+        return read_stat(pid)
+
+    monkeypatch.setattr(caps, "_owner_stat", read_owner)
+    calls = []
+
+    def systemctl(*args, **kwargs):
+        calls.append(args)
+        if args[:2] == ("show", "--property=UnitPath"):
+            return SimpleNamespace(returncode=0, stdout=str(runtime_control).encode())
+        if args[0] == "show":
+            status = "not-found" if args[-1] == unloaded or ("stop", reused) in calls else "loaded"
+            return SimpleNamespace(
+                returncode=int(status == "not-found"),
+                stdout=f"LoadState={status}\nActiveState=inactive\nJob=\n".encode(),
+            )
+        if args[0] == "stop":
+            assert args[-1] == reused and kwargs["check"] is False
+            return SimpleNamespace(returncode=1)  # systemd unloaded it before the stop call
+        assert args[:2] == ("--no-reload", "revert")
+        shutil.rmtree(_runtime_dropins(args[-1]))
+
+    monkeypatch.setattr(caps, "_systemctl", systemctl)
+    assert caps._reap_dead_seats(caps._LaunchClass.BOARD) == {"stale": 2, "unknown": 2}
+    assert not _owner_record(reused).exists() and not _runtime_dropins(reused).exists()
+    assert not _owner_record(unloaded).exists() and not _runtime_dropins(unloaded).exists()
+    assert _owner_record(unknown).is_file() and _owner_record(forged).is_file()
+    assert not any(unknown in args or forged in args for args in calls)
+
+
+def test_two_reapers_collect_an_owner_record_once(monkeypatch, tmp_path):
+    import multiprocessing
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    with caps._seat_scope("reap-race"):
+        unit = caps._CURRENT_SEAT_SCOPE.get().unit
+    _record_existing_owner(unit, started=caps._owner_stat(os.getpid())[1] + 1)
+    context = multiprocessing.get_context("fork")
+    entered, release = context.Event(), context.Event()
+
+    def collect(directory, fd, exact_unit):
+        assert exact_unit == unit
+        entered.set()
+        assert release.wait(5)
+        os.unlink(unit, dir_fd=directory)
+
+    monkeypatch.setattr(caps, "_collect_owner", collect)
+    first = context.Process(target=caps._reap_dead_seats, args=(caps._LaunchClass.BOARD,))
+    first.start()
+    try:
+        assert entered.wait(5)
+        assert caps._reap_dead_seats(caps._LaunchClass.BOARD) == {"stale": 0, "unknown": 0}
+    finally:
+        release.set()
+        first.join(5)
+        if first.is_alive():
+            first.kill()
+            first.join(5)
+    assert first.exitcode == 0
+    assert not _owner_record(unit).exists()
+    assert caps._reap_dead_seats(caps._LaunchClass.BOARD) == {"stale": 0, "unknown": 0}
+
+
+def test_scoped_refusal_cleans_exact_record_and_dropins(namespace_manager):
+    with pytest.raises(seat_jail.SeatSandboxRefused):
+        with caps._seat_scope("refused-seat"):
+            unit = caps._CURRENT_SEAT_SCOPE.get().unit
+
+            def refuse():
+                assert _owner_record(unit).is_file()
+                assert _runtime_dropins(unit).is_dir()
+                raise OSError("refusal at spawn gate")
+
+            caps.capped_popen(["/usr/bin/false"], seat_key="refused-seat", before_spawn=refuse)
+    assert not _owner_record(unit).exists()
+    assert not _runtime_dropins(unit).exists()
+
+
+def test_failed_reap_retains_the_record_and_board_launch_continues(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    with caps._seat_scope("dead-previous-board"):
+        unit = caps._CURRENT_SEAT_SCOPE.get().unit
+    _record_existing_owner(unit, started=caps._owner_stat(os.getpid())[1] + 1)
+
+    def fail_collect(*args):
+        raise OSError("test collection failure")
+
+    monkeypatch.setattr(caps, "_collect_owner", fail_collect)
+    monkeypatch.setattr(panel_invoker, "_default_spawn", lambda *a, **k: ("OK", "review\nAGREE"))
+    result = panel_invoker.invoke_panel("artifact", ("codex",), max_concurrency=1)
+    assert result.legs[0].usable
+    assert _owner_record(unit).is_file()
+    assert "test collection failure" in caplog.text
+
+
+def test_reaper_never_exclusively_locks_live_or_unverifiable_records(monkeypatch, tmp_path):
+    from phase_loop_runtime import file_lock
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    with caps._seat_scope("live-and-unverifiable"):
+        live = caps._CURRENT_SEAT_SCOPE.get().unit
+    _record_existing_owner(live)
+    with caps._seat_scope("different-boot"):
+        different_boot = caps._CURRENT_SEAT_SCOPE.get().unit
+    owner = caps._SeatOwner(different_boot, "board", os.getpid(), 1, "different-boot")
+    with caps._owner_directory() as directory, caps._register_owner(directory, owner):
+        pass
+    with caps._seat_scope("wrong-uid"):
+        wrong_uid = caps._CURRENT_SEAT_SCOPE.get().unit
+    _record_existing_owner(wrong_uid, started=caps._owner_stat(os.getpid())[1] + 1)
+    wrong_ino = _owner_record(wrong_uid).stat().st_ino
+    fstat = os.fstat
+
+    def foreign_owner(fd):
+        info = fstat(fd)
+        if info.st_ino == wrong_ino:
+            return SimpleNamespace(st_uid=os.geteuid() + 1)
+        return info
+
+    def refuse_lock(*args, **kwargs):
+        pytest.fail("sweep tried to lock an unverified owner")
+
+    monkeypatch.setattr(caps.os, "fstat", foreign_owner)
+    monkeypatch.setattr(file_lock, "acquire_exclusive", refuse_lock)
+    assert caps._reap_dead_seats(caps._LaunchClass.BOARD) == {"stale": 0, "unknown": 2}
+    assert all(_owner_record(unit).exists() for unit in (live, different_boot, wrong_uid))

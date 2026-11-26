@@ -199,7 +199,8 @@ def world(tmp_path, monkeypatch):
             os.close(fd)
         return b"synthetic help\n"
 
-    def fake_qualify(verified, help_bytes, *, cancel_event=None, heartbeat=None, store=None):
+    def fake_qualify(verified, help_bytes, *, cancel_event=None, heartbeat=None, store=None,
+                     _store_locked=False):
         counter.qualify += 1
         fd = verified.reopen()
         try:
@@ -556,6 +557,18 @@ def test_worker_refuses_any_fd_that_is_not_a_fully_sealed_memfd(world, kind, mon
     assert launches == [] and gh._CANDIDATE is None
 
 
+@pytest.mark.parametrize("launch_class", [None, "board", "unknown"])
+def test_worker_requires_its_private_launch_class(monkeypatch, tmp_path, launch_class):
+    monkeypatch.setenv("PHASE_LOOP_SEAT_LAUNCH_CLASS", "qualification")
+    monkeypatch.setattr(q, "_set_parent_death_signal", lambda: None)
+    monkeypatch.setattr(q, "verified_fd_image", lambda fd: SimpleNamespace(sha256="test"))
+    monkeypatch.setattr(q, "provenance_gate", lambda sha: True)
+    monkeypatch.setattr(q, "_verified_review_authority", lambda authority: tmp_path)
+    monkeypatch.setattr(q._panel(), "invoke_board", lambda *a, **kw: pytest.fail("worker launched"))
+    with pytest.raises(q.QualificationFailure, match="valid launch class"):
+        q.worker(tmp_path, 42, launch_class=launch_class)
+
+
 def test_worker_refuses_sealed_unverified_bytes_without_provenance(world, monkeypatch):
     monkeypatch.chdir(world.tmp)
     launches = []
@@ -674,7 +687,7 @@ def _run_worker(world, monkeypatch, root, authority):
     monkeypatch.setattr(q, "provenance_gate", lambda *a, **k: True)
     fd = _memfd(world.image, FULL)
     try:
-        q.worker(root, fd, None, authority)
+        q.worker(root, fd, None, authority, "qualification")
     finally:
         os.close(fd)
 
@@ -1733,6 +1746,31 @@ def test_local_path_validates_with_the_release_paths_own_validator(world, monkey
     assert [c[0] for c in calls] == ["op", "op", "op", "validate"]
     assert calls[-1][1:] == (sha256(b"img").hexdigest(), sha256(b"help").hexdigest())
     assert outcome["status"] == "failed"
+
+
+def test_qualification_sweep_failure_does_not_prevent_launch(monkeypatch, tmp_path, caplog):
+    from phase_loop_runtime import seat_resource_caps as caps
+
+    def fail_directory(**kwargs):
+        with store.try_lock() as acquired:
+            assert not acquired
+        raise PermissionError("test owner directory failure")
+
+    monkeypatch.setattr(caps, "_owner_directory", fail_directory)
+    monkeypatch.setattr(q, "read_machine_id", lambda path="/etc/machine-id": MACHINE)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    seen = []
+    monkeypatch.setattr(q, "run_operation", lambda *a, **k: seen.append(k["_launch_class"]))
+    monkeypatch.setattr(q, "validate_directory", lambda *a, **k: {"route_qualified": True})
+    store = q.Store()
+    store.create()
+    image = gh.VerifiedImage.from_bytes(b"stand-in")
+    try:
+        assert q.qualify_image(image, b"help", store=store) == {"status": "passed"}
+    finally:
+        image.close()
+    assert seen == [caps._LaunchClass.QUALIFICATION] * len(q.OPERATIONS)
+    assert "test owner directory failure" in caplog.text
 
 
 # --------------------------------------------------------------------- I3 concurrency

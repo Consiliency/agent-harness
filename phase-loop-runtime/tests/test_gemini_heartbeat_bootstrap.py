@@ -576,7 +576,7 @@ def _qualification_worker(fixture_cli, tmp_path, monkeypatch):
         image = fixture_cli.module.VerifiedImage.from_bytes(fixture_cli.path.read_bytes())
         fd = image.reopen()
         try:
-            q.worker(root, fd, None, str(authority))
+            q.worker(root, fd, None, str(authority), launch_class="qualification")
         finally:
             os.close(fd)
             image.close()

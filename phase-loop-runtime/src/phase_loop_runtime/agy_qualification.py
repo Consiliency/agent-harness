@@ -18,6 +18,7 @@ from enum import StrEnum
 from hashlib import sha256
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -39,6 +40,7 @@ from . import __version__
 from . import agy_provenance
 from . import gemini_heartbeat as gh
 from .file_lock import acquire_exclusive
+from .seat_resource_caps import _LaunchClass, _reap_dead_seats
 
 # The files an installed wheel runs the qualified route from (agent-harness#1076 D2).
 # ``runtime_identity`` reports their digests. Since RECBIND no CI gate pins them: catalog
@@ -908,7 +910,7 @@ def _worker_terminal(root):
 
 
 def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, expected_help_sha256,
-                  cancel_event=None):
+                  cancel_event=None, _launch_class=_LaunchClass.QUALIFICATION):
     """External observer survives owner loss; no provider adapter is replaced.
 
     ``image`` is a VerifiedImage: the worker receives an independent read of its sealed
@@ -974,7 +976,7 @@ def run_operation(operation, root, help_evidence, extra_helpers=(), *, image, ex
             with (root / "worker.log").open("wb") as log:
                 proc = _panel().launch_provider(
                     [sys.executable, "-I", "-c", _WORKER_BOOT, str(_SRC), "--worker", str(root),
-                     "--authority", str(authority),
+                     "--authority", str(authority), "--launch-class", _launch_class.value,
                      "--image-fd", str(image_fd), "--parent-pid", str(os.getpid())],
                     stdout=log, stderr=log, start_new_session=True, pass_fds=(image_fd,))
         finally:
@@ -2405,6 +2407,7 @@ def _first_use_subject(env, image, path, *, cancel_event=None, heartbeat=None, s
             store.create()
         wait_started = time.time()
         with store.lock(cancel_event, heartbeat):
+            _reap_dead_seats(_LaunchClass.QUALIFICATION)
             profile_digest = agy_profile_digest()
             if store.get_failed(image.sha256, host, profile_digest) is not None:
                 raise ValueError(SELF_QUALIFICATION_FAILED)
@@ -2445,8 +2448,10 @@ def _first_use_subject(env, image, path, *, cancel_event=None, heartbeat=None, s
             if store.get_qualified(image.sha256, help_sha256, host, profile_digest) is None:
                 if cancel_event is not None and cancel_event.is_set():
                     raise ValueError(CANCELLED)
-                outcome = (qualify or qualify_image)(image, help_bytes, cancel_event=cancel_event,
-                                                     heartbeat=heartbeat, store=store)
+                driver = qualify or qualify_image
+                held_lock = {"_store_locked": True} if driver is qualify_image else {}
+                outcome = driver(image, help_bytes, cancel_event=cancel_event,
+                                 heartbeat=heartbeat, store=store, **held_lock)
                 if outcome["status"] == "passed":
                     store.put_qualified(image.sha256, help_sha256, host, profile_digest,
                                         provenance["release_version"])
@@ -2510,10 +2515,25 @@ def _classify_failure(root, operation):
     return "failed"
 
 
-def qualify_image(image, help_bytes, *, cancel_event=None, heartbeat=None, store=None):
+def _sweep_qualification_seats(store):
+    try:
+        if store.status() == "absent":
+            store.create()
+        if store.status() == "ok":
+            with store.try_lock() as acquired:
+                if acquired:
+                    _reap_dead_seats(_LaunchClass.QUALIFICATION)
+    except (OSError, ValueError) as exc:
+        logging.getLogger(__name__).warning("qualification seat sweep is unavailable: %s", exc)
+
+
+def qualify_image(image, help_bytes, *, cancel_event=None, heartbeat=None, store=None,
+                  _launch_class=_LaunchClass.QUALIFICATION, _store_locked=False):
     """Run the three live operations for ``image`` (already provenance-verified) and
     validate them with the release path's own validator (I2)."""
     store = store or Store()
+    if _launch_class is _LaunchClass.QUALIFICATION and not _store_locked:
+        _sweep_qualification_seats(store)
     runs = store.host_dir / "runs"
     runs.mkdir(mode=0o700, exist_ok=True)
     series = Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%dT%H%M%S-"), dir=runs))
@@ -2527,7 +2547,8 @@ def qualify_image(image, help_bytes, *, cancel_event=None, heartbeat=None, store
             heartbeat(f"agy_qualification_{operation}")
         try:
             run_operation(operation, series / operation, help_path, image=image,
-                          expected_help_sha256=help_sha256, cancel_event=cancel_event)
+                          expected_help_sha256=help_sha256, cancel_event=cancel_event,
+                          _launch_class=_launch_class)
         except Exception as exc:  # noqa: BLE001 - classified below; never escapes the preflight
             if str(exc) == CANCELLED or (cancel_event is not None and cancel_event.is_set()):
                 return {"status": "cancelled"}
@@ -2712,7 +2733,7 @@ def _set_parent_death_signal():
         raise QualificationFailure("qualification worker cannot bind to its owner") from exc
 
 
-def worker(root, image_fd=None, parent_pid=None, authority=None):
+def worker(root, image_fd=None, parent_pid=None, authority=None, launch_class=None):
     # Dies with the qualification coordinator: a SIGKILLed lock holder leaves no worker.
     _set_parent_death_signal()
     if parent_pid is not None and os.getppid() != parent_pid:
@@ -2723,6 +2744,12 @@ def worker(root, image_fd=None, parent_pid=None, authority=None):
     if not provenance_gate(image.sha256):
         raise QualificationFailure("qualification image fd has no provenance")
     authority = _verified_review_authority(authority)
+    try:
+        launch_class = _LaunchClass(launch_class)
+    except ValueError as exc:
+        raise QualificationFailure("qualification worker requires a valid launch class") from exc
+    if launch_class not in _WORKER_LAUNCH_CLASSES:
+        raise QualificationFailure("qualification worker requires a valid launch class")
     gh._CANDIDATE = image
     from .advisor_board.fixtures import DEFAULT_BOARD
     panel = _panel()
@@ -2744,6 +2771,7 @@ def worker(root, image_fd=None, parent_pid=None, authority=None):
             repo_dir=authority, mode="review", monitoring_policy="heartbeat_only",
             stream_dir=root / "stream", cancel_event=cancel,
             review_policy=panel.ReviewLandingPolicy(("gemini",), False),
+            _seat_launch_class=launch_class,
         )
         leg, = result.legs
         if not _staged_authority_matches(leg):
@@ -2791,6 +2819,9 @@ def release_image_from_path(env):
     return image
 
 
+_WORKER_LAUNCH_CLASSES = (_LaunchClass.QUALIFICATION, _LaunchClass.TEST)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     group = parser.add_mutually_exclusive_group(required=True)
@@ -2807,9 +2838,11 @@ def main(argv=None):
                         help="Qualify the image held by this inherited, fully sealed memfd (the upstream watch)")
     parser.add_argument("--parent-pid", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--authority", help=argparse.SUPPRESS)
+    parser.add_argument("--launch-class", choices=[kind.value for kind in _WORKER_LAUNCH_CLASSES],
+                        help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.worker is not None:
-        worker(args.worker.resolve(), args.image_fd, args.parent_pid, args.authority)
+        worker(args.worker.resolve(), args.image_fd, args.parent_pid, args.authority, args.launch_class)
     elif args.measure_help:
         # The upstream watch measures help with the PREPARED tree's owned profile.
         if args.image_fd is None or args.output is None:
@@ -2834,6 +2867,7 @@ def main(argv=None):
                 raise QualificationFailure("qualification candidate image is not a qualified set member")
         else:
             image = release_image_from_path(_panel()._broker_subscription_env())
+        _sweep_qualification_seats(Store())
         run_operation(args.operation, args.output.resolve(), args.help_evidence, args.helper_image,
                       image=image, expected_help_sha256=gh.QUALIFIED_IMAGES[image.sha256])
     return 0

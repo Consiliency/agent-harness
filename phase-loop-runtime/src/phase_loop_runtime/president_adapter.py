@@ -574,9 +574,9 @@ class PresidentInvoke:
                 credential_path=Path(subscription_env.get("HOME", str(Path.home())))
                 / ".gemini/antigravity-cli/antigravity-oauth-token",
             ) as profile:
-                from .seat_resource_caps import _seat_scope
+                from .seat_resource_caps import _LaunchClass, _seat_scope
                 seat_key = f"president:gemini:{self.invocation}:{uuid.uuid4().hex}"
-                with _seat_scope(seat_key):
+                with _seat_scope(seat_key, _LaunchClass.BOARD):
                     proc = panel_invoker._run_leg_with_liveness(
                         [profile.executable, *command[1:]], cwd=out_dir, env=profile.env,
                         deadline_s=deadline_s, input_text=protocol.transport,
@@ -589,9 +589,9 @@ class PresidentInvoke:
                 panel_invoker._broker_leg_env(self.base_env, "gemini"),
             ) as env:
                 try:
-                    from .seat_resource_caps import _seat_scope
+                    from .seat_resource_caps import _LaunchClass, _seat_scope
                     seat_key = f"president:gemini:{self.invocation}:{uuid.uuid4().hex}"
-                    with _seat_scope(seat_key):
+                    with _seat_scope(seat_key, _LaunchClass.BOARD):
                         proc = panel_invoker._run_leg_with_liveness(
                             command, cwd=out_dir, env=env, deadline_s=deadline_s,
                             input_text=protocol.transport,
@@ -634,9 +634,9 @@ class PresidentInvoke:
                 return 1, "", auth_detail
             timeout_s = panel_invoker._leg_timeout_for(out_dir)
             backstop_s = max(1, int(timeout_s), panel_invoker._MAX_LEG_TIMEOUT_S)
-            from .seat_resource_caps import _seat_scope
+            from .seat_resource_caps import _LaunchClass, _seat_scope
             seat_key = f"president:claude:{self.invocation}:{uuid.uuid4().hex}"
-            with _seat_scope(seat_key):
+            with _seat_scope(seat_key, _LaunchClass.BOARD):
                 rc, text, log, _tail = panel_invoker._run_claude_print_session(
                     panel_invoker._claude_print_seat_command(
                         route_model, None, brokered=True, env=self.base_env),
@@ -664,9 +664,9 @@ class PresidentInvoke:
         timeout_s = panel_invoker._leg_timeout_for(out_dir)
         backstop_s = max(1, int(timeout_s), panel_invoker._MAX_LEG_TIMEOUT_S)
         try:
-            from .seat_resource_caps import _seat_scope
+            from .seat_resource_caps import _LaunchClass, _seat_scope
             seat_key = f"president:claude:{self.invocation}:{uuid.uuid4().hex}"
-            with _seat_scope(seat_key):
+            with _seat_scope(seat_key, _LaunchClass.BOARD):
                 rc, text, log, _tail = panel_invoker._run_claude_tui_session(
                     command=command,
                     cwd=cwd,

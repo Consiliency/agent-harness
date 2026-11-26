@@ -3975,14 +3975,14 @@ def _jail_launch(stage: "_Stage", reservation, *, label: str, budget: int) -> _J
     import uuid
 
     from . import seat_jail
-    from .seat_resource_caps import _seat_scope
+    from .seat_resource_caps import _LaunchClass, _seat_scope
 
     outcome = _JailOutcome()
     measurement = None
     try:
         # The per-seat resource scope, as the window launchers hold one for their whole
         # launch: the jailed branch's capped launch needs a live seat key.
-        with _seat_scope(f"measure:grok:{label}:{uuid.uuid4().hex}"), \
+        with _seat_scope(f"measure:grok:{label}:{uuid.uuid4().hex}", _LaunchClass.QUALIFICATION), \
                 _jail_compose(stage, label, budget=budget) as composed:
             outcome.proxy = composed.proxy
             grok_seat = composed.grok_seat

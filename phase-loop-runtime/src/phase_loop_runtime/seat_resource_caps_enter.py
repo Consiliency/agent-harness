@@ -79,11 +79,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-fd", type=int, required=True)
     parser.add_argument("--diagnostic-fd", type=int, required=True)
     parser.add_argument("--gate-fd", type=int, required=True)
+    parser.add_argument("--setup-fd", type=int)
     parser.add_argument("--expected", required=True)
     parser.add_argument("--cgroup-root", default="/sys/fs/cgroup")
     parser.add_argument("--proc-cgroup", default="/proc/self/cgroup")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    # systemd-run has now created the scope. Do not retain the owner's setup
+    # lock while waiting for the gate or after exec into the provider.
+    if args.setup_fd is not None:
+        os.close(args.setup_fd)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         return 125

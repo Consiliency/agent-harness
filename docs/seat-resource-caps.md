@@ -1,9 +1,24 @@
 # Per-seat resource caps
 
 Local review seats fail closed unless the runtime can put every provider process and SDK
-worker for one `seat_key` below one capped cgroup parent. Each process uses a distinct child
-scope, so the record limits their combined use. A failed setup or readback reports
+worker for one scoped seat attempt below one capped cgroup parent. Each process uses a
+distinct child scope, so the record limits their combined use. Overlapping board,
+qualification and conformance attempts get separate parents even when they use the same
+logical `seat_key`. LaneExec keeps its reservation-derived slice. A failed setup or readback reports
 `seat_resource_caps_unavailable`; the seat does not run and has no uncapped fallback.
+
+Each attempt's cap counts toward the account's overall memory limit. With the default 4 GiB
+cap and zero swap, two overlapping attempts can exceed the dev0 collaborator account's 6 GiB
+limit. A single board with several concurrent capped legs can already exceed 6 GiB.
+Serialize capped legs and attempts on that account, and use a separately provisioned runner
+for overlap tests. Cross-user admission and raised caps are tracked in agent-harness#2197.
+
+The runtime records each private slice's owner PID, process start time and boot ID under
+`$XDG_RUNTIME_DIR/phase-loop-seat-owners`. Normal collection stops and drains the exact
+slice, then removes its runtime overrides. Board launches, qualification and conformance
+can also collect records for their respective class after verifying that the original owner
+has exited. Unverifiable owners are left in place. The readiness report includes advisory
+stale and unknown record counts.
 
 ## Effective record
 
@@ -158,7 +173,8 @@ provisioned device and that the child scratch is not the degraded fallback. A re
 is reported as a record failure, never retried with the defaults. The gate then runs
 `phase-loop-runtime/tests/test_seat_caps_scratch_binding.py` inside the user manager, which
 makes the same check from inside a test session, where the strict suite resolves its paths.
-It skips everywhere else.
+It skips everywhere else. On the ephemeral gate manager, teardown stops the gate launcher,
+reaps dead owners and then bulk-stops any remaining seat units before unmounting scratch.
 
 The `seat-caps-gate.yml` probe runs the same gate on six shards and adds
 `phase-loop-runtime/scripts/seat_caps_loop_validation.py`, which performs real direct I/O on
