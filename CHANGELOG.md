@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Changed
+
+- Board and qualification seat attempts now get private capped slices, even when they
+  share a logical seat key. Cleanup removes runtime overrides and can reclaim slices
+  whose owners have exited (agent-harness#2201).
+
 ## [0.7.46] - 2026-11-25
 
 ### Added

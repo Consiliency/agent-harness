@@ -139,7 +139,7 @@ def require_prerequisites(gap: str | None, *, strict: bool) -> None:
 # ------------------------------------------------------------------- the driver run
 
 _BUILT: dict[str, Path] = {}
-_RUNS: dict[str, dict] = {}
+_RUNS: dict[tuple[str, q._LaunchClass], dict] = {}
 
 
 def _build(mode: str, directory: Path) -> Path:
@@ -173,10 +173,12 @@ def _login(home: Path) -> None:
     path.chmod(0o600)
 
 
-def _qualify(mode: str, base: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+def _qualify(mode: str, base: Path, monkeypatch: pytest.MonkeyPatch, *,
+             launch_class=q._LaunchClass.TEST) -> dict:
     """One production ``qualify_image`` series of ``mode``'s stand-in; memoized per mode."""
-    if mode in _RUNS:
-        return _RUNS[mode]
+    run_key = (mode, launch_class)
+    if run_key in _RUNS:
+        return _RUNS[run_key]
     work = base / mode
     home = work / "home"
     home.mkdir(parents=True)
@@ -206,15 +208,15 @@ def _qualify(mode: str, base: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
             "0" * 64)
         store.put_provenance(agy_provenance.Provenance(image.sha256, host.name, asset), q.agy_profile_digest())
         help_bytes = q._run_help(image, q._panel()._broker_subscription_env())
-        outcome = q.qualify_image(image, help_bytes, store=store)
+        outcome = q.qualify_image(image, help_bytes, store=store, _launch_class=launch_class)
         series, = (store.host_dir / "runs").iterdir()
     finally:
         image.close()
     receipts = {path.parent.name: json.loads(path.read_text()) for path in series.glob("*/qualification.json")}
     failures = {path.parent.name: json.loads(path.read_text()) for path in series.glob("*/failure.json")}
-    _RUNS[mode] = {"outcome": outcome, "receipts": receipts, "failures": failures,
-                   "diagnostics": _diagnostics(series)}
-    return _RUNS[mode]
+    _RUNS[run_key] = {"outcome": outcome, "receipts": receipts, "failures": failures,
+                      "diagnostics": _diagnostics(series)}
+    return _RUNS[run_key]
 
 
 def _diagnostics(series: Path) -> dict:
@@ -235,13 +237,80 @@ def _diagnostics(series: Path) -> dict:
 
 @pytest.fixture(scope="session")
 def conformance_base(tmp_path_factory):
-    return tmp_path_factory.mktemp("agy-conformance")
+    seat_resource_caps._reap_dead_seats(q._LaunchClass.TEST)
+    try:
+        yield tmp_path_factory.mktemp("agy-conformance")
+    finally:
+        seat_resource_caps._reap_dead_seats(q._LaunchClass.TEST)
 
 
 @pytest.fixture
 def driver(conformance_base, monkeypatch):
     require_prerequisites(prerequisite_gap(), strict=STRICT)
     return lambda mode: _qualify(mode, conformance_base, monkeypatch)
+
+
+def test_conformance_sweep_failure_is_advisory(tmp_path_factory, monkeypatch, caplog):
+    def fail_directory(**kwargs):
+        raise PermissionError("test conformance owner directory failure")
+
+    monkeypatch.setattr(seat_resource_caps, "_owner_directory", fail_directory)
+    fixture = conformance_base.__wrapped__(tmp_path_factory)
+    assert next(fixture).is_dir()
+    fixture.close()
+    assert caplog.text.count("test conformance owner directory failure") == 2
+
+
+@pytest.mark.real_seat_caps
+def test_qualification_worker_keeps_same_key_board_live(conformance_base, monkeypatch):
+    from dataclasses import replace
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    from phase_loop_runtime.file_lock import acquire_exclusive
+
+    require_prerequisites(prerequisite_gap(), strict=STRICT)
+    caps = seat_resource_caps
+    seat, = (seat for seat in DEFAULT_BOARD.seats if seat.harness == "gemini")
+    key = str(seat.seat_key)
+    board_caps = replace(caps.DEFAULT_CAPS, memory_max_bytes=64 << 20)
+    monkeypatch.setattr(caps, "load_caps", lambda: board_caps)
+    # This test uses the shared manager. Reclaim only the records observed
+    # through this series's synthetic provider.
+    monkeypatch.setattr(q, "_reap_dead_seats", lambda launch_class: None)
+    units = set()
+    inspect_network = q.inspect_network
+
+    def observe_caps(pid):
+        unit = Path(caps._proc_cgroup_of(pid)).parent.name
+        assert caps._ISOLATED_UNIT.fullmatch(unit)[1] == "02"
+        assert unit != board_unit
+        units.add(unit)
+        return inspect_network(pid)
+
+    monkeypatch.setattr(q, "inspect_network", observe_caps)
+    work = conformance_base / "qualification-overlap"
+    work.mkdir()
+    with caps._seat_scope(key, q._LaunchClass.BOARD):
+        board = caps.capped_popen(["/usr/bin/sleep", "90"], seat_key=key)
+        board_path = Path(caps._proc_cgroup_of(board.pid))
+        board_unit = board_path.parent.name
+        try:
+            result = _qualify("conforming", work, monkeypatch,
+                              launch_class=q._LaunchClass.QUALIFICATION)
+            assert result["outcome"] == PASSED, result["diagnostics"]
+            assert len(units) == 3
+            assert board.poll() is None
+            assert Path(caps._proc_cgroup_of(board.pid)) == board_path
+            assert (caps._seat_slice_chain(board_unit)[-1] / "memory.max").read_text().strip() == str(
+                board_caps.memory_max_bytes)
+        finally:
+            board.terminate()
+            board.wait(timeout=5)
+            for unit in units:
+                with caps._owner_directory() as directory, caps._open_owner(directory, unit) as fd:
+                    if fd is not None:
+                        acquire_exclusive(fd, blocking=False)
+                        if caps._owner_state(caps._read_owner(fd, unit), caps._boot_id()) == "dead":
+                            caps._collect_owner(directory, fd, unit)
 
 
 # ------------------------------------------------------------ report identity
@@ -267,7 +336,16 @@ def _report_identity(record_testsuite_property):
 # --------------------------------------------------------------------- obligations
 
 @pytest.mark.parametrize("obligation", CONFORMANCE_OBLIGATIONS)
-def test_obligation(obligation, driver):
+def test_obligation(obligation, driver, monkeypatch):
+    if obligation == "op_completion":
+        inspect_network = q.inspect_network
+
+        def inspect_test_slice(pid):
+            unit = Path(seat_resource_caps._proc_cgroup_of(pid)).parent.name
+            assert seat_resource_caps._ISOLATED_UNIT.fullmatch(unit)[1] == "03"
+            return inspect_network(pid)
+
+        monkeypatch.setattr(q, "inspect_network", inspect_test_slice)
     mode, expected = EXPECTED[obligation]
     run = driver(mode)
     if run["outcome"] != expected:

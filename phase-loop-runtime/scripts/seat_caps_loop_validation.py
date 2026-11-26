@@ -272,7 +272,7 @@ def validate(args, result: dict[str, Any]) -> None:
         result["control"] = control
         if not control["conclusive"]:
             return
-        with caps._seat_scope(SEAT_KEY):
+        with caps._seat_scope(SEAT_KEY, caps._LaunchClass.TEST):
             # Realize and retain the parent before the first snapshot.
             _finish(caps.capped_popen(["/bin/true"], seat_key=SEAT_KEY, stdin=subprocess.DEVNULL,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,

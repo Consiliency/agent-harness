@@ -6,17 +6,23 @@ import ctypes
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import re
 import select
+import shlex
 import stat
 import subprocess
+import sys
 import threading
 import time
 from typing import TYPE_CHECKING, Literal, Sequence
+
+from .file_lock import acquire_exclusive
 
 if TYPE_CHECKING:
     from . import provider_tree_proof as _tree_proof
@@ -80,11 +86,23 @@ class CapsUnavailable(RuntimeError):
     """Private cause for the single public caps refusal code."""
 
 
+class _LaunchClass(Enum):
+    BOARD = "board"
+    QUALIFICATION = "qualification"
+    TEST = "test"
+
+
+_CLASS_TAGS = dict(zip(_LaunchClass, ("01", "02", "03"), strict=True))
+_ISOLATED_UNIT = re.compile(r"phase-loop-seat-(01|02|03)[0-9a-f]{32}\.slice")
+_LEGACY_UNIT = re.compile(r"phase-loop-seat-[0-9a-f]{24}\.slice")
+
+
 @dataclass
 class _SeatScope:
     seat_key: str
+    launch_class: _LaunchClass
+    unit: str
     parent: _Parent | None = None
-    carved: tuple[Path, ...] = ()
 
 
 _CURRENT_SEAT_SCOPE: ContextVar[_SeatScope | None] = ContextVar(
@@ -96,24 +114,32 @@ _UNCAPPED_NONSEAT_PROBE: ContextVar[bool] = ContextVar(
 
 
 @contextmanager
-def _seat_scope(seat_key: str):
-    """Carry one seat identity and lazily retain its parent through the whole attempt."""
+def _seat_scope(seat_key: str, launch_class: _LaunchClass | None = None):
+    """Retain one private parent per attempt. In-process callers default to board."""
     if not isinstance(seat_key, str) or not seat_key:
         _refuse("a live seat key is required")
+    if launch_class is not None and not isinstance(launch_class, _LaunchClass):
+        _refuse("the seat launch class is invalid")
     existing = _CURRENT_SEAT_SCOPE.get()
     if existing is not None:
         if existing.seat_key != seat_key:
             _refuse("one launch context cannot carry two seat keys")
+        if launch_class is not None and existing.launch_class is not launch_class:
+            _refuse("one launch context cannot carry two launch classes")
         yield
         return
-    scope = _SeatScope(seat_key)
+    launch_class = launch_class or _LaunchClass.BOARD
+    leaf = _CLASS_TAGS[launch_class] + hashlib.sha256(
+        os.urandom(16) + seat_key.encode(),
+    ).hexdigest()[:32]
+    scope = _SeatScope(seat_key, launch_class, f"phase-loop-seat-{leaf}.slice")
     token = _CURRENT_SEAT_SCOPE.set(scope)
     try:
         yield
     finally:
         _CURRENT_SEAT_SCOPE.reset(token)
         if scope.parent is not None:
-            _release_parent(scope.seat_key, scope.parent, scope.carved)
+            _release_parent(scope.parent)
 
 
 def live_seat_key() -> str:
@@ -413,7 +439,7 @@ def _manager_cgroup() -> Path:
 
 def _seat_slice_chain(unit: str) -> tuple[Path, ...]:
     """Return the user-manager root through this generated seat slice."""
-    if not unit.startswith("phase-loop-seat-") or not unit.endswith(".slice"):
+    if not (_ISOLATED_UNIT.fullmatch(unit) or _LEGACY_UNIT.fullmatch(unit)):
         _refuse("the capped parent unit is invalid")
     parts = unit.removesuffix(".slice").split("-")
     current = _manager_cgroup()
@@ -454,6 +480,7 @@ class _Parent:
     owner: object | None = None
     fresh: bool = False
     shared: threading.Event = field(default_factory=threading.Event)
+    record: _SeatOwner | None = None
 
 
 _PARENTS: dict[str, _Parent] = {}
@@ -685,7 +712,6 @@ class _SeatMemoryAttempt:
         self.closing = False
         self.parent = None
         self.seat_key = ""
-        self.carved = ()
         self.observer = None
         self.sampler = None
         self.children: dict[str, subprocess.Popen[bytes]] = {}
@@ -694,7 +720,7 @@ class _SeatMemoryAttempt:
         self.drained = False
         self.sealed = False
 
-    def retain(self, seat_key: str, parent: _Parent, carved: Sequence[Path], maximum: int):
+    def retain(self, seat_key: str, parent: _Parent, maximum: int):
         with self.lock:
             if self.sealed:
                 return
@@ -706,7 +732,7 @@ class _SeatMemoryAttempt:
                 return
             with _PARENT_LOCK:
                 parent.refs += 1
-            self.parent, self.seat_key, self.carved = parent, seat_key, tuple(carved)
+            self.parent, self.seat_key = parent, seat_key
             try:
                 self.observer = _SeatMemoryObserver(
                     _seat_slice_chain(parent.unit)[-1],
@@ -798,7 +824,7 @@ class _SeatMemoryAttempt:
             if self.observer is not None and (self.sampler is None or self.sampler_done):
                 os.close(self.observer.directory)
         if self.parent is not None:
-            _release_parent(self.seat_key, self.parent, self.carved)
+            _release_parent(self.parent)
 
 
 _CURRENT_MEMORY_ATTEMPT: ContextVar[_SeatMemoryAttempt | None] = ContextVar(
@@ -817,17 +843,298 @@ def _seat_memory_attempt():
         attempt.close()
 
 
-def _systemctl(*args: str, timeout: float = 15.0) -> None:
+def _systemctl(*args: str, timeout: float = 15.0, capture: bool = False,
+               check: bool = True, guard: int | None = None):
     # Parent-slice management needs the same user-manager connection as the
     # later systemd-run launch, including when the caller uses a clean env.
     runtime = _runtime_dir()
     manager_env = {**os.environ, "XDG_RUNTIME_DIR": str(runtime),
                    "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime / 'bus'}"}
     result = subprocess.run([str(_SYSTEMCTL), "--user", *args], stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            timeout=timeout, check=False, env=manager_env)
-    if result.returncode:
+                            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=timeout, check=False,
+                            env=manager_env, **({} if guard is None else {"pass_fds": (guard,)}))
+    if check and result.returncode:
         _refuse("the capped parent could not be configured")
+    return result
+
+
+@dataclass(frozen=True)
+class _SeatOwner:
+    unit: str
+    launch_class: str
+    pid: int
+    start_time: int
+    boot_id: str
+
+
+def _boot_id() -> str:
+    return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+
+
+def _owner_stat(pid: int) -> tuple[str, int]:
+    # comm (field 2) may contain spaces and parentheses. Start time is field 22.
+    fields = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()
+    return fields[0].decode("ascii"), int(fields[19])
+
+
+def _owner_state(owner: _SeatOwner, boot_id: str) -> str:
+    if owner.boot_id != boot_id:
+        return "unknown"
+    try:
+        state, start_time = _owner_stat(owner.pid)
+    except FileNotFoundError:
+        # A hidden proc entry is indistinguishable from an exited PID by path
+        # alone. Ask the kernel whether the PID exists in this namespace.
+        try:
+            os.close(os.pidfd_open(owner.pid))
+        except ProcessLookupError:
+            return "dead"
+        except (AttributeError, OSError, OverflowError):
+            pass
+        return "unknown"
+    except (OSError, ValueError, IndexError):
+        return "unknown"
+    return "dead" if start_time != owner.start_time or state in {"Z", "X"} else "live"
+
+
+@contextmanager
+def _owner_directory(*, create: bool = False):
+    runtime = _runtime_dir()
+    base = _open_memory_parent(runtime)
+    try:
+        if os.fstat(base).st_uid != os.geteuid():
+            _refuse("the user manager runtime directory has another owner")
+        name = "phase-loop-seat-owners"
+        if create:
+            try:
+                os.mkdir(name, 0o700, dir_fd=base)
+            except FileExistsError:
+                pass
+        directory = os.open(name, _DIRECTORY_FLAGS | os.O_NOFOLLOW, dir_fd=base)
+        try:
+            info = os.fstat(directory)
+            if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                _refuse("the seat owner directory is not private")
+            yield directory
+        finally:
+            os.close(directory)
+    finally:
+        os.close(base)
+
+
+@contextmanager
+def _register_owner(directory: int, owner: _SeatOwner):
+    # Publish only a complete record, with its lock already held. No name is
+    # replaced, and helper processes inherit the same open file description.
+    temp = f".{owner.unit}.{os.urandom(8).hex()}"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 0o600, dir_fd=directory)
+    try:
+        try:
+            acquire_exclusive(fd)
+            os.fchmod(fd, 0o600)
+            body = json.dumps(asdict(owner)).encode("ascii")
+            if os.write(fd, body) != len(body):
+                _refuse("the seat owner record could not be written")
+            os.link(temp, owner.unit, src_dir_fd=directory, dst_dir_fd=directory,
+                    follow_symlinks=False)
+        finally:
+            os.unlink(temp, dir_fd=directory)
+        yield fd
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _open_owner(directory: int, unit: str):
+    if not _ISOLATED_UNIT.fullmatch(unit):
+        _refuse("the seat owner record name is invalid")
+    try:
+        fd = os.open(unit, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=directory)
+    except FileNotFoundError:
+        yield None
+        return
+    try:
+        info = os.fstat(fd)
+        if (info.st_uid != os.geteuid() or not stat.S_ISREG(info.st_mode)
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > _DIAGNOSTIC_CAP):
+            _refuse("the seat owner record is not private")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _read_owner(fd: int, unit: str) -> _SeatOwner:
+    body = json.loads(os.pread(fd, _DIAGNOSTIC_CAP + 1, 0))
+    try:
+        owner = _SeatOwner(**body)
+        launch_class = _LaunchClass(owner.launch_class)
+    except (TypeError, ValueError) as exc:
+        _refuse("the seat owner record is invalid", exc)
+    if (owner.unit != unit or _ISOLATED_UNIT.fullmatch(unit)[1] != _CLASS_TAGS[launch_class]
+            or type(owner.pid) is not int or owner.pid <= 0
+            or type(owner.start_time) is not int or owner.start_time <= 0
+            or not isinstance(owner.boot_id, str)):
+        _refuse("the seat owner record is invalid")
+    return owner
+
+
+def _same_record(directory: int, fd: int, unit: str) -> bool:
+    try:
+        return os.path.samestat(os.fstat(fd), os.stat(unit, dir_fd=directory, follow_symlinks=False))
+    except FileNotFoundError:
+        return False
+
+
+@contextmanager
+def _scope_setup_guard(parent: _Parent):
+    if parent.record is None:
+        yield None
+        return
+    import fcntl
+
+    with _owner_directory() as directory, _open_owner(directory, parent.unit) as fd:
+        if fd is None:
+            _refuse("the live seat owner record is unavailable")
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        if not _same_record(directory, fd, parent.unit) or _read_owner(fd, parent.unit) != parent.record:
+            _refuse("the live seat owner record changed")
+        yield fd
+
+
+def _unit_status(unit: str) -> dict[str, str]:
+    result = _systemctl("show", "--property=LoadState,ActiveState,Job", unit,
+                        capture=True, check=False)
+    fields = dict(line.split("=", 1) for line in result.stdout.decode().splitlines() if "=" in line)
+    if (not {"LoadState", "ActiveState", "Job"} <= fields.keys()
+            or (result.returncode and fields["LoadState"] != "not-found")):
+        _refuse("the capped parent status is unavailable")
+    return fields
+
+
+def _settled_unit(unit: str) -> dict[str, str]:
+    deadline = time.monotonic() + 5
+    while True:
+        status = _unit_status(unit)
+        if not status["Job"]:
+            return status
+        if time.monotonic() >= deadline:
+            _refuse("the capped parent still has a pending systemd job")
+        time.sleep(0.05)
+
+
+def _lstat_if_present(path: Path):
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _owned_dropins(unit: str) -> Path:
+    """Revert only exact runtime control overrides from the cap setup."""
+    result = _systemctl("show", "--property=UnitPath", "--value", capture=True)
+    paths = [Path(part) for part in shlex.split(result.stdout.decode())]
+    runtime = _runtime_dir() / "systemd/user.control"
+    if runtime not in paths or not all(path.is_absolute() for path in paths):
+        _refuse("the user manager unit paths are unavailable")
+    names = {f"50-{prop.partition('=')[0]}.conf"
+             for prop in _parent_properties(DEFAULT_CAPS, (), ())}
+    for path in paths:
+        if _lstat_if_present(path / unit) is not None:
+            _refuse("the capped parent has a unit fragment")
+        dropins = path / (unit + ".d")
+        info = _lstat_if_present(dropins)
+        if info is None:
+            continue
+        if path != runtime or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+            _refuse("the capped parent has overrides outside its owned caps")
+        for entry in dropins.iterdir():
+            info = entry.lstat()
+            if entry.name not in names or not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+                _refuse("the capped parent has overrides outside its owned caps")
+    return runtime / (unit + ".d")
+
+
+def _collect_owner(directory: int, fd: int, unit: str) -> None:
+    if not _same_record(directory, fd, unit):
+        return
+    dropins = _owned_dropins(unit)
+    status = _settled_unit(unit)
+    if status["LoadState"] != "not-found":
+        result = _systemctl("stop", unit, check=False, guard=fd)
+        status = _settled_unit(unit)
+        if result.returncode and status["LoadState"] != "not-found":
+            _refuse("the capped parent could not be stopped")
+    if status["ActiveState"] != "inactive":
+        _refuse("the capped parent is still active")
+    try:
+        cg = _open_memory_parent(_seat_slice_chain(unit)[-1])
+    except FileNotFoundError:
+        pass
+    else:
+        try:
+            if "populated 0" not in _memory_file(cg, "cgroup.events").splitlines():
+                _refuse("the capped parent is still populated")
+        finally:
+            os.close(cg)
+    if _lstat_if_present(dropins) is not None:
+        _systemctl("--no-reload", "revert", unit, guard=fd)
+        if _lstat_if_present(dropins) is not None:
+            _refuse("the capped parent's runtime overrides remain")
+    try:
+        os.unlink(unit, dir_fd=directory)
+    except FileNotFoundError:
+        pass
+
+
+_OWNER_ERRORS = (CapsUnavailable, OSError, ValueError, IndexError, subprocess.SubprocessError)
+
+
+def _reap_dead_seats(launch_class: _LaunchClass | None = None, *, dry_run: bool = False
+                     ) -> dict[str, int]:
+    """Scan only exact records in this user manager. Failures are advisory."""
+    counts = {"stale": 0, "unknown": 0}
+    if sys.platform != "linux":
+        return counts
+    log = logging.getLogger(__name__)
+    try:
+        with _owner_directory() as directory:
+            boot_id = _boot_id()
+            for unit in os.listdir(directory):
+                match = _ISOLATED_UNIT.fullmatch(unit)
+                if not match or (launch_class is not None and match[1] != _CLASS_TAGS[launch_class]):
+                    continue
+                try:
+                    with _open_owner(directory, unit) as fd:
+                        if fd is None:
+                            continue
+                        owner = _read_owner(fd, unit)
+                        state = _owner_state(owner, boot_id)
+                        if state == "dead":
+                            if not dry_run:
+                                # Skip in-flight setup and concurrent collectors.
+                                # Never take an exclusive lock on a live owner.
+                                acquire_exclusive(fd, blocking=False)
+                                if (not _same_record(directory, fd, unit)
+                                        or _read_owner(fd, unit) != owner):
+                                    continue
+                                _collect_owner(directory, fd, unit)
+                            counts["stale"] += 1
+                        elif state == "unknown":
+                            counts["unknown"] += 1
+                except BlockingIOError:
+                    continue
+                except _OWNER_ERRORS as exc:
+                    counts["unknown"] += 1
+                    log.warning("seat owner sweep could not inspect or collect %s: %s", unit, exc)
+    except FileNotFoundError:
+        pass
+    except _OWNER_ERRORS as exc:
+        counts["unknown"] += 1
+        log.warning("seat owner sweep is unavailable: %s", exc)
+    return counts
 
 
 def _parent_properties(caps: SeatResourceCaps, devices: Sequence[str], carved: Sequence[Path]) -> list[str]:
@@ -876,24 +1183,39 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
     digest = caps_sha256(caps)
     attempt = _CURRENT_MEMORY_ATTEMPT.get()
     owner = None if attempt is None else attempt.identity
+    scope = _CURRENT_SEAT_SCOPE.get()
+    unit = scope.unit if scope is not None else f"phase-loop-seat-{_unit_key(seat_key)}.slice"
     with _PARENT_LOCK:
-        parent = _PARENTS.get(seat_key)
+        parent = _PARENTS.get(unit)
         if parent is None:
-            unit = f"phase-loop-seat-{_unit_key(seat_key)}.slice"
             fresh = attempt is not None and _memory_parent_absent(unit)
-            _systemctl("set-property", "--runtime", unit,
-                       *_parent_properties(caps, devices, carved))
-            _systemctl("start", unit)
-            if not _realized_parent_ready(unit, carved):
-                try:
-                    _systemctl("stop", unit)
-                except CapsUnavailable:
-                    logging.getLogger(__name__).warning(
-                        "unready seat resource-cap parent collection failed for %s", unit,
-                    )
-                _refuse("the host does not provide delegated seat controllers")
             parent = _Parent(unit=unit, digest=digest, owner=owner, fresh=fresh)
-            _PARENTS[seat_key] = parent
+            properties = _parent_properties(caps, devices, carved)
+            if scope is not None:
+                pid = os.getpid()
+                _state, start_time = _owner_stat(pid)
+                parent.record = _SeatOwner(unit, scope.launch_class.value, pid, start_time, _boot_id())
+                with _owner_directory(create=True) as directory, _register_owner(directory, parent.record) as fd:
+                    try:
+                        _systemctl("set-property", "--runtime", unit, *properties, guard=fd)
+                        _systemctl("start", unit, guard=fd)
+                        if not _realized_parent_ready(unit, carved):
+                            _refuse("the host does not provide delegated seat controllers")
+                    except BaseException:
+                        _collect_with_warning(directory, fd, unit)
+                        raise
+            else:
+                _systemctl("set-property", "--runtime", unit, *properties)
+                _systemctl("start", unit)
+                if not _realized_parent_ready(unit, carved):
+                    try:
+                        _systemctl("stop", unit)
+                    except CapsUnavailable:
+                        logging.getLogger(__name__).warning(
+                            "unready seat resource-cap parent collection failed for %s", unit,
+                        )
+                    _refuse("the host does not provide delegated seat controllers")
+            _PARENTS[unit] = parent
         elif parent.digest != digest:
             _refuse("a second independent capped parent was requested")
         elif not _realized_parent_ready(parent.unit, carved):
@@ -907,22 +1229,46 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
         return parent, f"{parent.unit.removesuffix('.slice')}-{parent.children}.scope"
 
 
-def _release_parent(seat_key: str, parent: _Parent, _carved: Sequence[Path]) -> None:
-    unit: str | None = None
+def _collect_with_warning(directory: int, fd: int, unit: str) -> None:
+    try:
+        _collect_owner(directory, fd, unit)
+    except _OWNER_ERRORS as exc:
+        logging.getLogger(__name__).warning("seat resource-cap parent collection failed for %s: %s",
+                                            unit, exc)
+
+
+def _release_parent(parent: _Parent) -> None:
+    unit = parent.unit
     with _PARENT_LOCK:
-        current = _PARENTS.get(seat_key)
-        if current is parent:
-            current.refs -= 1
-            if current.refs == 0:
-                unit = current.unit
-                del _PARENTS[seat_key]
-    if unit is not None:
-        try:
-            _systemctl("stop", unit)
-        except CapsUnavailable:
-            logging.getLogger(__name__).warning(
-                "seat resource-cap parent collection failed for %s", unit,
-            )
+        if _PARENTS.get(unit) is not parent:
+            return
+        parent.refs -= 1
+        if parent.refs:
+            return
+        del _PARENTS[unit]
+        if parent.record is not None:
+            # Keep the process-local lock through final stop so reacquisition
+            # cannot race it. Also lock the same record used by other processes.
+            if parent.record.pid == os.getpid():
+                try:
+                    with _owner_directory() as directory, _open_owner(directory, unit) as fd:
+                        if fd is not None:
+                            acquire_exclusive(fd, blocking=False)
+                            if _read_owner(fd, unit) == parent.record:
+                                _collect_with_warning(directory, fd, unit)
+                except FileNotFoundError:
+                    pass
+                except _OWNER_ERRORS as exc:
+                    logging.getLogger(__name__).warning(
+                        "seat resource-cap parent collection failed for %s: %s", unit, exc,
+                    )
+            return
+    try:
+        _systemctl("stop", unit)
+    except CapsUnavailable:
+        logging.getLogger(__name__).warning(
+            "seat resource-cap parent collection failed for %s", unit,
+        )
 
 
 def _proc_cgroup_of(pid: int) -> str:
@@ -1042,7 +1388,6 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
                     scope.parent, _unused = _acquire_parent(
                         seat_key, caps, devices, carved, child=False,
                     )
-                    scope.carved = tuple(carved)
                 elif scope.parent.digest != caps_sha256(caps):
                     _refuse("the live seat's caps record changed")
         parent, child_unit = _acquire_parent(
@@ -1050,7 +1395,7 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
         )
         assert child_unit is not None
         if attempt is not None:
-            attempt.retain(seat_key, parent, carved, caps.memory_max_bytes)
+            attempt.retain(seat_key, parent, caps.memory_max_bytes)
         # systemd-run must reach the user manager, so it runs with the bus address; the
         # helper hands the target the exact caller-selected environment, read from a pipe
         # (never argv), so the target environment equals an uncapped launch's.
@@ -1063,62 +1408,70 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
         runtime = _runtime_dir()
         popen_kwargs["env"] = {**target_env, "XDG_RUNTIME_DIR": str(runtime),
                                "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime / 'bus'}"}
-        env_read, env_write = os.pipe()
-        try:
-            os.write(env_write, payload)
-        finally:
-            os.close(env_write)
-        read_fd, write_fd = os.pipe()
-        diagnostic_read, diagnostic_write = os.pipe()
-        # The helper execs the target only after this gate opens, and the parent opens it
-        # only once it holds the launch cgroup's witness.
-        gate_read, gate_write = os.pipe()
-        expected = json.dumps(_expected(caps, devices, carved), sort_keys=True, separators=(",", ":"))
-        helper = Path(__file__).with_name("seat_resource_caps_enter.py")
-        argv = [
-            str(_SYSTEMD_RUN), "--user", "--scope", "--quiet", "--collect",
-            f"--unit={child_unit}", f"--slice={parent.unit}",
-            # A fixed description: without one, systemd describes a scope by its full
-            # command line. The unit's metadata names only the seat key's digest.
-            f"--description=phase-loop seat {_unit_key(seat_key)}",
-            "--same-dir", "--",
-            "/usr/bin/python3", "-I", "-S", str(helper), "--attest-fd", str(write_fd),
-            "--env-fd", str(env_read), "--diagnostic-fd", str(diagnostic_write),
-            "--gate-fd", str(gate_read),
-            "--expected", expected, "--cgroup-root", str(_CGROUP_ROOT),
-            "--proc-cgroup", str(_PROC_CGROUP),
-            "--", *[os.fsdecode(item) for item in command],
-        ]
-        pass_fds = set(popen_kwargs.get("pass_fds", ()))
-        pass_fds.update((write_fd, env_read, diagnostic_write, gate_read))
-        popen_kwargs["pass_fds"] = tuple(sorted(pass_fds))
-        popen_kwargs.setdefault("close_fds", True)
-        observing = False
-        try:
+        with _scope_setup_guard(parent) as guard:
+            env_read, env_write = os.pipe()
             try:
-                observing = attempt is not None and attempt.reserve_scope(child_unit)
-            except BaseException:
-                os.close(read_fd)
-                os.close(diagnostic_read)
-                os.close(gate_write)
-                raise
-            # The spawn hook stays the statement right before the one Popen.
+                os.write(env_write, payload)
+            finally:
+                os.close(env_write)
+            read_fd, write_fd = os.pipe()
+            diagnostic_read, diagnostic_write = os.pipe()
+            # The helper execs the target only after this gate opens, and the parent opens it
+            # only once it holds the launch cgroup's witness.
+            gate_read, gate_write = os.pipe()
+            expected = json.dumps(_expected(caps, devices, carved), sort_keys=True, separators=(",", ":"))
+            helper = Path(__file__).with_name("seat_resource_caps_enter.py")
+            description = f"phase-loop seat {_unit_key(seat_key)}"
+            if parent.record is not None:
+                description += f" owner {parent.record.pid} start {parent.record.start_time}"
+            argv = [
+                str(_SYSTEMD_RUN), "--user", "--scope", "--quiet", "--collect",
+                f"--unit={child_unit}", f"--slice={parent.unit}",
+                # A fixed description: without one, systemd describes a scope by its full
+                # command line. Name the redacted seat key and isolated owner only.
+                f"--description={description}",
+                "--same-dir", "--",
+                "/usr/bin/python3", "-I", "-S", str(helper), "--attest-fd", str(write_fd),
+                "--env-fd", str(env_read), "--diagnostic-fd", str(diagnostic_write),
+                "--gate-fd", str(gate_read),
+                "--expected", expected, "--cgroup-root", str(_CGROUP_ROOT),
+                "--proc-cgroup", str(_PROC_CGROUP),
+                "--", *[os.fsdecode(item) for item in command],
+            ]
+            pass_fds = set(popen_kwargs.get("pass_fds", ()))
+            pass_fds.update((write_fd, env_read, diagnostic_write, gate_read))
+            if guard is not None:
+                pass_fds.add(guard)
+                expected_index = argv.index("--expected")
+                argv[expected_index:expected_index] = ["--setup-fd", str(guard)]
+            popen_kwargs["pass_fds"] = tuple(sorted(pass_fds))
+            popen_kwargs.setdefault("close_fds", True)
+            observing = False
             try:
-                if before_spawn is not None:
-                    before_spawn()
-                process = subprocess.Popen(argv, **popen_kwargs)
-            except BaseException:
-                if observing:
-                    attempt.abandon_scope(child_unit)
-                os.close(read_fd)
-                os.close(diagnostic_read)
-                os.close(gate_write)
-                raise
-        finally:
-            os.close(write_fd)
-            os.close(env_read)
-            os.close(diagnostic_write)
-            os.close(gate_read)
+                try:
+                    observing = attempt is not None and attempt.reserve_scope(child_unit)
+                except BaseException:
+                    os.close(read_fd)
+                    os.close(diagnostic_read)
+                    os.close(gate_write)
+                    raise
+                # The spawn hook stays the statement right before the one Popen.
+                try:
+                    if before_spawn is not None:
+                        before_spawn()
+                    process = subprocess.Popen(argv, **popen_kwargs)
+                except BaseException:
+                    if observing:
+                        attempt.abandon_scope(child_unit)
+                    os.close(read_fd)
+                    os.close(diagnostic_read)
+                    os.close(gate_write)
+                    raise
+            finally:
+                os.close(write_fd)
+                os.close(env_read)
+                os.close(diagnostic_write)
+                os.close(gate_read)
         try:
             readable, _, _ = select.select([read_fd], [], [], _ATTEST_TIMEOUT_S)
             attested = bool(readable and os.read(read_fd, 1) == b"1")
@@ -1164,22 +1517,24 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
         if observing:
             attempt.started(child_unit, process)
 
+        child_parent = parent
+
         def reap() -> None:
             try:
                 process.wait()
             finally:
-                _release_parent(seat_key, parent, carved)
+                _release_parent(child_parent)
 
         threading.Thread(target=reap, daemon=True, name=f"seat-caps-{_unit_key(seat_key)}").start()
+        parent = None  # The child reaper now owns this reference.
         return process
     except CapsUnavailable as exc:
-        if parent is not None:
-            _release_parent(seat_key, parent, carved)
         _refused(str(exc), exc)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        if parent is not None:
-            _release_parent(seat_key, parent, carved)
         _refused("the capped launch could not start", exc)
+    finally:
+        if parent is not None:
+            _release_parent(parent)
 
 
 __all__ = [

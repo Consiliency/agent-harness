@@ -1807,12 +1807,17 @@ def _watch_stub(fixture_vendor, monkeypatch):
     ("expired_copy", "expired", False)])
 def test_k1_f16_codex_control_launches_through_the_real_prepare(
         tmp_path, monkeypatch, fixture_vendor, kind, installed, refuse_all):
-    from phase_loop_runtime import panel_invoker as panel
+    from phase_loop_runtime import panel_invoker as panel, seat_resource_caps
     seen = _codex_open_stubs(monkeypatch, tmp_path)
     _watch_stub(fixture_vendor, monkeypatch)
-    monkeypatch.setattr(panel, "_run_leg_with_liveness", lambda command, **k: (
-        seen["spawned"].append(list(command)) or SimpleNamespace(returncode=0,
-                                                                 stdout="completed")))
+
+    def run(command, **kwargs):
+        scope = seat_resource_caps._CURRENT_SEAT_SCOPE.get()
+        assert scope.launch_class is seat_resource_caps._LaunchClass.QUALIFICATION
+        seen["spawned"].append(list(command))
+        return SimpleNamespace(returncode=0, stdout="completed")
+
+    monkeypatch.setattr(panel, "_run_leg_with_liveness", run)
     result = panel.window_control_launch(_codex_spec(kind, tmp_path))
     assert seen["proxies"] == [("codex", refuse_all)]
     expect = {"none": [], "live": [seen["copy"]],

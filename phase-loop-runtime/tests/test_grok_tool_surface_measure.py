@@ -3668,3 +3668,19 @@ def test_a_result_records_the_runtime_it_launched_under(bench, monkeypatch):
     code, report = bench.cli("--aggregate")
     assert (code, report["code"]) == (1, "context_mismatch"), report
     assert bench.host_record() is None
+
+
+def test_grok_measurement_uses_the_qualification_launch_class(monkeypatch):
+    from phase_loop_runtime import grok_jail_surface as jail
+    from phase_loop_runtime import seat_resource_caps as caps
+
+    def refuse_composition(*args, **kwargs):
+        scope = caps._CURRENT_SEAT_SCOPE.get()
+        assert scope.launch_class is caps._LaunchClass.QUALIFICATION
+        assert scope.seat_key.startswith("measure:grok:pilot:")
+        raise gts.MeasurementRefused("test_composition_refusal")
+
+    monkeypatch.setattr(gts, "_jail_compose", refuse_composition)
+    monkeypatch.setattr(jail, "admission_consumed", lambda reservation: False)
+    outcome = gts._jail_launch(None, None, label="pilot", budget=1)
+    assert outcome.early == "test_composition_refusal"

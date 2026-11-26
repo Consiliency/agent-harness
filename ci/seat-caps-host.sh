@@ -367,26 +367,42 @@ is_mounted() {
   findmnt --mountpoint "$1" >/dev/null 2>&1
 }
 
-stop_units() {
-  manager_env
-  if ! bus_ready; then
-    note "user manager bus is unavailable at $XDG_RUNTIME_DIR/bus; no user units can be listed or stopped"
-    return 0
-  fi
+stop_matching_units() {
+  local pattern=$1
   local listing units unit rc=0
-  if ! listing="$(timeout 30 systemctl --user list-units --no-legend --plain \
-      'phase-loop-seat-*' "$unit_prefix*")"; then
+  if ! listing="$(timeout 30 systemctl --user list-units --no-legend --plain "$pattern")"; then
     fail "could not list leftover user units"
     return 1
   fi
   units="$(printf '%s\n' "$listing" | awk 'NF {print $1}')"
   for unit in $units; do
+    [[ "$unit" == $pattern ]] || continue
     note "stopping leftover unit $unit"
     if ! timeout 30 systemctl --user stop "$unit"; then
       fail "could not stop $unit"
       rc=1
     fi
   done
+  return "$rc"
+}
+
+stop_units() {
+  manager_env
+  if ! bus_ready; then
+    note "user manager bus is unavailable at $XDG_RUNTIME_DIR/bus; no user units can be listed or stopped"
+    return 0
+  fi
+  local rc=0
+  stop_matching_units "$unit_prefix*" || rc=1
+  local src
+  src="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../phase-loop-runtime/src" && pwd)"
+  if ! XDG_RUNTIME_DIR="$root$XDG_RUNTIME_DIR" PYTHONPATH="$src" timeout 30 python3 -c \
+      'from phase_loop_runtime.seat_resource_caps import _reap_dead_seats; _reap_dead_seats()'; then
+    note "exact seat owner sweep failed; continuing with bulk stop"
+  fi
+  # This manager belongs to the ephemeral gate. Even a missing or unreadable
+  # owner record must never leave a scope holding the scratch mount busy.
+  stop_matching_units 'phase-loop-seat-*' || rc=1
   return "$rc"
 }
 
