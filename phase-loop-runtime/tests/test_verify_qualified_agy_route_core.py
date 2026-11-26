@@ -148,8 +148,7 @@ def test_every_gate_bound_fits_inside_the_job_so_cleanup_and_evidence_still_run(
         # pip install uv and uv sync are allowed three minutes on top of the explicit bounds.
         assert _bounds_s(gate["run"]) + 180 <= gate["timeout-minutes"] * 60, path
         after = steps[steps.index(gate) + 1:]
-        always = [step for step in after if step.get("if") == "always()"
-                  or "seat_caps_loop_validation.py" in step.get("run", "")]
+        always = [step for step in after if step.get("if") in {"always()", "${{ !cancelled() }}"}]
         for step in always:
             assert "timeout-minutes" in step, step.get("name")
         budget = setup_minutes + gate["timeout-minutes"] + sum(s["timeout-minutes"] for s in always)
@@ -216,6 +215,24 @@ def test_seat_caps_gate_workflow_mirrors_the_release_gate():
     assert by_name["Seat caps summary"]["if"] == "always()"
     assert not any("continue-on-error" in step for step in probe_steps)
     assert "continue-on-error" not in job
+
+
+def test_hosted_seat_caps_probe_runs_in_the_provisioned_manager():
+    workflow, triggers = _workflow(PROBE)
+    steps, gate = _gate(workflow, "probe")
+    names = [step.get("name") for step in steps]
+    probe = steps[names.index("Real systemd seat caps probe")]
+    assert steps.index(gate) < steps.index(probe) < names.index("Seat caps scratch teardown")
+    assert "phase-loop-runtime/tests/test_seat_resource_caps.py" in triggers["pull_request"]["paths"]
+    assert probe["if"] == "${{ !cancelled() }}"
+    assert probe["env"] == {
+        "UV_PROJECT_ENVIRONMENT": gate["env"]["UV_PROJECT_ENVIRONMENT"],
+        "PHASE_LOOP_SEAT_CAPS_PROBE": "1",
+    }
+    assert probe["working-directory"] == "phase-loop-runtime"
+    assert _bounds_s(probe["run"]) < probe["timeout-minutes"] * 60
+    assert '"$GITHUB_WORKSPACE/ci/seat-caps-host.sh" run --pass-env PHASE_LOOP_SEAT_CAPS_PROBE --' in probe["run"]
+    assert "-m pytest -p no:cacheprovider -q -rs tests/test_seat_resource_caps.py" in probe["run"]
 
 
 @pytest.mark.parametrize("path", [PUBLISH, QUALIFIED])

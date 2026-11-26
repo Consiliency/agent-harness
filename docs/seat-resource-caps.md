@@ -173,6 +173,10 @@ provisioned device and that the child scratch is not the degraded fallback. A re
 is reported as a record failure, never retried with the defaults. The gate then runs
 `phase-loop-runtime/tests/test_seat_caps_scratch_binding.py` inside the user manager, which
 makes the same check from inside a test session, where the strict suite resolves its paths.
+
+The hosted `seat-caps-gate.yml` workflow also sets `PHASE_LOOP_SEAT_CAPS_PROBE=1` and
+runs the live enforcement and seat-slice lifecycle tests through `ci/seat-caps-host.sh run`
+after scratch provisioning and before teardown.
 It skips everywhere else. On the ephemeral gate manager, teardown stops the gate launcher,
 reaps dead owners and then bulk-stops any remaining seat units before unmounting scratch.
 
