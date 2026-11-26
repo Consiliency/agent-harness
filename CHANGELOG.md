@@ -6,12 +6,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Fixed
-
-- Reopening a capped seat slice replaces stale I/O limits when the scratch device
-  changes. Finalizing seat memory telemetry no longer rejects capped launches
-  (agent-harness#2193).
-
 ## [0.7.46] - 2026-11-25
 
 ### Added
@@ -34,6 +28,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Reopening a capped seat slice replaces stale I/O limits when the scratch device
+  changes. Finalizing seat memory telemetry no longer rejects capped launches
+  (agent-harness#2193).
 - Gemini self-qualification and jailed agy seats now classify failed native exits
   from bounded stdout and stderr, retaining only the allowlisted failure class and
   existing metadata (agent-harness#2195).
