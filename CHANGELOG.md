@@ -12,6 +12,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   share a logical seat key. Cleanup removes runtime overrides and can reclaim slices
   whose owners have exited (agent-harness#2201).
 
+### Fixed
+
+- Seat slice cleanup observes the recorded PID namespace, clears stale temporary
+  owner files, and lets other seats launch while a slice is being stopped
+  (agent-harness#2205).
+
 ## [0.7.46] - 2026-11-25
 
 ### Added

@@ -17,6 +17,7 @@ on:
       - 'phase-loop-runtime/scripts/seat_caps_*.py'
       - 'phase-loop-runtime/src/phase_loop_runtime/seat_resource_caps*.py'
       - 'phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py'
+      - 'phase-loop-runtime/tests/test_seat_resource_caps.py'
 
 permissions:
   contents: read
@@ -25,9 +26,9 @@ jobs:
   probe:
     name: seat caps gate probe (shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04  # the release build's image (publish-pypi.yml)
-    # Outlasts every step bound: 5 (setup) + 40 (gate) + 10 (validation) + 3 (teardown)
-    # + 5 (upload) + 2 (summary) = 65.
-    timeout-minutes: 65
+    # Outlasts every step bound: 5 (setup) + 40 (gate) + 5 (probe) + 10 (validation)
+    # + 3 (teardown) + 5 (upload) + 2 (summary) = 70.
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +106,17 @@ jobs:
           env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS \
             "$host" run --pass-env GITHUB_TOKEN -- timeout 1200 "$py" scripts/verify_qualified_agy_image.py \
             --release --conformance-report "$RUNNER_TEMP/agy-conformance/conformance.xml"
+      - name: Real systemd seat caps probe
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        working-directory: phase-loop-runtime
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/agy-conformance-venv
+          PHASE_LOOP_SEAT_CAPS_PROBE: "1"
+        run: |
+          "$GITHUB_WORKSPACE/ci/seat-caps-host.sh" run --pass-env PHASE_LOOP_SEAT_CAPS_PROBE -- \
+            env PYTHONPATH="$PWD/src:$PWD/tests" timeout -k 10 240 "$UV_PROJECT_ENVIRONMENT/bin/python" \
+            -m pytest -p no:cacheprovider -q -rs tests/test_seat_resource_caps.py
       - name: Seat caps enforcement validation
         # Real direct I/O through the production capped launch path on the scratch device
         # (phase-loop-runtime/scripts/seat_caps_loop_validation.py). A step starts in the

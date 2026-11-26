@@ -92,6 +92,8 @@ class _LaunchClass(Enum):
 
 _CLASS_TAGS = dict(zip(_LaunchClass, ("01", "02", "03"), strict=True))
 _ISOLATED_UNIT = re.compile(r"phase-loop-seat-(01|02|03)[0-9a-f]{32}\.slice")
+_OWNER_TEMP = re.compile(rf"\.{_ISOLATED_UNIT.pattern}\.[0-9a-f]{{16}}")
+_OWNER_TEMP_MIN_AGE_S = 60
 _LEGACY_UNIT = re.compile(r"phase-loop-seat-[0-9a-f]{24}\.slice")
 
 
@@ -482,7 +484,28 @@ class _Parent:
 
 
 _PARENTS: dict[str, _Parent] = {}
-_PARENT_LOCK = threading.RLock()
+_PARENT_LOCK = threading.Lock()
+_PARENT_UNIT_LOCKS: dict[str, tuple[threading.RLock, int]] = {}
+
+
+@contextmanager
+def _parent_unit_lock(unit: str):
+    # Count waiters as well as holders so a reacquisition always sees the same
+    # lock until final collection completes. The registry stays bounded by use.
+    with _PARENT_LOCK:
+        entry = _PARENT_UNIT_LOCKS.get(unit)
+        lock, users = entry if entry is not None else (threading.RLock(), 0)
+        _PARENT_UNIT_LOCKS[unit] = (lock, users + 1)
+    try:
+        with lock:
+            yield
+    finally:
+        with _PARENT_LOCK:
+            lock, users = _PARENT_UNIT_LOCKS[unit]
+            if users == 1:
+                del _PARENT_UNIT_LOCKS[unit]
+            else:
+                _PARENT_UNIT_LOCKS[unit] = (lock, users - 1)
 
 
 def _unit_key(seat_key: str) -> str:
@@ -728,7 +751,7 @@ class _SeatMemoryAttempt:
                 # An unexpected second parent cannot be attributed to the first.
                 self.parent.shared.set()
                 return
-            with _PARENT_LOCK:
+            with _parent_unit_lock(parent.unit):
                 parent.refs += 1
             self.parent, self.seat_key = parent, seat_key
             try:
@@ -864,10 +887,17 @@ class _SeatOwner:
     pid: int
     start_time: int
     boot_id: str
+    pid_namespace_inode: int | None = None
+    pid_namespace_device: int | None = None
 
 
 def _boot_id() -> str:
     return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+
+
+def _pid_namespace_identity() -> tuple[int, int]:
+    info = Path("/proc/self/ns/pid").stat()
+    return info.st_dev, info.st_ino
 
 
 def _owner_stat(pid: int) -> tuple[str, int]:
@@ -877,7 +907,14 @@ def _owner_stat(pid: int) -> tuple[str, int]:
 
 
 def _owner_state(owner: _SeatOwner, boot_id: str) -> str:
-    if owner.boot_id != boot_id:
+    identity = (owner.pid_namespace_device, owner.pid_namespace_inode)
+    # A legacy record does not identify the namespace in which its PID is valid.
+    if owner.boot_id != boot_id or None in identity:
+        return "unknown"
+    try:
+        if identity != _pid_namespace_identity():
+            return "unknown"
+    except OSError:
         return "unknown"
     try:
         state, start_time = _owner_stat(owner.pid)
@@ -941,7 +978,10 @@ def _register_owner(directory: int, owner: _SeatOwner):
             os.link(temp, owner.unit, src_dir_fd=directory, dst_dir_fd=directory,
                     follow_symlinks=False)
         finally:
-            os.unlink(temp, dir_fd=directory)
+            try:
+                os.unlink(temp, dir_fd=directory)
+            except FileNotFoundError:
+                pass
         yield fd
     finally:
         os.close(fd)
@@ -977,7 +1017,11 @@ def _read_owner(fd: int, unit: str) -> _SeatOwner:
     if (owner.unit != unit or _ISOLATED_UNIT.fullmatch(unit)[1] != _CLASS_TAGS[launch_class]
             or type(owner.pid) is not int or owner.pid <= 0
             or type(owner.start_time) is not int or owner.start_time <= 0
-            or not isinstance(owner.boot_id, str)):
+            or not isinstance(owner.boot_id, str)
+            or (owner.pid_namespace_inode is not None and
+                (type(owner.pid_namespace_inode) is not int or owner.pid_namespace_inode <= 0))
+            or (owner.pid_namespace_device is not None and
+                (type(owner.pid_namespace_device) is not int or owner.pid_namespace_device < 0))):
         _refuse("the seat owner record is invalid")
     return owner
 
@@ -987,6 +1031,32 @@ def _same_record(directory: int, fd: int, unit: str) -> bool:
         return os.path.samestat(os.fstat(fd), os.stat(unit, dir_fd=directory, follow_symlinks=False))
     except FileNotFoundError:
         return False
+
+
+def _stale_owner_temp(info: os.stat_result, cutoff: float) -> bool:
+    # A second link can be the published record, which has its own lock protocol.
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+            and info.st_nlink == 1 and info.st_mtime < cutoff)
+
+
+def _remove_stale_owner_temp(directory: int, name: str, cutoff: float) -> None:
+    from .file_lock import acquire_exclusive
+
+    try:
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if not _stale_owner_temp(info, cutoff):
+            return
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=directory)
+        try:
+            acquire_exclusive(fd, blocking=False)
+            # The writer can update or unlink the file between stat and flock.
+            if _stale_owner_temp(os.fstat(fd), cutoff) and _same_record(directory, fd, name):
+                os.unlink(name, dir_fd=directory)
+        finally:
+            os.close(fd)
+    except (FileNotFoundError, BlockingIOError):
+        pass
 
 
 @contextmanager
@@ -1105,11 +1175,17 @@ def _reap_dead_seats(launch_class: _LaunchClass | None = None, *, dry_run: bool 
     try:
         with _owner_directory() as directory:
             boot_id = _boot_id()
+            cutoff = time.time() - _OWNER_TEMP_MIN_AGE_S
             for unit in os.listdir(directory):
-                match = _ISOLATED_UNIT.fullmatch(unit)
+                temporary = _OWNER_TEMP.fullmatch(unit)
+                match = temporary or _ISOLATED_UNIT.fullmatch(unit)
                 if not match or (launch_class is not None and match[1] != _CLASS_TAGS[launch_class]):
                     continue
                 try:
+                    if temporary:
+                        if not dry_run:
+                            _remove_stale_owner_temp(directory, unit, cutoff)
+                        continue
                     with _open_owner(directory, unit) as fd:
                         if fd is None:
                             continue
@@ -1188,7 +1264,7 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
     owner = None if attempt is None else attempt.identity
     scope = _CURRENT_SEAT_SCOPE.get()
     unit = scope.unit if scope is not None else f"phase-loop-seat-{_unit_key(seat_key)}.slice"
-    with _PARENT_LOCK:
+    with _parent_unit_lock(unit):
         parent = _PARENTS.get(unit)
         if parent is None:
             fresh = attempt is not None and _memory_parent_absent(unit)
@@ -1197,7 +1273,11 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
             if scope is not None:
                 pid = os.getpid()
                 _state, start_time = _owner_stat(pid)
-                parent.record = _SeatOwner(unit, scope.launch_class.value, pid, start_time, _boot_id())
+                device, inode = _pid_namespace_identity()
+                parent.record = _SeatOwner(
+                    unit, scope.launch_class.value, pid, start_time, _boot_id(),
+                    pid_namespace_inode=inode, pid_namespace_device=device,
+                )
                 with _owner_directory(create=True) as directory, _register_owner(directory, parent.record) as fd:
                     try:
                         _systemctl("set-property", "--runtime", unit, *properties, guard=fd)
@@ -1242,7 +1322,7 @@ def _collect_with_warning(directory: int, fd: int, unit: str) -> None:
 
 def _release_parent(parent: _Parent) -> None:
     unit = parent.unit
-    with _PARENT_LOCK:
+    with _parent_unit_lock(unit):
         if _PARENTS.get(unit) is not parent:
             return
         parent.refs -= 1
@@ -1252,8 +1332,8 @@ def _release_parent(parent: _Parent) -> None:
         if parent.record is not None:
             from .file_lock import acquire_exclusive
 
-            # Keep the process-local lock through final stop so reacquisition
-            # cannot race it. Also lock the same record used by other processes.
+            # The per-unit lock protects local reacquisition through final stop.
+            # The record lock also coordinates with other processes.
             if parent.record.pid == os.getpid():
                 try:
                     with _owner_directory() as directory, _open_owner(directory, unit) as fd:
@@ -1268,12 +1348,12 @@ def _release_parent(parent: _Parent) -> None:
                         "seat resource-cap parent collection failed for %s: %s", unit, exc,
                     )
             return
-    try:
-        _systemctl("stop", unit)
-    except CapsUnavailable:
-        logging.getLogger(__name__).warning(
-            "seat resource-cap parent collection failed for %s", unit,
-        )
+        try:
+            _systemctl("stop", unit)
+        except CapsUnavailable:
+            logging.getLogger(__name__).warning(
+                "seat resource-cap parent collection failed for %s", unit,
+            )
 
 
 def _proc_cgroup_of(pid: int) -> str:
@@ -1388,7 +1468,7 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
         if readiness_code() is not None:
             _refuse("the host does not provide delegated seat controllers")
         if scope is not None:
-            with _PARENT_LOCK:
+            with _parent_unit_lock(scope.unit):
                 if scope.parent is None:
                     scope.parent, _unused = _acquire_parent(
                         seat_key, caps, devices, carved, child=False,

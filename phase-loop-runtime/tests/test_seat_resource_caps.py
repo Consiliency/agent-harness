@@ -1083,8 +1083,7 @@ def _wait_for_parent_collection(timeout: float = 10.0) -> None:
 def test_host_probe(monkeypatch):
     if os.environ.get("PHASE_LOOP_SEAT_CAPS_PROBE") != "1":
         pytest.skip("set PHASE_LOOP_SEAT_CAPS_PROBE=1 on the designated seat host")
-    if caps.readiness_code() is not None:
-        pytest.skip("the designated host has not delegated the required controllers")
+    assert caps.readiness_code() is None, "the designated host is not ready for seat caps"
     probe_caps = replace(
         caps.DEFAULT_CAPS,
         memory_max_bytes=64 << 20,
@@ -2191,10 +2190,116 @@ def _record_existing_owner(unit, *, pid=None, started=None, launch_class="board"
     pid = os.getpid() if pid is None else pid
     if started is None:
         started = caps._owner_stat(pid)[1]
-    owner = caps._SeatOwner(unit, launch_class, pid, started, caps._boot_id())
+    namespace = Path("/proc/self/ns/pid").stat()
+    owner = caps._SeatOwner(
+        unit, launch_class, pid, started, caps._boot_id(),
+        pid_namespace_inode=namespace.st_ino, pid_namespace_device=namespace.st_dev,
+    )
     with caps._owner_directory(create=True) as directory, caps._register_owner(directory, owner):
         pass
     return owner
+
+
+@pytest.mark.parametrize(("device_offset", "inode_offset"), [(1, 0), (0, 1)])
+def test_reaper_leaves_owner_from_another_pid_namespace(
+    monkeypatch, tmp_path, isolated, device_offset, inode_offset,
+):
+    _install_fake_cap_host(monkeypatch, tmp_path, isolated)
+    key = "pid-namespace"
+    with caps._seat_scope(key):
+        scope = caps._CURRENT_SEAT_SCOPE.get()
+        scope.parent, _ = caps._acquire_parent(key, caps.DEFAULT_CAPS, (), (), child=False)
+        record = _owner_record(scope.unit)
+        body = json.loads(record.read_text())
+        namespace = Path("/proc/self/ns/pid").stat()
+        with monkeypatch.context() as sweep:
+            sweep.setattr(caps, "_pid_namespace_identity", lambda: (
+                namespace.st_dev + device_offset, namespace.st_ino + inode_offset,
+            ))
+            # The same numeric PID in the sweeping namespace has a different start time.
+            sweep.setattr(caps, "_owner_stat", lambda pid: ("S", body["start_time"] + 1))
+            assert caps._reap_dead_seats() == {"stale": 0, "unknown": 1}
+        assert record.is_file()
+        assert body["pid_namespace_inode"] == namespace.st_ino
+        assert body["pid_namespace_device"] == namespace.st_dev
+
+
+def test_slow_parent_release_allows_other_seat_to_acquire(monkeypatch, tmp_path, isolated):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    _install_fake_cap_host(monkeypatch, tmp_path, isolated)
+    entered, finish = Event(), Event()
+    collect_owner = caps._collect_owner
+    slow_unit = None
+
+    def collect(directory, fd, unit):
+        if unit == slow_unit:
+            entered.set()
+            assert finish.wait(10)
+        collect_owner(directory, fd, unit)
+
+    def acquire(key):
+        with caps._seat_scope(key):
+            scope = caps._CURRENT_SEAT_SCOPE.get()
+            scope.parent, _ = caps._acquire_parent(key, caps.DEFAULT_CAPS, (), (), child=False)
+            return scope.unit
+
+    monkeypatch.setattr(caps, "_collect_owner", collect)
+    with caps._seat_scope("first-leg"):
+        parent, _ = caps._acquire_parent("first-leg", caps.DEFAULT_CAPS, (), (), child=False)
+        slow_unit = parent.unit
+
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        releasing = threads.submit(caps._release_parent, parent)
+        try:
+            assert entered.wait(5)
+            assert threads.submit(acquire, "other-leg").result(timeout=3) != slow_unit
+        finally:
+            finish.set()
+        releasing.result(timeout=5)
+    assert not _owner_record(slow_unit).exists()
+
+
+def test_sweep_removes_only_stale_unlocked_owner_temps(monkeypatch, tmp_path):
+    from phase_loop_runtime.file_lock import acquire_exclusive
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    unit = f"phase-loop-seat-01{0:032x}.slice"
+    temp = _owner_record(f".{unit}.{0:016x}")
+    locked = _owner_record(f".{unit}.{1:016x}")
+    fresh = _owner_record(f".{unit}.{2:016x}")
+    foreign = _owner_record(f".{unit}.{3:016x}")
+    symlink = _owner_record(f".{unit}.{4:016x}")
+    linked = _owner_record(f".{unit}.{5:016x}")
+    unrelated = _owner_record(f".{unit}.backup")
+    old = time.time() - 600
+    for path in (temp, locked, foreign, unrelated):
+        path.touch()
+        os.utime(path, (old, old))
+    fresh.touch()
+    symlink.symlink_to(unrelated)
+    os.utime(symlink, (old, old), follow_symlinks=False)
+    linked.hardlink_to(unrelated)
+    foreign_inode = foreign.stat().st_ino
+    original_stat = os.stat
+
+    def stat_owner(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        if info.st_ino == foreign_inode and kwargs.get("dir_fd") is not None:
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=os.geteuid() + 1, st_mtime=old)
+        return info
+
+    monkeypatch.setattr(caps.os, "stat", stat_owner)
+    with locked.open("rb") as fd:
+        acquire_exclusive(fd)
+        assert caps._reap_dead_seats(dry_run=True) == {"stale": 0, "unknown": 0}
+        assert temp.exists()
+        assert caps._reap_dead_seats() == {"stale": 0, "unknown": 0}
+        assert not temp.exists()
+        assert all(path.exists() for path in (locked, fresh, foreign, symlink, linked, unrelated))
+    caps._reap_dead_seats()
+    assert not locked.exists()
 
 
 def test_reaper_handles_pid_reuse_unknowns_and_unloaded_records(monkeypatch, tmp_path):
@@ -2204,14 +2309,18 @@ def test_reaper_handles_pid_reuse_unknowns_and_unloaded_records(monkeypatch, tmp
     runtime_control = runtime / "systemd/user.control"
     runtime_control.mkdir(parents=True)
     start = caps._owner_stat(os.getpid())[1]
-    reused, unknown, forged, unloaded = [
-        f"phase-loop-seat-01{index:032x}.slice" for index in range(4)
+    reused, unknown, forged, unloaded, legacy = [
+        f"phase-loop-seat-01{index:032x}.slice" for index in range(5)
     ]
     _record_existing_owner(reused, started=start + 1)
+    _record_existing_owner(legacy, started=start + 1)
+    legacy_body = json.loads(_owner_record(legacy).read_text())
+    del legacy_body["pid_namespace_inode"], legacy_body["pid_namespace_device"]
+    _write_record(_owner_record(legacy), legacy_body)
     _record_existing_owner(unknown, pid=13, started=1)
     _record_existing_owner(forged, started=start + 1, launch_class="test")
     _record_existing_owner(unloaded, started=start + 1)
-    for unit in (reused, unloaded):
+    for unit in (reused, unloaded, legacy):
         _runtime_dropins(unit).mkdir()
         (_runtime_dropins(unit) / "50-MemoryMax.conf").touch()
     read_stat = caps._owner_stat
@@ -2241,11 +2350,12 @@ def test_reaper_handles_pid_reuse_unknowns_and_unloaded_records(monkeypatch, tmp
         shutil.rmtree(_runtime_dropins(args[-1]))
 
     monkeypatch.setattr(caps, "_systemctl", systemctl)
-    assert caps._reap_dead_seats(caps._LaunchClass.BOARD) == {"stale": 2, "unknown": 2}
+    assert caps._reap_dead_seats(caps._LaunchClass.BOARD) == {"stale": 2, "unknown": 3}
     assert not _owner_record(reused).exists() and not _runtime_dropins(reused).exists()
     assert not _owner_record(unloaded).exists() and not _runtime_dropins(unloaded).exists()
     assert _owner_record(unknown).is_file() and _owner_record(forged).is_file()
-    assert not any(unknown in args or forged in args for args in calls)
+    assert _owner_record(legacy).is_file() and _runtime_dropins(legacy).is_dir()
+    assert not any({unknown, forged, legacy}.intersection(args) for args in calls)
 
 
 def test_two_reapers_collect_an_owner_record_once(monkeypatch, tmp_path):
