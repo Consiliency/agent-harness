@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- Reopening a capped seat slice replaces stale I/O limits when the scratch device
+  changes. Finalizing seat memory telemetry no longer rejects capped launches
+  (agent-harness#2193).
+
 ## [0.7.46] - 2026-11-25
 
 ### Added
