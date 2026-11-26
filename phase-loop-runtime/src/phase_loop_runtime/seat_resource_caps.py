@@ -22,8 +22,6 @@ import threading
 import time
 from typing import TYPE_CHECKING, Literal, Sequence
 
-from .file_lock import acquire_exclusive
-
 if TYPE_CHECKING:
     from . import provider_tree_proof as _tree_proof
 
@@ -925,6 +923,9 @@ def _owner_directory(*, create: bool = False):
 
 @contextmanager
 def _register_owner(directory: int, owner: _SeatOwner):
+    # Import locking only on owner-record paths so jail identity reads stay fixed.
+    from .file_lock import acquire_exclusive
+
     # Publish only a complete record, with its lock already held. No name is
     # replaced, and helper processes inherit the same open file description.
     temp = f".{owner.unit}.{os.urandom(8).hex()}"
@@ -1098,6 +1099,8 @@ def _reap_dead_seats(launch_class: _LaunchClass | None = None, *, dry_run: bool 
     counts = {"stale": 0, "unknown": 0}
     if sys.platform != "linux":
         return counts
+    from .file_lock import acquire_exclusive
+
     log = logging.getLogger(__name__)
     try:
         with _owner_directory() as directory:
@@ -1247,6 +1250,8 @@ def _release_parent(parent: _Parent) -> None:
             return
         del _PARENTS[unit]
         if parent.record is not None:
+            from .file_lock import acquire_exclusive
+
             # Keep the process-local lock through final stop so reacquisition
             # cannot race it. Also lock the same record used by other processes.
             if parent.record.pid == os.getpid():

@@ -2314,6 +2314,8 @@ def test_failed_reap_retains_the_record_and_board_launch_continues(tmp_path, mon
 
 
 def test_reaper_never_exclusively_locks_live_or_unverifiable_records(monkeypatch, tmp_path):
+    from phase_loop_runtime import file_lock
+
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     with caps._seat_scope("live-and-unverifiable"):
         live = caps._CURRENT_SEAT_SCOPE.get().unit
@@ -2339,6 +2341,6 @@ def test_reaper_never_exclusively_locks_live_or_unverifiable_records(monkeypatch
         pytest.fail("sweep tried to lock an unverified owner")
 
     monkeypatch.setattr(caps.os, "fstat", foreign_owner)
-    monkeypatch.setattr(caps, "acquire_exclusive", refuse_lock)
+    monkeypatch.setattr(file_lock, "acquire_exclusive", refuse_lock)
     assert caps._reap_dead_seats(caps._LaunchClass.BOARD) == {"stale": 0, "unknown": 2}
     assert all(_owner_record(unit).exists() for unit in (live, different_boot, wrong_uid))
