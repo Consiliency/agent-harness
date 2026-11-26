@@ -126,8 +126,8 @@ timeout 300 phase-loop-runtime/.venv/bin/python -m pytest -p no:cacheprovider -q
 phase-loop-runtime/tests/test_seat_resource_caps.py -k host_probe
 ```
 
-It skips when not opted in or when delegation is absent. A release gate needs a pass, not a
-skip, on every host that runs review seats. The probe makes no provider call.
+The probe skips by default. Once enabled, it fails if delegation or another seat-cap
+readiness prerequisite is missing. The probe makes no provider call.
 
 ## CI and hosted runners
 

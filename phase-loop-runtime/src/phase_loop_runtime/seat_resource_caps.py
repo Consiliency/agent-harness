@@ -888,14 +888,16 @@ class _SeatOwner:
     start_time: int
     boot_id: str
     pid_namespace_inode: int | None = None
+    pid_namespace_device: int | None = None
 
 
 def _boot_id() -> str:
     return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
 
 
-def _pid_namespace_inode() -> int:
-    return Path("/proc/self/ns/pid").stat().st_ino
+def _pid_namespace_identity() -> tuple[int, int]:
+    info = Path("/proc/self/ns/pid").stat()
+    return info.st_dev, info.st_ino
 
 
 def _owner_stat(pid: int) -> tuple[str, int]:
@@ -905,16 +907,15 @@ def _owner_stat(pid: int) -> tuple[str, int]:
 
 
 def _owner_state(owner: _SeatOwner, boot_id: str) -> str:
-    if owner.boot_id != boot_id:
+    identity = (owner.pid_namespace_device, owner.pid_namespace_inode)
+    # A legacy record does not identify the namespace in which its PID is valid.
+    if owner.boot_id != boot_id or None in identity:
         return "unknown"
-    # Older records used only the boot and start time. With a namespace
-    # recorded, numeric PIDs are comparable only within that namespace.
-    if owner.pid_namespace_inode is not None:
-        try:
-            if owner.pid_namespace_inode != _pid_namespace_inode():
-                return "unknown"
-        except OSError:
+    try:
+        if identity != _pid_namespace_identity():
             return "unknown"
+    except OSError:
+        return "unknown"
     try:
         state, start_time = _owner_stat(owner.pid)
     except FileNotFoundError:
@@ -1018,7 +1019,9 @@ def _read_owner(fd: int, unit: str) -> _SeatOwner:
             or type(owner.start_time) is not int or owner.start_time <= 0
             or not isinstance(owner.boot_id, str)
             or (owner.pid_namespace_inode is not None and
-                (type(owner.pid_namespace_inode) is not int or owner.pid_namespace_inode <= 0))):
+                (type(owner.pid_namespace_inode) is not int or owner.pid_namespace_inode <= 0))
+            or (owner.pid_namespace_device is not None and
+                (type(owner.pid_namespace_device) is not int or owner.pid_namespace_device < 0))):
         _refuse("the seat owner record is invalid")
     return owner
 
@@ -1031,8 +1034,9 @@ def _same_record(directory: int, fd: int, unit: str) -> bool:
 
 
 def _stale_owner_temp(info: os.stat_result, cutoff: float) -> bool:
+    # A second link can be the published record, which has its own lock protocol.
     return (stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
-            and info.st_mtime < cutoff)
+            and info.st_nlink == 1 and info.st_mtime < cutoff)
 
 
 def _remove_stale_owner_temp(directory: int, name: str, cutoff: float) -> None:
@@ -1269,8 +1273,10 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
             if scope is not None:
                 pid = os.getpid()
                 _state, start_time = _owner_stat(pid)
+                device, inode = _pid_namespace_identity()
                 parent.record = _SeatOwner(
-                    unit, scope.launch_class.value, pid, start_time, _boot_id(), _pid_namespace_inode(),
+                    unit, scope.launch_class.value, pid, start_time, _boot_id(),
+                    pid_namespace_inode=inode, pid_namespace_device=device,
                 )
                 with _owner_directory(create=True) as directory, _register_owner(directory, parent.record) as fd:
                     try:
