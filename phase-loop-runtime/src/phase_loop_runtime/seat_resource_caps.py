@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ctypes
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 import hashlib
@@ -675,7 +675,7 @@ class _SeatMemoryObserver:
 
 
 class _SeatMemoryAttempt:
-    """Serialize the start boundary with sealing, and retain every launched witness."""
+    """Track capped launches until the memory observation is sealed."""
     def __init__(self):
         self.lock = threading.Lock()
         self.identity = object()
@@ -697,7 +697,7 @@ class _SeatMemoryAttempt:
     def retain(self, seat_key: str, parent: _Parent, carved: Sequence[Path], maximum: int):
         with self.lock:
             if self.sealed:
-                _refuse("the seat attempt has already ended")
+                return
             if self.parent is parent:
                 return
             if self.parent is not None:
@@ -715,16 +715,26 @@ class _SeatMemoryAttempt:
             except (OSError, ValueError):
                 pass
 
-    def reserve_scope(self, child_unit: str) -> None:
+    def reserve_scope(self, child_unit: str) -> bool:
         with self.lock:
             if self.sealed:
-                _refuse("the seat attempt has already ended")
+                # A later launch may overlap the terminal read on the same parent.
+                if self.parent is not None:
+                    self.parent.shared.set()
+                return False
             self.expected_scopes.add(child_unit)
+            return True
+
+    def abandon_scope(self, child_unit: str) -> None:
+        with self.lock:
+            self.expected_scopes.discard(child_unit)
 
     def started(self, child_unit: str, process: subprocess.Popen[bytes]) -> None:
         with self.lock:
+            if self.sealed:
+                return
             self.children[child_unit] = process
-            if not self.sealed and self.observer is not None and self.sampler is None:
+            if self.observer is not None and self.sampler is None:
                 sampler = threading.Thread(target=self._sample_live, daemon=True, name="seat-memory")
                 try:
                     sampler.start()
@@ -735,7 +745,8 @@ class _SeatMemoryAttempt:
     def _sample(self, *, terminal: bool = False) -> None:
         snapshot = self.observer.sample(self.expected_scopes, drained=terminal and self.drained)
         with self.lock:
-            if self.finished:
+            # Discard a sample whose attribution was lost just after the read.
+            if self.finished or (self.observer.attributable and self.observer.shared.is_set()):
                 return
             already_noticed = self.result[1]
             notice = not already_noticed and self.observer.reached_memory_max(snapshot)
@@ -782,6 +793,7 @@ class _SeatMemoryAttempt:
     def close(self) -> None:
         self.stop.set()
         with self.lock:
+            self.sealed = True
             self.closing = True
             if self.observer is not None and (self.sampler is None or self.sampler_done):
                 os.close(self.observer.directory)
@@ -824,6 +836,9 @@ def _parent_properties(caps: SeatResourceCaps, devices: Sequence[str], carved: S
         f"CPUWeight={caps.cpu_weight}",
         f"CPUQuota={caps.cpu_max_percent}%", f"IOWeight={caps.io_weight}",
         f"TasksMax={caps.pids_max}",
+        # A stopped slice keeps its runtime drop-ins. Replace the previous I/O
+        # device list in the same set-property call when the slice is reused.
+        "IOReadBandwidthMax=", "IOWriteBandwidthMax=", "IOReadIOPSMax=", "IOWriteIOPSMax=",
     ]
     for device in devices:
         # systemd's resource-control properties take a device-node path.  The
@@ -1078,22 +1093,23 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
         pass_fds.update((write_fd, env_read, diagnostic_write, gate_read))
         popen_kwargs["pass_fds"] = tuple(sorted(pass_fds))
         popen_kwargs.setdefault("close_fds", True)
+        observing = False
         try:
             try:
-                if attempt is not None:
-                    attempt.reserve_scope(child_unit)
-                try:
-                    if before_spawn is not None:
-                        before_spawn()
-                    process = subprocess.Popen(argv, **popen_kwargs)
-                except BaseException:
-                    if attempt is not None:
-                        with attempt.lock:
-                            attempt.expected_scopes.discard(child_unit)
-                    raise
-                if attempt is not None:
-                    attempt.started(child_unit, process)
+                observing = attempt is not None and attempt.reserve_scope(child_unit)
             except BaseException:
+                os.close(read_fd)
+                os.close(diagnostic_read)
+                os.close(gate_write)
+                raise
+            # The spawn hook stays the statement right before the one Popen.
+            try:
+                if before_spawn is not None:
+                    before_spawn()
+                process = subprocess.Popen(argv, **popen_kwargs)
+            except BaseException:
+                if observing:
+                    attempt.abandon_scope(child_unit)
                 os.close(read_fd)
                 os.close(diagnostic_read)
                 os.close(gate_write)
@@ -1132,10 +1148,7 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
             proof = _witness_scope(process.pid, parent.unit, child_unit)
             _tree_proof.attach(process, proof)
             try:
-                with attempt.lock if attempt is not None else nullcontext():
-                    if attempt is not None and attempt.sealed:
-                        _refuse("the seat attempt has already ended")
-                    os.write(gate_write, b"1")
+                os.write(gate_write, b"1")
             except BrokenPipeError:
                 _refuse("the capped child exited before its gate opened")
         except (CapsUnavailable, OSError, ValueError) as exc:
@@ -1146,6 +1159,10 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
                     pipe.close()
             _refuse("the launch cgroup could not be witnessed", exc)
         os.close(gate_write)
+        # Until the gate opens, finalization sees a pending reservation and cannot
+        # publish a final sample. The telemetry seal never controls the gate.
+        if observing:
+            attempt.started(child_unit, process)
 
         def reap() -> None:
             try:

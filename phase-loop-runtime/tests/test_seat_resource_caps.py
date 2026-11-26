@@ -339,7 +339,7 @@ def _parent_files(parent: Path, expected: dict[str, object]):
         (parent / "memory.swap.max").write_text(str(expected["memory.swap.max"]))
 
 
-def _expected_from_properties(properties: tuple[str, ...]) -> dict[str, object]:
+def _expected_from_properties(properties: tuple[str, ...], *, io_limits=None) -> dict[str, object]:
     values = dict(item.split("=", 1) for item in properties)
     expected: dict[str, object] = {
         "memory.max": values["MemoryMax"],
@@ -355,13 +355,22 @@ def _expected_from_properties(properties: tuple[str, ...]) -> dict[str, object]:
         "IOReadBandwidthMax": "rbps", "IOWriteBandwidthMax": "wbps",
         "IOReadIOPSMax": "riops", "IOWriteIOPSMax": "wiops",
     }
+    if io_limits is None:
+        io_limits = {}
+    for property_value in properties:
+        name, _, setting = property_value.partition("=")
+        if name not in io_names:
+            continue
+        limits = io_limits.setdefault(name, {})
+        if not setting:
+            limits.clear()
+            continue
+        device, limit = setting.split(" ", 1)
+        limits[Path(device).name] = limit
     rows: dict[str, dict[str, str]] = {}
-    for property_name, row_name in io_names.items():
-        if property_name in values:
-            device, limit = values[property_name].split(" ", 1)
-            if device.startswith(str(caps._DEV_BLOCK) + "/"):
-                device = Path(device).name
-            rows.setdefault(device, {})[row_name] = limit
+    for name, limits in io_limits.items():
+        for device, limit in limits.items():
+            rows.setdefault(device, {})[io_names[name]] = limit
     expected["io.max"] = rows
     return expected
 
@@ -520,7 +529,8 @@ def test_capped_popen_real_helper_pid_fd_env_and_one_parent(monkeypatch, tmp_pat
             return
         unit = args[2]
         io_properties = [value for value in args[3:] if value.startswith(("IORead", "IOWrite"))]
-        assert all(f"={caps._DEV_BLOCK / '8:0'} " in value for value in io_properties)
+        assert all(value.endswith("=") or f"={caps._DEV_BLOCK / '8:0'} " in value
+                   for value in io_properties)
         expected = caps._expected(caps.DEFAULT_CAPS, ("8:0",), ())
         _realized_parent_files(unit, expected)
         configured.append(unit)
@@ -1709,8 +1719,9 @@ def test_seat_memory_seal_does_not_close_the_parent_to_later_attempts(memory_hos
             memory_host.drain(first)
             _memory_readings(memory_host.scope(first).parent, current=10, peak=300)
             assert attempt.finish()[0]["peak_source"] == "kernel"
-            with pytest.raises(seat_jail.SeatSandboxRefused):
-                memory_host.launch("fixture")
+            child = memory_host.launch("fixture")
+            assert child.wait(timeout=5) == 0
+            memory_host.drain(child)
         # Cleanup launches and later recorded attempts can reuse the retained slice.
         cleanup = memory_host.launch("fixture")
         cleanup.wait(timeout=5)
@@ -1726,6 +1737,43 @@ def test_seat_memory_seal_does_not_close_the_parent_to_later_attempts(memory_hos
         assert snapshot["state"] == "partial"
         assert not notice
         assert len(memory_host.configured) == 1
+
+
+def test_seat_memory_can_finish_between_scope_reservation_and_attestation(memory_host):
+    with caps._seat_scope("fixture"), caps._seat_memory_attempt() as attempt:
+        first = memory_host.launch("fixture")
+        assert first.wait(timeout=5) == 0
+        memory_host.drain(first)
+        snapshots = []
+        second = memory_host.launch("fixture", before_spawn=lambda: snapshots.append(attempt.finish()[0]))
+        assert second.wait(timeout=5) == 0
+        memory_host.drain(second)
+        assert [snapshot["state"] for snapshot in snapshots] == ["partial"]
+
+
+def test_reused_seat_slice_replaces_stale_scratch_device_limits(memory_host, monkeypatch):
+    # systemd retains set-property drop-ins even when the qualification slice stops.
+    # Model its per-device property merge and verify the result with the real cap helper.
+    systemctl = caps._systemctl
+    io_limits = {}
+
+    def persistent_systemctl(*args):
+        systemctl(*args)
+        if args[:2] == ("set-property", "--runtime"):
+            parent = caps._seat_slice_chain(args[2])[-1]
+            expected = _expected_from_properties(args[3:], io_limits=io_limits)
+            _parent_files(parent, expected)
+
+    monkeypatch.setattr(caps, "_systemctl", persistent_systemctl)
+    key = "gemini:qualification"
+    for device in ("7:0", "8:0"):
+        monkeypatch.setattr(caps, "_device_plan", lambda caps: ((device,), ()))
+        with caps._seat_scope(key), caps._seat_memory_attempt():
+            child = memory_host.launch(key, stderr=subprocess.PIPE)
+            _, stderr = child.communicate(timeout=5)
+            assert child.returncode == 0, stderr
+        _wait_for_parent_collection()
+    assert sum(len(limits) for limits in io_limits.values()) == 4
 
 
 @pytest.mark.parametrize(("local_delta", "full_delta", "oom_delta", "kill_delta", "notice"), [
