@@ -18,6 +18,35 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.47 release preparation
+
+Expected unpublished artifacts are `phase_loop_runtime-0.7.47-py3-none-any.whl`
+and `phase_loop_runtime-0.7.47.tar.gz`. The runtime requires Python 3.12 or newer.
+The lock is unchanged apart from the package version.
+
+Each capped seat attempt now gets its own systemd slice, named per attempt in
+lowercase hex. This covers boards, agy and seat-sandbox qualification, and the
+conformance suite, including attempts that share a logical seat key. Concurrent
+runs therefore no longer stop or re-cap each other's slices (agent-harness#2201,
+agent-harness#2204). A private owner record under `$XDG_RUNTIME_DIR` stores pid,
+start time, boot ID and pid-namespace identity. Sweeps reclaim a slice only when
+its owner is provably dead in the same boot and pid namespace; anything uncertain
+is left in place. Cleanup stops the unit and reverts its runtime drop-ins.
+LaneExec naming is unchanged. Caps apply per attempt, so concurrent attempts add
+up: launch boards serially on accounts with small memory limits. A single board's
+concurrent legs can already exceed 6 GiB. Follow-ups cover pid-namespace
+identity, per-unit release locks, stale temp records and hosted real-systemd
+probe coverage (agent-harness#2205, agent-harness#2206). The coordinator test
+budgets no longer flake on loaded runners (agent-harness#2198).
+
+Qualification inputs compared with the `v0.7.46` tag:
+
+| Seat | Inputs that moved | Stable inputs |
+| --- | --- | --- |
+| Claude | Seat-window runtime digest and release identity. The Claude SDK proof inputs `seat_resource_caps.py` and `seat_resource_caps_enter.py` change, so SDK admission requires a fresh boundary proof. | Production jail profile, all six `QualificationKey` fields for the same launch inputs (the jail-digest read set is pinned and unchanged). TUI remains the default. |
+| Gemini | Seat-window runtime digest and release identity. | Production jail profile, all six `QualificationKey` fields, the agy validator closure and QCI. |
+| Codex | Seat-window runtime digest and release identity. | Production jail profile and all six `QualificationKey` fields. |
+
 ## 0.7.46 release preparation
 
 Expected unpublished artifacts are `phase_loop_runtime-0.7.46-py3-none-any.whl`

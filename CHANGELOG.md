@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.47] - 2026-11-26
+
 ### Changed
 
 - Board and qualification seat attempts now get private capped slices, even when they
@@ -17,6 +19,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Seat slice cleanup observes the recorded PID namespace, clears stale temporary
   owner files, and lets other seats launch while a slice is being stopped
   (agent-harness#2205).
+- The OpenShell coordinator tests give their mTLS calls a load-proof connect and
+  operation budget, so loaded clean-room runners no longer flake
+  (agent-harness#2198).
 
 ## [0.7.46] - 2026-11-25
 
