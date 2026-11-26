@@ -1097,6 +1097,13 @@ def capped_popen(command, *, seat_key: str, before_spawn=None,
         try:
             try:
                 observing = attempt is not None and attempt.reserve_scope(child_unit)
+            except BaseException:
+                os.close(read_fd)
+                os.close(diagnostic_read)
+                os.close(gate_write)
+                raise
+            # The spawn hook stays the statement right before the one Popen.
+            try:
                 if before_spawn is not None:
                     before_spawn()
                 process = subprocess.Popen(argv, **popen_kwargs)
