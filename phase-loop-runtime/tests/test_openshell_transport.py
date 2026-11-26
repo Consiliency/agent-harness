@@ -40,8 +40,11 @@ def coordinator(config):
 def test_coordinator_status_vectors(mtls_material, vector):
     async def scenario():
         async with json_coordinator(mtls_material, [vector['value']]) as (config, calls):
-            client = coordinator(config)
-            result = await client.status(vector['value']['lease_id'], ot.CallerAllowance(bound()))
+            # A loaded clean room can spend over a second on the TLS exchange alone. Give the
+            # single status call an operation and connect budget the runner cannot exhaust, so
+            # only the vector decides the outcome (agent-harness#2198, as in agent-harness#2072).
+            client = coordinator(replace(config, connect_timeout_s=5))
+            result = await client.status(vector['value']['lease_id'], ot.CallerAllowance(bound(10)))
             assert result['flags'] == vector['value']['flags']
             assert client.local_owner_id == 'journal-owner' != config.owner_cn
             assert 1 <= int(calls[0][1]['X-Deadline-Ms']) <= 30000
