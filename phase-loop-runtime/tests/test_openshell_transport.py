@@ -1,6 +1,7 @@
 """Offline coordinator wire tests; no live qualification."""
 import asyncio
 import threading
+from unittest.mock import patch
 from uuid import uuid4
 import pytest
 from phase_loop_runtime import openshell_transport as ot
@@ -12,7 +13,7 @@ OTHER_GEN = 'b971370c-a1b8-432a-a987-cef35cbc474b'
 run = asyncio.run
 
 
-def bound(seconds=1):
+def bound(seconds=10):
     return OperationBound(seconds, threading.Event())
 
 
@@ -32,7 +33,9 @@ def wire(name, kind=None):
 
 
 def coordinator(config):
-    return ot.CoordinatorClient(config, local_owner_id='journal-owner')
+    # Allow headroom for mutual TLS on loaded runners. Tests for caller
+    # deadlines set shorter operation bounds explicitly.
+    return ot.CoordinatorClient(replace(config, connect_timeout_s=5), local_owner_id='journal-owner')
 
 
 @pytest.mark.parametrize('vector', [v for v in _WIRE['valid'] if v['type'] == 'LeaseStatus'],
@@ -40,11 +43,8 @@ def coordinator(config):
 def test_coordinator_status_vectors(mtls_material, vector):
     async def scenario():
         async with json_coordinator(mtls_material, [vector['value']]) as (config, calls):
-            # A loaded clean room can spend over a second on the TLS exchange alone. Give the
-            # single status call an operation and connect budget the runner cannot exhaust, so
-            # only the vector decides the outcome (agent-harness#2198, as in agent-harness#2072).
-            client = coordinator(replace(config, connect_timeout_s=5))
-            result = await client.status(vector['value']['lease_id'], ot.CallerAllowance(bound(10)))
+            client = coordinator(config)
+            result = await client.status(vector['value']['lease_id'], ot.CallerAllowance(bound()))
             assert result['flags'] == vector['value']['flags']
             assert client.local_owner_id == 'journal-owner' != config.owner_cn
             assert 1 <= int(calls[0][1]['X-Deadline-Ms']) <= 30000
@@ -68,7 +68,7 @@ def test_coordinator_lifecycle_and_complete_inventory(mtls_material):
         first, last = wire('first-page'), wire('last-page')
         replies = [reserved, ready, ready, ready, destroyed, first, last]
         async with json_coordinator(mtls_material, replies) as (config, calls):
-            client, allowance = coordinator(config), ot.CallerAllowance(bound(2))
+            client, allowance = coordinator(config), ot.CallerAllowance(bound())
             await client.reserve(lease, reserve, allowance)
             await client.create(lease, create, allowance)
             await client.status(lease, allowance)
@@ -118,12 +118,8 @@ def test_coordinator_closed_errors(mtls_material, vector):
     async def scenario():
         lease = wire('reserved')['lease_id']
         async with json_coordinator(mtls_material, [(503, vector['value'])]) as (config, calls):
-            # This tests response mapping, not subsecond TLS scheduling. Keep a
-            # bounded budget with headroom for loaded hosted runners; dedicated
-            # deadline tests below retain their short explicit allowances.
-            config = replace(config, connect_timeout_s=5)
             with pytest.raises(ot.CoordinatorError) as error:
-                await coordinator(config).reserve(lease, wire('reserve-leg-min-ttl'), ot.CallerAllowance(bound(10)))
+                await coordinator(config).reserve(lease, wire('reserve-leg-min-ttl'), ot.CallerAllowance(bound()))
             assert error.value.code == vector['value']['code']
             assert error.value.reason == vector['value']['reason']
             assert len(calls) == 1
@@ -168,7 +164,7 @@ def test_coordinator_shared_budget_silence_and_cancellation(mtls_material):
             assert len(calls) == 2
             assert int(calls[1][1]['X-Deadline-Ms']) < 60
         async with json_coordinator(mtls_material, [delay]) as (config, calls):
-            allowance = ot.CallerAllowance(bound(1))
+            allowance = ot.CallerAllowance(bound())
             task = asyncio.create_task(coordinator(config).status(wire('reserved')['lease_id'], allowance))
             await asyncio.sleep(.02)
             allowance.cancelled.set()
@@ -186,7 +182,7 @@ def test_coordinator_invalid_response_vectors(mtls_material, vector):
         async with json_coordinator(mtls_material, [(status, vector['value'])]) as (config, _):
             client = coordinator(config)
             allowance = ot.CallerAllowance(bound())
-            with pytest.raises(ot.TransportError) as error:
+            with pytest.raises(ot.TransportError, match='^invalid_coordinator_message$') as error:
                 if vector['type'] == 'InventoryPage': await client.list_owned(allowance)
                 else: await client.status(lease, allowance)
             assert error.value.uncertain
@@ -226,9 +222,13 @@ def test_coordinator_polling_consumes_original_allowance(mtls_material):
 
 def test_coordinator_post_reserve_unavailable_is_uncertain(mtls_material):
     async def scenario():
-        async with json_coordinator(mtls_material, [(503, wire('error-unavailable-recovering'))]) as (config, _):
-            with pytest.raises(ot.TransportError, match='operation_timeout') as error:
-                await coordinator(config).status(wire('reserved')['lease_id'], ot.CallerAllowance(bound()))
+        reply = wire('error-unavailable-recovering')
+        async with json_coordinator(mtls_material, [(503, reply)]) as (config, _):
+            with patch.object(ot, 'validate_wire', wraps=ot.validate_wire) as validate_wire:
+                with pytest.raises(ot.TransportError, match='operation_timeout') as error:
+                    await coordinator(config).status(wire('reserved')['lease_id'], ot.CallerAllowance(bound()))
+            # A network timeout has the same code, but cannot reach reply validation.
+            validate_wire.assert_called_once_with('ErrorBody', reply)
             assert error.value.uncertain
     run(scenario())
 
