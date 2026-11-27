@@ -14,6 +14,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Keep a phase `blocked` with its `runner_verification_failed` blocker when runner-owned
+  verification fails closed, instead of letting a child's `complete` closeout overwrite
+  the phase status to `complete` (agent-harness#2135).
 - `test_jevdrill_usage::test_probe_descendant_cleanup_and_deadline` now accepts Linux
   dead states (`X`/`x`) and vanished `/proc/<pid>/stat` entries alongside `Z`, removing
   the reaper-timing flake under hosted CI load (agent-harness#2153).
