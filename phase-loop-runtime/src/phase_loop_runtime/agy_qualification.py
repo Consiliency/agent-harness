@@ -1896,6 +1896,10 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
                         return AgyVerdict("refuses", "agy_image_unqualified", "host_unknown")
                     if agy_hold._hold_deny_state()[0] == "error":
                         return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
+                    hold_store = Store()
+                    if (hold_store.status() == "ok"
+                            and agy_hold._hold_dir_fault(hold_store.host_dir) == "store_unsafe"):
+                        return AgyVerdict("refuses", "agy_image_unqualified", "store_unsafe")
         return AgyVerdict("refuses", "agy_image_unqualified", reason)
 
     cfg_state = _self_qualification_config_state()

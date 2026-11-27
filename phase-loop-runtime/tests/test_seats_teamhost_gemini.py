@@ -34,11 +34,15 @@ HELP = b"synthetic help\n"
 
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
+    from phase_loop_runtime import agy_hold
+
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(q, "read_machine_id", lambda path="/etc/machine-id": MACHINE)
     monkeypatch.setattr(prov, "detect_platform", lambda **_: HOST)
     monkeypatch.setattr(gh, "_local_capabilities", lambda: None)
     monkeypatch.setattr(q, "_LAST_KNOWN_GOOD_PROVIDER", None)
+    monkeypatch.setattr(agy_hold, "_WALK_ROOT", tmp_path)
+    monkeypatch.setattr(agy_hold, "VENDOR_STORES", ())
     q._HELP_MEMO.clear()
     q._REQUALIFIED.clear()
 
@@ -1332,3 +1336,76 @@ def test_verdict_refusal_reasons_hardening_r4(tmp_path, monkeypatch):
         assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
             "refuses", "agy_image_unqualified", "host_unknown"
         )
+
+
+def test_verdict_refusal_reasons_hardening_r5(tmp_path, monkeypatch):
+    """Regression coverage for r4 review findings (hold discovery/stat faults and unsafe held/ parity)."""
+    import errno
+    from phase_loop_runtime import agy_hold
+
+    lkg_bytes = b"#!/bin/sh\necho lkg\n"
+    lkg_path = _subject(tmp_path, "agy-lkg", lkg_bytes)
+    unqualified_path = _subject(tmp_path, "agy-unqualified", b"#!/bin/sh\necho other\n")
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {})
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    store = _seed(lkg_bytes)
+    held_img = gh.VerifiedImage.from_bytes(lkg_bytes, lkg_path)
+    try:
+        agy_hold.retain(held_img, store, cache_version=lambda _d, _v: (9, 9, 9))
+    finally:
+        held_img.close()
+
+    # Baseline: healthy hold admits
+    with monkeypatch.context() as ctx:
+        ctx.setattr(q, "measure_help", lambda *_a, **_kw: HELP)
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "admits", None, None
+        )
+
+    # P1: EIO on store anchor open -> store_unsafe (not no_qualification_record)
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            agy_hold, "open_anchor",
+            lambda _p: (_ for _ in ()).throw(OSError(errno.EIO, "anchor EIO")),
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+
+    # P1: EIO on cache directory listing -> store_unsafe
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            agy_hold, "_list_names",
+            lambda _fd: (_ for _ in ()).throw(OSError(errno.EIO, "list EIO")),
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+
+    # P1: EIO on post-read name stat inside _unchanged -> admission_error
+    real_stat = os.stat
+
+    def _fail_dir_fd_stat(target, *args, **kwargs):
+        if kwargs.get("dir_fd") is not None:
+            raise OSError(errno.EIO, "post-read stat EIO")
+        return real_stat(target, *args, **kwargs)
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(agy_hold.os, "stat", _fail_dir_fd_stat)
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    # P2: Unsafe held/ directory (0777) -> store_unsafe in BOTH doctor and execute modes
+    held_dir = store.host_dir / agy_hold.HELD_DIRNAME
+    held_dir.chmod(0o777)
+    try:
+        assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+    finally:
+        held_dir.chmod(0o700)

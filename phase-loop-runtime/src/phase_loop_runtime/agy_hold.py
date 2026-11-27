@@ -179,6 +179,28 @@ def _hold_config_error() -> bool:
     return False
 
 
+def _hold_dir_fault(store_dir: Path) -> Literal["ok", "store_unsafe"]:
+    """Read-only check for an unsafe or unreadable store anchor or ``held/`` directory."""
+    store_anchor = cache = None
+    try:
+        try:
+            store_anchor = open_anchor(store_dir)
+        except OSError as exc:
+            return "ok" if exc.errno == errno.ENOENT else "store_unsafe"
+        except ValueError:
+            return "ok"
+        try:
+            cache = _open_dir_at(HELD_DIRNAME, store_anchor)
+        except OSError as exc:
+            return "ok" if exc.errno == errno.ENOENT else "store_unsafe"
+        return "ok"
+    finally:
+        if cache is not None:
+            os.close(cache)
+        if store_anchor is not None:
+            os.close(store_anchor)
+
+
 def retain(image, store, *, cache_version: "CacheVersion | None" = None) -> None:
     """Keep an admitted image in the harness cache, ``held/<sha256>`` (AGYFRESH §2.8).
 
@@ -289,6 +311,7 @@ def _unchanged(fd: int, directory: int, name: str, before: os.stat_result) -> bo
     try:
         named = os.stat(name, dir_fd=directory, follow_symlinks=False)
     except OSError:
+        _record_search_fault("admission_error")
         return False
     return stat.S_ISREG(named.st_mode) and (named.st_dev, named.st_ino) == (before.st_dev, before.st_ino)
 
@@ -312,6 +335,7 @@ def _hint_versions(store_anchor: int | None) -> set[tuple[int, int, int]]:
     try:
         names = _list_names(store_anchor)
     except OSError:
+        _record_search_fault("store_unsafe")
         return found
     if names is None:
         return found
@@ -367,6 +391,7 @@ def candidates(*, members: Iterable[dict], cache: int | None, store_anchor: int 
         try:
             names = _list_names(cache)
         except OSError:
+            _record_search_fault("store_unsafe")
             names = None
         for name in sorted(names or ()):
             if not _DIGEST_NAME.fullmatch(name):
@@ -379,6 +404,7 @@ def candidates(*, members: Iterable[dict], cache: int | None, store_anchor: int 
         try:
             names = _list_names(anchor)
         except OSError:
+            _record_search_fault("admission_error")
             continue
         per_version: dict[tuple[int, int, int], list[str]] = {}
         for name in sorted(names or ()):
@@ -501,7 +527,11 @@ def search(*, members: Iterable[dict], store_dir: Path | None, cache_version: Ca
                 try:
                     store_anchor = open_anchor(store_dir)
                     opened.append(store_anchor)
-                except (OSError, ValueError):
+                except OSError as exc:
+                    if exc.errno != errno.ENOENT:
+                        _record_search_fault("store_unsafe")
+                    store_anchor = None
+                except ValueError:
                     store_anchor = None
                 if store_anchor is not None:
                     try:
@@ -515,7 +545,11 @@ def search(*, members: Iterable[dict], store_dir: Path | None, cache_version: Ca
             for index, root in enumerate(VENDOR_STORES):
                 try:
                     anchor = open_anchor(root)
-                except (OSError, ValueError):
+                except OSError as exc:
+                    if exc.errno != errno.ENOENT:
+                        _record_search_fault("admission_error")
+                    continue
+                except ValueError:
                     continue
                 opened.append(anchor)
                 vendor.append((index, anchor))
