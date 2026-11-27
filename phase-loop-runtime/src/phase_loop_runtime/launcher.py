@@ -3299,6 +3299,7 @@ def launch(
             stalled = False
             drain_incomplete = False
             leader_unreaped = False
+            cleaned_up_group = False
             cleanup_evidence: dict[str, Any] | None = None
             last_heartbeat_summary: dict[str, Any] | None = None
             reader_eof = False
@@ -3356,6 +3357,7 @@ def launch(
                             )
                             cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="stalled")
                             cleanup_evidence["salvage_snapshot"] = salvage
+                            cleaned_up_group = True
                     if action != "review" and timeout_seconds is not None and now - started_monotonic >= timeout_seconds and not _child_exited_no_reap(process)[0]:
                         timed_out = True
                         salvage = _salvage_snapshot(
@@ -3369,6 +3371,7 @@ def launch(
                         )
                         cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
                         cleanup_evidence["salvage_snapshot"] = salvage
+                        cleaned_up_group = True
                     exited_now, unreaped_now = _child_exited_no_reap(process)
                     if exited_now:
                         leader_unreaped = unreaped_now
@@ -3385,17 +3388,28 @@ def launch(
                         break
                 except KeyboardInterrupt:
                     interrupted = True
-                    _exited_on_int, unreaped_on_int = _child_exited_no_reap(process)
-                    if (leader_unreaped or unreaped_on_int) and getattr(process, "returncode", None) is None:
+                    # Signal the child's own process group BEFORE reaping the leader so
+                    # there is no TOCTOU window where poll() reaps a newly exited leader
+                    # and skips signaling surviving descendants (agent-harness#2129).
+                    own_pgrp = False
+                    if process_group_id is not None and hasattr(os, "killpg"):
+                        try:
+                            own_pgrp = process_group_id != os.getpgrp()
+                        except OSError:
+                            own_pgrp = False
+                    if own_pgrp and getattr(process, "returncode", None) is None:
                         cleanup_evidence = _cleanup_descendant_process_group(
                             process.pid,
                             process_group_id,
                             reason="interrupt",
                             pipes_closed=pipes_all_eof,
+                            include_leader=True,
                         )
                         leader_unreaped = False
+                        cleaned_up_group = True
                     else:
                         leader_unreaped = False
+                        cleaned_up_group = True
                         cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
                     if _codex_usage_observer is not None:
                         drain()
@@ -3404,34 +3418,44 @@ def launch(
                         drain_plain()
                         drain_incomplete = not reader_eof
                     break
-            if (
-                drain_incomplete
-                and not pipe_writers_all_closed()
-                and leader_unreaped
-                and getattr(process, "returncode", None) is None
-            ):
-                descendant_cleanup = _cleanup_descendant_process_group(
-                    process.pid, process_group_id, reason="post_exit_pipe_open",
-                    pipes_closed=pipes_all_eof,
+            try:
+                can_cleanup_descendants = (
+                    (leader_unreaped and getattr(process, "returncode", None) is None)
+                    or (
+                        not _has_waitid_nowait()
+                        and not cleaned_up_group
+                        and process_group_id == process.pid
+                    )
                 )
-                if descendant_cleanup is not None:
-                    if descendant_cleanup.get("interrupted"):
+                if drain_incomplete and not pipe_writers_all_closed() and can_cleanup_descendants:
+                    descendant_cleanup = _cleanup_descendant_process_group(
+                        process.pid, process_group_id, reason="post_exit_pipe_open",
+                        pipes_closed=pipes_all_eof,
+                    )
+                    if descendant_cleanup is not None:
+                        if descendant_cleanup.get("interrupted"):
+                            interrupted = True
+                        if cleanup_evidence is None:
+                            cleanup_evidence = descendant_cleanup
+                        else:
+                            cleanup_evidence["post_exit_descendant_cleanup"] = descendant_cleanup
+            finally:
+                while True:
+                    try:
+                        returncode = process.wait()
+                        break
+                    except KeyboardInterrupt:
                         interrupted = True
-                    if cleanup_evidence is None:
-                        cleanup_evidence = descendant_cleanup
-                    else:
-                        cleanup_evidence["post_exit_descendant_cleanup"] = descendant_cleanup
-            returncode = process.wait()
-            reader_stop.set()
-            for reader in readers:
-                reader.join(timeout=1)
-            if not any(reader.is_alive() for reader in readers):
-                try:
-                    process.stdout.close()
-                    if _codex_usage_observer is not None and process.stderr is not None:
-                        process.stderr.close()
-                except OSError:
-                    pass
+                reader_stop.set()
+                for reader in readers:
+                    reader.join(timeout=1)
+                if not any(reader.is_alive() for reader in readers):
+                    try:
+                        process.stdout.close()
+                        if _codex_usage_observer is not None and process.stderr is not None:
+                            process.stderr.close()
+                    except OSError:
+                        pass
             if not executor_released and returncode != 0 and not (timed_out or interrupted or stalled):
                 # The supervisor died before releasing the executor, so the
                 # executor never ran (see lease_supervisor's handshake); that is a
@@ -4689,6 +4713,10 @@ def _codex_usage_version(executable, env, cwd, timeout):
             process.wait(timeout=1)
 
 
+def _has_waitid_nowait() -> bool:
+    return hasattr(os, "waitid") and hasattr(os, "WNOWAIT")
+
+
 def _child_exited_no_reap(process: Any) -> tuple[bool, bool]:
     """Return ``(exited, leader_unreaped)`` without reaping on platforms with ``waitid`` +
     ``WNOWAIT`` so the child's PID/PGID stays pinned through descendant signaling."""
@@ -4697,8 +4725,7 @@ def _child_exited_no_reap(process: Any) -> tuple[bool, bool]:
     poll_fn = getattr(type(process), "poll", None)
     if (
         getattr(poll_fn, "__module__", None) == "subprocess"
-        and hasattr(os, "waitid")
-        and hasattr(os, "WNOWAIT")
+        and _has_waitid_nowait()
         and isinstance(getattr(process, "pid", None), int)
     ):
         try:
@@ -4738,10 +4765,10 @@ def _pipe_writers_closed(pipe) -> bool:
     return any(bool(ev & select.POLLHUP) for _, ev in events)
 
 
-def _live_pgid_members_exist(pgid: int, *, leader_pid: int) -> bool | None:
-    """Return whether any live (non-zombie/non-dead) process or thread other than
-    ``leader_pid`` belongs to ``pgid``, or ``None`` when ``/proc`` inspection is
-    unavailable."""
+def _live_pgid_members_exist(pgid: int, *, leader_pid: int | None) -> bool | None:
+    """Return whether any live (non-zombie/non-dead) process or thread (optionally
+    excluding ``leader_pid``) belongs to ``pgid``, or ``None`` when ``/proc`` inspection
+    is unavailable."""
     if not sys.platform.startswith("linux"):
         return None
     proc_root = Path("/proc")
@@ -4767,7 +4794,7 @@ def _live_pgid_members_exist(pgid: int, *, leader_pid: int) -> bool | None:
         if not entry.name.isdigit():
             continue
         pid = int(entry.name)
-        if pid == leader_pid:
+        if leader_pid is not None and pid == leader_pid:
             continue
         fields = read_stat_fields(proc_root / entry.name / "stat")
         if fields is None:
@@ -5052,12 +5079,13 @@ def _cleanup_descendant_process_group(
     *,
     reason: str,
     pipes_closed: Callable[[], bool],
+    include_leader: bool = False,
 ) -> dict[str, Any] | None:
-    """Terminate surviving descendants in a child's own process group after child exit
-    (agent-harness#2129). Caller must keep the leader unreaped until signaling finishes so
-    the PGID cannot be recycled. Tracks non-zombie PGID members via ``/proc`` (falling back
-    to ``pipes_closed`` off Linux) so neither unreaped zombies nor a SIGTERM-ignoring
-    descendant that closes its pipes can fool termination detection."""
+    """Terminate surviving members in a child's own process group (agent-harness#2129).
+    Caller should keep the leader unreaped until signaling finishes so the PGID cannot be
+    recycled. Tracks non-zombie PGID tasks via ``/proc`` (falling back to ``pipes_closed``
+    off Linux) so neither unreaped zombies nor a SIGTERM-ignoring descendant that closes
+    its pipes can fool termination detection."""
     if process_group_id is None or not hasattr(os, "killpg"):
         return None
     try:
@@ -5072,11 +5100,14 @@ def _cleanup_descendant_process_group(
         "process_group_id": process_group_id,
         "cleanup_scope": "process_group",
         "signals_sent": [],
-        "drain_incomplete": True,
+        "drain_incomplete": not include_leader,
     }
 
     def has_live_descendants() -> bool:
-        live = _live_pgid_members_exist(process_group_id, leader_pid=process_pid)
+        live = _live_pgid_members_exist(
+            process_group_id,
+            leader_pid=None if include_leader else process_pid,
+        )
         if live is not None:
             return live or not pipes_closed()
         return not pipes_closed()
@@ -5108,10 +5139,10 @@ def _cleanup_descendant_process_group(
         return evidence
     kill_deadline = time.monotonic() + 0.25
     while time.monotonic() < kill_deadline:
-        if not has_live_descendants():
-            evidence["result"] = "killed"
-            return evidence
         try:
+            if not has_live_descendants():
+                evidence["result"] = "killed"
+                return evidence
             time.sleep(0.01)
         except KeyboardInterrupt:
             evidence["interrupted"] = True

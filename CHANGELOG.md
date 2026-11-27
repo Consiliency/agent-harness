@@ -12,6 +12,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   incomplete drains (`drain_incomplete=True`, usage `UNKNOWN`), stop the reader thread
   without deadlocking on pipe close, and terminate surviving descendants in the child's
   process group when a grandchild holds stdout open past child exit (agent-harness#2129).
+- `test_jevdrill_usage::test_probe_descendant_cleanup_and_deadline` now accepts Linux
+  dead states (`X`/`x`) and vanished `/proc/<pid>/stat` entries alongside `Z`, removing
+  the reaper-timing flake under hosted CI load (agent-harness#2153).
 - Raise the `test.yml` `clean-room (standalone-from-wheel, Gate A)` job timeout from
   150 to 210 minutes (matching `publish-pypi.yml` from agent-harness#2191) after slow
   hosted runners hit the 150-minute cap at 88% with no test failures (agent-harness#766).

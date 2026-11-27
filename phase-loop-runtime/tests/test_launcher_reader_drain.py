@@ -401,10 +401,14 @@ def test_interrupt_during_post_exit_drain_cleans_up_descendant_before_reap(tmp_p
     orig_descendant_cleanup = launcher._cleanup_descendant_process_group
     cleanup_calls = []
 
-    def spy_descendant_cleanup(process_pid, process_group_id, *, reason, pipes_closed):
+    def spy_descendant_cleanup(process_pid, process_group_id, *, reason, pipes_closed, include_leader=False):
         cleanup_calls.append((reason, process_pid, process_group_id))
         return orig_descendant_cleanup(
-            process_pid, process_group_id, reason=reason, pipes_closed=pipes_closed,
+            process_pid,
+            process_group_id,
+            reason=reason,
+            pipes_closed=pipes_closed,
+            include_leader=include_leader,
         )
 
     monkeypatch.setattr(launcher, "_cleanup_descendant_process_group", spy_descendant_cleanup)
@@ -567,6 +571,97 @@ def test_interrupt_during_post_exit_sigterm_grace_escalates_to_sigkill(tmp_path,
         deadline = time.monotonic() + 1.0
         while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
             orig_sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_post_exit_and_interrupt_cleanup_work_without_os_waitid(tmp_path, monkeypatch):
+    """Platforms without os.waitid (such as macOS Python 3.12) must still terminate
+    pipe-holding descendants on post-exit drain timeout and on KeyboardInterrupt."""
+    monkeypatch.setattr(launcher, "_has_waitid_nowait", lambda: False)
+    marker = tmp_path / "no_waitid_grandchild.pid"
+    script = (
+        "import subprocess, sys\n"
+        "proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(proc.pid))\n"
+        "print('leader-done', flush=True)\n"
+    )
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.5,
+        )
+        assert result.returncode == 0
+        assert result.drain_incomplete is True
+        assert result.cleanup_evidence is not None
+        assert "SIGTERM" in result.cleanup_evidence["signals_sent"]
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_interrupt_during_post_sigkill_liveness_probe_still_reaps_leader(tmp_path, monkeypatch):
+    """A KeyboardInterrupt raised inside _live_pgid_members_exist() during the post-SIGKILL
+    wait loop must not escape or bypass process.wait() reaping."""
+    marker = tmp_path / "sigkill_probe_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('leader-done', flush=True)\n"
+    )
+    orig_live = launcher._live_pgid_members_exist
+    orig_killpg = launcher.os.killpg
+    sigkill_sent = False
+    probe_interrupted = False
+
+    def spy_killpg(pgid, sig):
+        nonlocal sigkill_sent
+        if sig == launcher.signal.SIGKILL:
+            sigkill_sent = True
+        return orig_killpg(pgid, sig)
+
+    def interrupting_live(pgid, *, leader_pid):
+        nonlocal probe_interrupted
+        if sigkill_sent and not probe_interrupted:
+            probe_interrupted = True
+            raise KeyboardInterrupt
+        return orig_live(pgid, leader_pid=leader_pid)
+
+    monkeypatch.setattr(launcher.os, "killpg", spy_killpg)
+    monkeypatch.setattr(launcher, "_live_pgid_members_exist", interrupting_live)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.8,
+        )
+        assert sigkill_sent is True
+        assert probe_interrupted is True
+        assert result.returncode == 0
+        assert result.interrupted is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
         assert not _proc_alive(grandchild_pid)
     finally:
         _kill_pid_best_effort(marker)
