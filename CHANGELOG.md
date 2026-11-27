@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- Give `test_openshell_backend.py`'s `pipeline` fixture and
+  `test_untrusted_or_lost_result_refused_no_replay` load-proof `ANSWER_BOUND_S` and
+  placement deadline headroom (and assert `not decision.placement._launch_failed`) so
+  loaded hosted runners no longer suffer incidental driver timeouts before the injected
+  rejection runs (agent-harness#2096).
+
 ## [0.7.48] - 2026-11-27
 
 ### Added
