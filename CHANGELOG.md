@@ -9,12 +9,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### Added
 
 - Add a sanctioned `replan` lifecycle transition (`REPLAN_TRANSITION = "replan"`) to
-  `phase_loop_runtime.plan_manifest.update_lifecycle` from `imported`/`committed`
-  (preserving `status = "committed"`, merging new `frozen_inputs` seals without
-  overwriting existing seals with conflicting digests, and requiring
-  `superseded_plan_sha256`, `frozen_inputs`, and `reason`), and teach
-  `validate_manifest` and `plan_manifest.check` to validate `replan` lifecycle events
-  (agent-harness#1968).
+  `phase_loop_runtime.plan_manifest.update_lifecycle` for phase entries from
+  `imported`/`committed` (preserving `status = "committed"`, validating and merging new
+  `frozen_inputs` seals without overwriting conflicting digests, and requiring
+  `superseded_plan_sha256`, `frozen_inputs`, `reason`, and a non-blank `by` actor), and
+  teach `validate_manifest` and `plan_manifest.check` to validate `replan` lifecycle
+  events and reject `status = "replan"` (agent-harness#1968).
 - Report a closed `reason` vocabulary (`VERDICT_REFUSAL_REASONS`: `image_unreadable`,
   `store_unsafe`, `host_unknown`, `self_qualification_disabled`, `qualification_failed`,
   `no_qualification_record`, `admission_error`) on `agy_image_unqualified` verdicts in

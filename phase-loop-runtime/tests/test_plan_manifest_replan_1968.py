@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -16,13 +17,33 @@ SHA_B = "b" * 64
 SHA_C = "c" * 64
 SHA_D = "d" * 64
 
+_UNSET = object()
+
 
 def _git(repo: Path, *args: str) -> None:
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
     subprocess.run(
-        ["git", "-C", str(repo), *args],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            *args,
+        ],
         check=True,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
@@ -30,7 +51,7 @@ def _init_repo_with_manifest(
     tmp_path: Path,
     *,
     status: str = "committed",
-    existing_frozen: dict[str, dict[str, str]] | None = None,
+    existing_frozen: object = _UNSET,
 ) -> Path:
     repo = tmp_path / "repo"
     (repo / "plans" / "artifacts").mkdir(parents=True)
@@ -66,7 +87,7 @@ def _init_repo_with_manifest(
         "type": "phase",
         "updated_at": "2026-11-09T00:00:00Z",
     }
-    if existing_frozen is not None:
+    if existing_frozen is not _UNSET:
         row["frozen_inputs"] = existing_frozen
 
     sibling = {
@@ -172,7 +193,7 @@ def test_update_lifecycle_replan_keeps_committed_status_merges_frozen_inputs_and
 def test_update_lifecycle_replan_with_empty_frozen_inputs_does_not_create_empty_row_field(
     tmp_path: Path,
 ) -> None:
-    repo = _init_repo_with_manifest(tmp_path, status="committed", existing_frozen=None)
+    repo = _init_repo_with_manifest(tmp_path, status="committed")
     pm.update_lifecycle(
         repo,
         "v14-REPLAN",
@@ -188,6 +209,99 @@ def test_update_lifecycle_replan_with_empty_frozen_inputs_does_not_create_empty_
     assert "frozen_inputs" not in after["plans"][0]
     assert pm.validate_manifest(repo / "plans" / "manifest.json").valid
     assert pm.check(repo).exit_code == 0
+
+
+@pytest.mark.parametrize(
+    ("existing_frozen", "incoming_frozen"),
+    [
+        ({"./plans/artifacts/base-input.md": {"sha256": SHA_A}}, {"plans/artifacts/base-input.md": {"sha256": SHA_D}}),
+        ({"./plans/artifacts/base-input.md": {"sha256": SHA_A}}, {}),
+        ({"plans/artifacts/base-input.md": {"sha256": "bad"}}, {}),
+        (None, {"plans/artifacts/new.md": {"sha256": SHA_C}}),
+        (None, {}),
+        (["plans/artifacts/base-input.md"], {}),
+    ],
+)
+def test_update_lifecycle_replan_rejects_malformed_or_null_existing_frozen_inputs_without_mutating_manifest(
+    tmp_path: Path, existing_frozen: object, incoming_frozen: dict[str, dict[str, str]]
+) -> None:
+    repo = _init_repo_with_manifest(tmp_path, status="committed", existing_frozen=existing_frozen)
+    before_bytes = (repo / "plans" / "manifest.json").read_bytes()
+    with pytest.raises(ValueError, match="manifest entry frozen_inputs"):
+        pm.update_lifecycle(
+            repo,
+            "v14-REPLAN",
+            "replan",
+            "claude-plan-phase",
+            {
+                "superseded_plan_sha256": SHA_B,
+                "frozen_inputs": incoming_frozen,
+                "reason": "reject malformed existing frozen_inputs",
+            },
+        )
+    assert (repo / "plans" / "manifest.json").read_bytes() == before_bytes
+
+
+def test_update_lifecycle_replan_refuses_detailed_entries(tmp_path: Path) -> None:
+    repo = _init_repo_with_manifest(tmp_path, status="committed")
+    (repo / "plans" / "detailed-example.md").write_text("# Detailed\n", encoding="utf-8")
+    manifest_path = repo / "plans" / "manifest.json"
+    doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+    doc["plans"].append(
+        {
+            "acceptance_criteria_count": 1,
+            "created_at": "2026-11-09T00:00:00Z",
+            "file": "plans/detailed-example.md",
+            "handoff_ref": None,
+            "if_gates_produced": [],
+            "lanes": [],
+            "lifecycle": [],
+            "owner_skill": "claude-plan-detailed",
+            "phase_alias": None,
+            "reflection_ref": None,
+            "roadmap_ref": None,
+            "slug": "detailed-example",
+            "status": "committed",
+            "task_summary": "Example detailed plan",
+            "type": "detailed",
+            "updated_at": "2026-11-09T00:00:00Z",
+        }
+    )
+    manifest_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    before_bytes = manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="only supported for phase entries"):
+        pm.update_lifecycle(
+            repo,
+            "detailed-example",
+            "replan",
+            "claude-plan-detailed",
+            {
+                "superseded_plan_sha256": SHA_A,
+                "frozen_inputs": {},
+                "reason": "detailed entries are not phase replans",
+            },
+        )
+    assert manifest_path.read_bytes() == before_bytes
+
+    # A hand-written replan event on a detailed entry is also rejected by validate_manifest.
+    doc["plans"][-1]["lifecycle"].append(
+        {
+            "at": "2026-11-09T15:00:00Z",
+            "by": "claude-plan-detailed",
+            "metadata": {
+                "superseded_plan_sha256": SHA_A,
+                "frozen_inputs": {},
+                "reason": "hand-written detailed replan",
+            },
+            "transition": "replan",
+        }
+    )
+    manifest_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    validation = pm.validate_manifest(manifest_path)
+    assert not validation.valid
+    assert not validation.entries[-1].valid
+    assert any("only valid for phase entries" in err for err in validation.entries[-1].errors)
 
 
 @pytest.mark.parametrize("disallowed_status", ["executing", "completed", "failed", "orphaned"])
@@ -299,14 +413,25 @@ def test_replan_metadata_validation_rejects_malformed_payloads_in_writer_and_val
     )
 
 
-def test_validate_manifest_rejects_replan_as_entry_status(tmp_path: Path) -> None:
+def test_validators_reject_replan_as_entry_status(tmp_path: Path) -> None:
     repo = _init_repo_with_manifest(tmp_path, status="replan")
     validation = pm.validate_manifest(repo / "plans" / "manifest.json")
     assert not validation.valid
     assert any("status is invalid" in err for err in validation.entries[0].errors)
 
+    check_result = pm.check(repo)
+    assert check_result.exit_code == 1
+    assert "replan-lifecycle" in pm.MANIFEST_MALFORMED_KINDS
+    assert any(
+        finding.path == "plans/phase-plan-v14-REPLAN.md"
+        and finding.kind == "replan-lifecycle"
+        for finding in check_result.malformed
+    )
 
-def test_update_lifecycle_rejects_blank_by(tmp_path: Path) -> None:
+
+def test_update_lifecycle_replan_rejects_blank_by_without_changing_other_transitions(
+    tmp_path: Path,
+) -> None:
     repo = _init_repo_with_manifest(tmp_path, status="committed")
     with pytest.raises(ValueError, match="by must be a non-empty string"):
         pm.update_lifecycle(
@@ -316,6 +441,9 @@ def test_update_lifecycle_rejects_blank_by(tmp_path: Path) -> None:
             "   ",
             {"superseded_plan_sha256": SHA_A, "frozen_inputs": {}, "reason": "blank actor"},
         )
+    # Existing non-replan transitions keep their previous contract.
+    pm.update_lifecycle(repo, "v14-REPLAN", "executing", "   ", {})
+    assert pm.read_manifest(repo).plans[0].status == "executing"
 
 
 @pytest.mark.parametrize("field_name", ["by", "at"])

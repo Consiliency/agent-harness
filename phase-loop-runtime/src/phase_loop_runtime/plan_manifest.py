@@ -356,6 +356,28 @@ def _is_valid_repo_relative_posix_path(value: Any) -> bool:
     return True
 
 
+def _frozen_inputs_errors(frozen_inputs: Any, label: str) -> list[str]:
+    if not isinstance(frozen_inputs, dict):
+        return [f"{label} must be an object mapping path to sha256 seal"]
+    errors: list[str] = []
+    for path, seal in frozen_inputs.items():
+        if not _is_valid_repo_relative_posix_path(path):
+            errors.append(
+                f"{label} key {path!r} must be a repo-relative POSIX path"
+            )
+            continue
+        if (
+            not isinstance(seal, dict)
+            or set(seal) != {"sha256"}
+            or not isinstance(seal.get("sha256"), str)
+            or _SHA256_RE.fullmatch(seal["sha256"]) is None
+        ):
+            errors.append(
+                f"{label}[{path!r}] must be {{'sha256': '<64-hex>'}}"
+            )
+    return errors
+
+
 def _replan_metadata_errors(metadata: dict[str, Any], label: str) -> list[str]:
     errors: list[str] = []
     superseded = metadata.get("superseded_plan_sha256")
@@ -366,25 +388,7 @@ def _replan_metadata_errors(metadata: dict[str, Any], label: str) -> list[str]:
     reason = metadata.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         errors.append(f"{label}.reason must be a non-empty string")
-    frozen_inputs = metadata.get("frozen_inputs")
-    if not isinstance(frozen_inputs, dict):
-        errors.append(f"{label}.frozen_inputs must be an object mapping path to sha256 seal")
-    else:
-        for path, seal in frozen_inputs.items():
-            if not _is_valid_repo_relative_posix_path(path):
-                errors.append(
-                    f"{label}.frozen_inputs key {path!r} must be a repo-relative POSIX path"
-                )
-                continue
-            if (
-                not isinstance(seal, dict)
-                or set(seal) != {"sha256"}
-                or not isinstance(seal.get("sha256"), str)
-                or _SHA256_RE.fullmatch(seal["sha256"]) is None
-            ):
-                errors.append(
-                    f"{label}.frozen_inputs[{path!r}] must be {{'sha256': '<64-hex>'}}"
-                )
+    errors.extend(_frozen_inputs_errors(metadata.get("frozen_inputs"), f"{label}.frozen_inputs"))
     return errors
 
 
@@ -401,8 +405,6 @@ def _normalize_replan_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_lifecycle(repo: Path, slug: str, transition: str, by: str, metadata: dict[str, Any]) -> None:
-    if not isinstance(by, str) or not by.strip():
-        raise ValueError("by must be a non-empty string")
     if not isinstance(metadata, dict):
         raise ValueError("metadata must be an object")
     document, rows = _manifest_rows_for_write(repo)
@@ -419,21 +421,31 @@ def update_lifecycle(repo: Path, slug: str, transition: str, by: str, metadata: 
         event_metadata = metadata
         merged_frozen_inputs: dict[str, Any] | None = None
         if transition == REPLAN_TRANSITION:
+            if entry.type != "phase":
+                raise ValueError(f"replan transition is only supported for phase entries: {slug}")
+            if not isinstance(by, str) or not by.strip():
+                raise ValueError("by must be a non-empty string")
             event_metadata = _normalize_replan_metadata(metadata)
             new_frozen = event_metadata["frozen_inputs"]
+            has_existing_frozen = "frozen_inputs" in rows[index]
+            if has_existing_frozen:
+                existing_frozen = rows[index]["frozen_inputs"]
+                existing_errors = _frozen_inputs_errors(
+                    existing_frozen, "manifest entry frozen_inputs"
+                )
+                if existing_errors:
+                    raise ValueError("; ".join(existing_errors))
+            else:
+                existing_frozen = None
             if new_frozen:
-                existing_frozen = rows[index].get("frozen_inputs")
-                if existing_frozen is None:
-                    merged_frozen_inputs = {}
-                elif isinstance(existing_frozen, dict):
-                    merged_frozen_inputs = dict(existing_frozen)
-                    for path, seal in new_frozen.items():
-                        if path in merged_frozen_inputs and merged_frozen_inputs[path] != seal:
-                            raise ValueError(
-                                f"frozen_inputs already seals {path!r} with a different digest"
-                            )
-                else:
-                    raise ValueError("manifest entry frozen_inputs must be an object")
+                merged_frozen_inputs = (
+                    dict(existing_frozen) if existing_frozen is not None else {}
+                )
+                for path, seal in new_frozen.items():
+                    if path in merged_frozen_inputs and merged_frozen_inputs[path] != seal:
+                        raise ValueError(
+                            f"frozen_inputs already seals {path!r} with a different digest"
+                        )
                 for path, seal in new_frozen.items():
                     if path not in merged_frozen_inputs:
                         merged_frozen_inputs[path] = dict(seal)
@@ -557,7 +569,12 @@ def _validate_manifest_data(data: Any, repo: Path) -> ValidationResult:
             _validate_phase_entry(label, raw_entry, entry_errors)
         elif raw_entry.get("type") == "detailed":
             _validate_detailed_entry(label, raw_entry, entry_errors)
-        _validate_lifecycle(label, raw_entry.get("lifecycle"), entry_errors)
+        _validate_lifecycle(
+            label,
+            raw_entry.get("lifecycle"),
+            entry_errors,
+            entry_type=raw_entry.get("type"),
+        )
         entry_results.append(
             EntryValidationResult(
                 index=index,
@@ -887,7 +904,13 @@ def _validate_detailed_entry(label: str, entry: dict[str, Any], errors: list[str
         errors.append(f"{label}.lanes must be empty for detailed entries")
 
 
-def _validate_lifecycle(label: str, lifecycle: Any, errors: list[str]) -> None:
+def _validate_lifecycle(
+    label: str,
+    lifecycle: Any,
+    errors: list[str],
+    *,
+    entry_type: Any = None,
+) -> None:
     if not isinstance(lifecycle, list):
         errors.append(f"{label}.lifecycle must be an array")
         return
@@ -902,6 +925,8 @@ def _validate_lifecycle(label: str, lifecycle: Any, errors: list[str]) -> None:
         if not isinstance(event.get("metadata"), dict):
             errors.append(f"{event_label}.metadata must be an object")
         elif event.get("transition") == REPLAN_TRANSITION:
+            if entry_type is not None and entry_type != "phase":
+                errors.append(f"{event_label}.transition replan is only valid for phase entries")
             for field_name in ("by", "at"):
                 field_value = event.get(field_name)
                 if isinstance(field_value, str) and field_value and not field_value.strip():
@@ -1645,7 +1670,7 @@ def phase_status_disagreements(
 MANIFEST_MALFORMED_KINDS = frozenset(
     {
         "noncanonical", "path-escape", "conflicted-index", "symlink", "non-regular",
-        "undecodable-name", "plan-contract", "plan-digest",
+        "undecodable-name", "plan-contract", "plan-digest", "replan-lifecycle",
     }
 )
 MANIFEST_ORIGIN_FLAGS = frozenset({"head", "index", "filesystem", "manifest"})
@@ -3170,7 +3195,7 @@ def _manifest_entry_scope_from_snapshot(
             historical_binding_malformed = (
                 "lifecycle" in entry and not isinstance(lifecycle, list)
             )
-            replan_malformed = False
+            replan_malformed = entry.get("status") == REPLAN_TRANSITION
             if isinstance(lifecycle, list):
                 for event in lifecycle:
                     if not isinstance(event, dict):
