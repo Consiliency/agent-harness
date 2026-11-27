@@ -1342,9 +1342,11 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
         built_jails.append(jail)
         return jail
 
-    def cleanup_built(seat):
-        seat_jail.close_jail_fds(seat.jail)
-        seat_jail.close_jail_fds(seat.probe_jail)
+    def cleanup_built(seat, *, primary=None):
+        for closed in (seat.jail, seat.probe_jail):
+            if closed is not None:
+                seat_jail.close_jail_fds(closed)
+                built_jails[:] = [b for b in built_jails if b.seccomp_fd != closed.seccomp_fd]
 
     monkeypatch.setattr(pi, "_cleanup_jailed_seat", cleanup_built)
 
@@ -1613,7 +1615,7 @@ def test_open_window_launch_cleans_up_seat_when_qualification_key_unavailable(
     commit = "d" * 40
     repo = tmp_path / "repo"
     repo.mkdir()
-    cleaned = []
+    cleaned: list[tuple[object, BaseException | None]] = []
     monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
     monkeypatch.setattr(pi._review_stage, "host_git",
                         lambda *a, **k: SimpleNamespace(stdout=commit + "\n"))
@@ -1645,7 +1647,10 @@ def test_open_window_launch_cleans_up_seat_when_qualification_key_unavailable(
         jail=SimpleNamespace(dependency=None), probe_jail=SimpleNamespace(dependency=None),
     )
     monkeypatch.setattr(pi, "_prepare_jailed_gemini", lambda *a, **k: seat_obj)
-    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat: cleaned.append(seat))
+    monkeypatch.setattr(
+        pi, "_cleanup_jailed_seat",
+        lambda seat, *, primary=None: cleaned.append((seat, primary)),
+    )
     monkeypatch.setattr(seat_jail, "host_identity", lambda: None)
 
     spec = pi.WindowLaunchSpec(
@@ -1660,7 +1665,110 @@ def test_open_window_launch_cleans_up_seat_when_qualification_key_unavailable(
         with pi._open_window_launch(spec):
             pass
     assert exc.value.code == "seat_sandbox_refused:jail_unqualified"
-    assert cleaned == [seat_obj]
+    assert cleaned == [(seat_obj, exc.value)]
+
+
+def test_fresh_window_launch_jails_rewrites_token_fd_in_process_owner(tmp_path):
+    """Cloning a token-bearing SeatJail updates env, pass_fds, token_fd, and Bubblewrap's
+    --setenv CLAUDE_TOKEN_FD_ENV argument in process_owner so bwrap passes the fresh pipe."""
+    import os
+    from phase_loop_runtime import panel_invoker as pi, seat_jail
+
+    provider_bin = tmp_path / "claude"
+    provider_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    provider_bin.chmod(0o700)
+    subdir = tmp_path / "seat"
+    subdir.mkdir(mode=0o700)
+    (subdir / seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700)
+
+    template = pi._build_jail_with_owned_inputs(
+        "claude", subdir, provider_bin, artifact=b"bundle", instructions=b"instr",
+        seat_ids=(2, 2), token=b"template-token",
+    )
+    try:
+        assert template.token_fd is not None
+        seat = SimpleNamespace(jail=template, probe_jail=template, token=b"fresh-token")
+        with pi._fresh_window_launch_jails(seat) as (cloned_jail, cloned_probe):
+            for cloned, expected_bytes in ((cloned_jail, b"fresh-token"), (cloned_probe, b"probe")):
+                assert cloned.token_fd is not None
+                assert cloned.token_fd != template.token_fd
+                assert cloned.token_fd in cloned.pass_fds
+                assert template.token_fd not in cloned.pass_fds
+                assert cloned.env[seat_jail.CLAUDE_TOKEN_FD_ENV] == str(cloned.token_fd)
+                setenv_vals = [
+                    cloned.process_owner[idx + 2]
+                    for idx, arg in enumerate(cloned.process_owner)
+                    if arg == "--setenv"
+                    and idx + 2 < len(cloned.process_owner)
+                    and cloned.process_owner[idx + 1] == seat_jail.CLAUDE_TOKEN_FD_ENV
+                ]
+                assert setenv_vals == [str(cloned.token_fd)]
+                assert os.read(cloned.token_fd, 64) == expected_bytes
+    finally:
+        seat_jail.close_jail_fds(template)
+
+
+def test_open_window_launch_preserves_qualification_refusal_when_teardown_fails(
+    tmp_path, monkeypatch,
+):
+    """If seat teardown raises while unwinding a qualification refusal in _open_window_launch,
+    the primary SeatSandboxRefused is preserved instead of being masked by a teardown error."""
+    from phase_loop_runtime import panel_invoker as pi, seat_jail
+
+    _install_firstseat_supplier_double(monkeypatch)
+    commit = "d" * 40
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr(pi._review_stage, "host_git",
+                        lambda *a, **k: SimpleNamespace(stdout=commit + "\n"))
+    monkeypatch.setattr(pi, "prepare_review_isolation_authorization",
+                        lambda *a, **k: SimpleNamespace(staged_tree_sha256="c" * 64))
+    monkeypatch.setattr(pi, "activate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "close_review_isolation_authorization", lambda *a, **k: None)
+
+    def stage(source, *, parent):
+        staged = Path(parent) / "staged"
+        staged.mkdir()
+        return staged
+
+    monkeypatch.setattr(pi._review_stage, "stage_review_tree", stage)
+    monkeypatch.setattr(pi._review_stage, "staged_source_commit", lambda tree: commit)
+    monkeypatch.setattr(pi._review_stage, "remove_review_stage", lambda base: None)
+    monkeypatch.setattr(pi._seat_uid, "subordinate_range", lambda path: (1, 2))
+    monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda u, g: 1)
+    monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lambda n: contextmanager(lambda: (yield 2))())
+    monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
+    monkeypatch.setattr(
+        pi._seat_egress_proxy, "start_private_gemini_proxy",
+        lambda **k: contextmanager(lambda: (yield SimpleNamespace(socket="sock", allowlist_sha256="6" * 64)))(),
+    )
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
+                        lambda **k: contextmanager(lambda: (yield ("nsenter", "-t", "71")))())
+    seat_obj = SimpleNamespace(
+        review_dir=tmp_path, seat_dir=tmp_path,
+        jail=SimpleNamespace(dependency=None), probe_jail=SimpleNamespace(dependency=None),
+        notices=[],
+    )
+    monkeypatch.setattr(pi, "_prepare_jailed_gemini", lambda *a, **k: seat_obj)
+    # Trigger a real teardown failure inside _cleanup_jailed_seat (which suppresses it into
+    # primary.__notes__ only when primary is passed through).
+    monkeypatch.setattr(seat_jail, "close_jail_fds", lambda _j: (_ for _ in ()).throw(RuntimeError("stage_refused")))
+    monkeypatch.setattr(seat_jail, "host_identity", lambda: None)
+
+    spec = pi.WindowLaunchSpec(
+        kind="measured",
+        qualification_input=SimpleNamespace(
+            repo=repo, commit=commit, layout=SimpleNamespace(rows=()),
+        ),
+        model="fixture",
+        timeout_s=2.0,
+    )
+    with pytest.raises(seat_jail.SeatSandboxRefused) as exc:
+        with pi._open_window_launch(spec):
+            pass
+    assert exc.value.code == "seat_sandbox_refused:jail_unqualified"
+    assert any("RuntimeError" in note for note in getattr(exc.value, "__notes__", ()))
 
 
 def test_seats_firstseat_exec_record_window_board_frame_is_opt_in():

@@ -13930,6 +13930,14 @@ def _fresh_window_launch_jails(seat: "_JailedSeat"):
                 replaced = str_map.get(owner[idx + 1])
                 if replaced is not None:
                     owner[idx + 1] = replaced
+            elif (
+                arg == "--setenv"
+                and idx + 2 < len(owner)
+                and owner[idx + 1] == _seat_jail.CLAUDE_TOKEN_FD_ENV
+                and template.token_fd is not None
+                and new_token is not None
+            ):
+                owner[idx + 2] = str(new_token)
         env = dict(template.env)
         if (template.token_fd is not None and new_token is not None
                 and _seat_jail.CLAUDE_TOKEN_FD_ENV in env):
@@ -15796,10 +15804,15 @@ class _WindowLaunchSession:
     cleaned: bool = False
     qualification_key: object | None = None
 
-    def cleanup(self) -> None:
+    def cleanup(self, *, primary: BaseException | None = None) -> None:
         if not self.cleaned:
-            _cleanup_jailed_seat(self.seat)
-            self.cleaned = True
+            try:
+                if primary is None:
+                    _cleanup_jailed_seat(self.seat)
+                else:
+                    _cleanup_jailed_seat(self.seat, primary=primary)
+            finally:
+                self.cleaned = True
 
 
 def _window_host_paths(qualification, seat: _JailedSeat, *, credential: bool) -> object:
@@ -15944,6 +15957,7 @@ def _open_window_launch(spec: WindowLaunchSpec):
     session = None
     seat = None
     base = None
+    primary: BaseException | None = None
     try:
         activate_review_isolation_authorization(
             authorization, DEFAULT_BOARD, artifact, mode="review",
@@ -16044,12 +16058,18 @@ def _open_window_launch(spec: WindowLaunchSpec):
             qualification_key=qualification_key,
         )
         yield session
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
         try:
             if session is not None and not session.cleaned:
-                session.cleanup()
+                session.cleanup(primary=primary)
             elif session is None and seat is not None:
-                _cleanup_jailed_seat(seat)
+                if primary is None:
+                    _cleanup_jailed_seat(seat)
+                else:
+                    _cleanup_jailed_seat(seat, primary=primary)
         finally:
             try:
                 stack.close()
