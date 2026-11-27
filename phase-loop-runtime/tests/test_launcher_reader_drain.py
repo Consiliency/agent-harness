@@ -1909,6 +1909,167 @@ def test_stream_output_handles_high_numbered_stdout_pipe_fd(tmp_path):
     assert completed.returncode == 0, completed.stderr
 
 
+def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
+    """(1) If a competing writer fills a 4 KiB stdout pipe right between readiness check
+    and os.write(), non-blocking write catches BlockingIOError without defeating the launch
+    deadline and restores blocking mode. (2) After temporary backpressure clears, live
+    streaming resumes for subsequent records."""
+    import fcntl
+    import json
+    import os
+    import select
+    import subprocess
+
+    if not sys.platform.startswith("linux") or not hasattr(fcntl, "F_SETPIPE_SZ"):
+        pytest.skip("Linux F_SETPIPE_SZ test")
+
+    # Part 1: competing writer fills pipe between readiness poll and os.write().
+    report1 = tmp_path / "competing.json"
+    driver1 = (
+        "import fcntl, json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "from phase_loop_runtime import launcher\n"
+        "orig_write = os.write\n"
+        "stdout_fd = sys.stdout.fileno()\n"
+        "filled_once = False\n"
+        "def competing_write(fd, data):\n"
+        "    global filled_once\n"
+        "    if fd == stdout_fd and not filled_once:\n"
+        "        filled_once = True\n"
+        "        # Fill the 4 KiB pipe right before launcher's own non-blocking os.write().\n"
+        "        try:\n"
+        "            while True:\n"
+        "                orig_write(fd, b'C' * 4096)\n"
+        "        except BlockingIOError:\n"
+        "            pass\n"
+        "    return orig_write(fd, data)\n"
+        "os.write = competing_write\n"
+        "t0 = time.monotonic()\n"
+        f"res = launcher.launch([sys.executable, '-c', \"print('raced-line', flush=True)\"], log_path=Path({str(tmp_path / 'race.log')!r}), stream_output=True, timeout_seconds=0.2)\n"
+        "el = time.monotonic() - t0\n"
+        f"Path({str(report1)!r}).write_text(json.dumps({{'rc': res.returncode, 'out': res.output, 'el': el, 'blocking': os.get_blocking(stdout_fd), 'filled': filled_once}}), encoding='utf-8')\n"
+    )
+    r1, w1 = os.pipe()
+    try:
+        fcntl.fcntl(w1, fcntl.F_SETPIPE_SZ, 4096)
+        env = dict(os.environ)
+        env.pop("PYTHONUNBUFFERED", None)
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        p1 = subprocess.Popen([sys.executable, "-c", driver1], stdout=w1, stderr=subprocess.PIPE, env=env)
+        os.close(w1)
+        w1 = -1
+        deadline = time.monotonic() + 2.0
+        while not report1.exists() and time.monotonic() < deadline:
+            assert p1.poll() is None, p1.stderr.read().decode(errors="replace")
+            time.sleep(0.01)
+        assert report1.exists(), "launch() blocked after competing writer filled pipe"
+        data1 = json.loads(report1.read_text(encoding="utf-8"))
+        assert data1["filled"] is True
+        assert data1["rc"] == 0
+        assert "raced-line" in data1["out"]
+        assert data1["el"] < 0.7
+        assert data1["blocking"] is True
+        # Drain pipe so process exits cleanly.
+        rflags = fcntl.fcntl(r1, fcntl.F_GETFL)
+        fcntl.fcntl(r1, fcntl.F_SETFL, rflags | os.O_NONBLOCK)
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            ready, _, _ = select.select([r1], [], [], 0.05)
+            if ready:
+                if not os.read(r1, 65536):
+                    break
+            elif p1.poll() is not None:
+                break
+        assert p1.wait(timeout=2.0) == 0, p1.stderr.read().decode(errors="replace")
+    finally:
+        os.close(r1)
+        if w1 >= 0:
+            os.close(w1)
+
+    # Part 2: temporary backpressure clears before 'last' -> live display resumes!
+    first_logged = tmp_path / "first_logged.flag"
+    release_last = tmp_path / "release_last.flag"
+    log2 = tmp_path / "resume.log"
+    driver2 = (
+        "import os, sys, time\n"
+        "from pathlib import Path\n"
+        "from phase_loop_runtime import launcher\n"
+        f"log2 = Path({str(log2)!r})\n"
+        f"first_logged = {str(first_logged)!r}\n"
+        f"release_last = {str(release_last)!r}\n"
+        "child_script = (\n"
+        "    'import os, time\\n'\n"
+        "    'print(\"first\", flush=True)\\n'\n"
+        "    f'deadline = time.monotonic() + 5.0\\n'\n"
+        "    f'while not os.path.exists({release_last!r}) and time.monotonic() < deadline:\\n'\n"
+        "    '    time.sleep(0.01)\\n'\n"
+        "    'print(\"last\", flush=True)\\n'\n"
+        ")\n"
+        "res = launcher.launch([sys.executable, '-c', child_script], log_path=log2, stream_output=True, timeout_seconds=5.0)\n"
+        "assert res.returncode == 0\n"
+        "assert res.output.splitlines() == ['first', 'last']\n"
+    )
+    r2, w2 = os.pipe()
+    try:
+        # Fill pipe completely so 'first' hits backpressure.
+        fl2 = fcntl.fcntl(w2, fcntl.F_GETFL)
+        fcntl.fcntl(w2, fcntl.F_SETFL, fl2 | os.O_NONBLOCK)
+        try:
+            while True:
+                os.write(w2, b"Z" * 4096)
+        except BlockingIOError:
+            pass
+        fcntl.fcntl(w2, fcntl.F_SETFL, fl2)
+
+        env = dict(os.environ)
+        env.pop("PYTHONUNBUFFERED", None)
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        p2 = subprocess.Popen([sys.executable, "-c", driver2], stdout=w2, stderr=subprocess.PIPE, env=env)
+        os.close(w2)
+        w2 = -1
+
+        # Wait until 'first' is written to log2 (so live display attempted 'first' under backpressure).
+        deadline = time.monotonic() + 3.0
+        while (not log2.exists() or "first" not in log2.read_text(encoding="utf-8")) and time.monotonic() < deadline:
+            assert p2.poll() is None, p2.stderr.read().decode(errors="replace")
+            time.sleep(0.01)
+        assert "first" in log2.read_text(encoding="utf-8")
+
+        # Drain the pipe completely, then release the child to print 'last'.
+        rflags = fcntl.fcntl(r2, fcntl.F_GETFL)
+        fcntl.fcntl(r2, fcntl.F_SETFL, rflags | os.O_NONBLOCK)
+        drained_initial = b""
+        while True:
+            try:
+                chunk = os.read(r2, 65536)
+                if not chunk:
+                    break
+                drained_initial += chunk
+            except BlockingIOError:
+                break
+        assert len(drained_initial) > 0
+        release_last.write_text("go", encoding="utf-8")
+
+        resumed_chunks = []
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end:
+            ready, _, _ = select.select([r2], [], [], 0.05)
+            if ready:
+                chunk = os.read(r2, 65536)
+                if not chunk:
+                    break
+                resumed_chunks.append(chunk)
+            elif p2.poll() is not None:
+                break
+        assert p2.wait(timeout=3.0) == 0, p2.stderr.read().decode(errors="replace")
+        assert b"last" in b"".join(resumed_chunks)
+    finally:
+        release_last.write_text("go", encoding="utf-8")
+        os.close(r2)
+        if w2 >= 0:
+            os.close(w2)
+
+
 def test_first_record_dequeued_after_leader_exit_uses_bounded_drain(tmp_path, monkeypatch):
     """If the leader has already exited when the main loop dequeues a record from line_queue,
     that record must go through the bounded post-exit drain rather than an unbounded sync write."""

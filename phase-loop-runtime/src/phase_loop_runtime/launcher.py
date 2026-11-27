@@ -3141,7 +3141,6 @@ def launch(
         sink_thread: threading.Thread | None = None
         sink_close_on_exit = threading.Event()
         sink_stalled = False
-        stream_stalled = False
         try:
             popen_kwargs: dict[str, Any] = {
                 "text": _codex_usage_observer is None,
@@ -3284,32 +3283,52 @@ def launch(
             def _stream_live_text(text: str) -> None:
                 """Best-effort non-blocking live display on real pipes/sockets/ttys.
                 Never calls sys.stdout.flush() (which can block on pre-buffered data),
-                never delays process polling or log capture, and uses poll() so fds >= 1024
-                work cleanly. BrokenPipeError still propagates synchronously."""
-                nonlocal stream_stalled
+                never delays process polling or log capture, uses poll() so fds >= 1024
+                work cleanly, performs non-blocking os.write() so a competing writer cannot
+                block between readiness check and write, and retries on each subsequent
+                record so live output resumes once backpressure clears. BrokenPipeError
+                still propagates synchronously."""
                 if not stream_output or not text:
                     return
                 stdout_fd = _stream_stdout_fd()
                 if stdout_fd is None:
                     print(text, end="", flush=True)
                     return
-                if stream_stalled:
-                    return
                 encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
                 errors = getattr(sys.stdout, "errors", None) or "replace"
                 raw = text.encode(encoding, errors=errors)
                 if not raw:
                     return
-                offset = 0
-                while offset < len(raw):
-                    if not _fd_ready_for_write(stdout_fd):
-                        stream_stalled = True
-                        return
-                    written = os.write(stdout_fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
-                    if written <= 0:
-                        stream_stalled = True
-                        return
-                    offset += written
+                if not _fd_ready_for_write(stdout_fd):
+                    return
+                was_blocking = False
+                changed_blocking = False
+                if hasattr(os, "get_blocking") and hasattr(os, "set_blocking"):
+                    try:
+                        was_blocking = os.get_blocking(stdout_fd)
+                        if was_blocking:
+                            os.set_blocking(stdout_fd, False)
+                            changed_blocking = True
+                    except OSError:
+                        pass
+                try:
+                    offset = 0
+                    while offset < len(raw):
+                        if offset > 0 and not _fd_ready_for_write(stdout_fd):
+                            return
+                        try:
+                            written = os.write(stdout_fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
+                        except BlockingIOError:
+                            return
+                        if written <= 0:
+                            return
+                        offset += written
+                finally:
+                    if changed_blocking:
+                        try:
+                            os.set_blocking(stdout_fd, True)
+                        except OSError:
+                            pass
 
             def _sink_worker() -> None:
                 assert sink_queue is not None
