@@ -41,6 +41,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   instances into `agy_attestation._Opener` with the same `connection`, `context_factory`,
   and `timeout` so 404-as-absent and no-redirect semantics hold while custom transports
   govern every upstream request) (agent-harness#2043).
+- Cap `phase-loop-runtime/scripts/local_check.py` pytest-xdist workers at `2` by default
+  (never `-n auto`), print the resolved worker count before starting, and refuse `--full`
+  (and shared-config whole-suite triggers) on shared hosts (`/etc/consiliency/team-host`
+  or `LOCAL_CHECK_SHARED_HOST=1`) pointing to hosted CI or Gate A unless an explicit
+  owner override with stated `--cpu-limit` and `--memory-limit-gib` is provided
+  (agent-harness#1826).
 - Add an autouse real-`PATH` provider-executable resolution guard in
   `test_panel_invoker.py`, stub `board_preflight_requalify` and `_publish_seat_modes`
   across the remaining sanctioned board-invocation tests, and inject a hermetic
