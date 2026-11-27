@@ -39,6 +39,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   placement deadline headroom (and assert `not decision.placement._launch_failed`) so
   loaded hosted runners no longer suffer incidental driver timeouts before the injected
   rejection runs (agent-harness#2096).
+- Update `phase-loop-runtime/README.md` contributor test guidance to accurately distinguish
+  runtime `pytest` from the opt-in `test` dependency group (`build`, `setuptools`, `pip`,
+  `agy-watch`, `grok-catalog`) and `visual` extra, and use an absolute `PYTHONPATH`,
+  locked interpreter, serial pytest without `-n`, and `timeout` (agent-harness#1945).
 
 ## [0.7.48] - 2026-11-27
 

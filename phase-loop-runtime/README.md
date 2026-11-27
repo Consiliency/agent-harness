@@ -84,21 +84,33 @@ the bounded Git-ref rules in the packaged schema.
 
 ## Contributor test environment
 
-From the repository root, install the declared test tools and visual extra, then
-run the packaging and visual-evidence tests with the project environment:
+From the repository root, sync the locked project environment with the opt-in
+`test` dependency group and `visual` extra, then run named test files serially
+(without `-n`), under `timeout`, using the locked interpreter and an absolute
+`PYTHONPATH`:
 
 ```sh
 uv sync --project phase-loop-runtime --group test --extra visual --python 3.14 --locked
-PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests phase-loop-runtime/.venv/bin/python -m pytest -q phase-loop-runtime/tests/test_outside_agent_contract_drift.py phase-loop-runtime/tests/test_visual_avatar_evidence_validator.py
+PYTHONPATH="$PWD/phase-loop-runtime/src:$PWD/phase-loop-runtime/tests" \
+  timeout 300 phase-loop-runtime/.venv/bin/python -m pytest -q -p no:cacheprovider \
+  phase-loop-runtime/tests/test_outside_agent_contract_drift.py \
+  phase-loop-runtime/tests/test_visual_avatar_evidence_validator.py
 ```
 
-The test group supplies pytest and package build/install tools, including pip;
-the visual extra supplies Pillow for image decoding. Both are opt-in. The native
-repository-wide interpreter guard includes the dagger subproject's Python 3.14
-floor, which is separate from this runtime package's Python 3.12 minimum and CI's
-interpreter matrix. These commands verify the two selected files; they do not
-establish complete CI equivalence, behavior without Pillow, full-suite acceptance
-or production readiness.
+`pytest` is declared as a runtime dependency in `phase-loop-runtime/pyproject.toml`
+(required by the seat-jail qualification wrapper), so it is not repeated in the
+`test` dependency group. The opt-in `test` group supplies package build/install
+tools (`build`, `setuptools`, `pip`) together with the `agy-watch` and
+`grok-catalog` extras; the opt-in `visual` extra supplies Pillow for image
+decoding. Using an absolute `PYTHONPATH` ensures tests that change working
+directories or spawn child Python processes still import the checkout rather
+than an installed package (see `CONTRIBUTING.md` and `phase-loop-runtime/AGENTS.md`
+for shared-host serial test rules). The native repository-wide interpreter guard
+includes the dagger subproject's Python 3.14 floor, which is separate from this
+runtime package's Python 3.12 minimum and CI's interpreter matrix. These
+commands verify the two selected files; they do not establish complete CI
+equivalence, behavior without Pillow, full-suite acceptance or production
+readiness.
 
 ## Python verification environments
 
