@@ -3331,6 +3331,7 @@ def launch(
                 return _cleanup_process_group(process, process_group_id, reason=reason)
 
             exited_now = False
+            loop_completed = False
             try:
                 while True:
                     try:
@@ -3444,16 +3445,28 @@ def launch(
                             cleanup_evidence = descendant_cleanup
                         else:
                             cleanup_evidence["post_exit_descendant_cleanup"] = descendant_cleanup
+                loop_completed = True
             finally:
                 # If an unexpected error (e.g., BrokenPipeError in consume()) or an early
-                # interrupt unwinds while the child is still live, terminate its group
-                # before waiting so finalization never blocks indefinitely.
+                # interrupt unwinds before post-exit handling completes, clean up the owned
+                # process group before reaping the leader so neither live children nor
+                # post-exit descendants survive the exception.
                 if (
-                    not cleaned_up_group
+                    not loop_completed
+                    and not cleaned_up_group
                     and getattr(process, "returncode", None) is None
-                    and not (exited_now or _waitid_nowait(process.pid) is True)
                 ):
-                    cleanup_own_group_or_process("interrupt" if interrupted else "error")
+                    waited_exited = _waitid_nowait(process.pid) is True
+                    if not (exited_now or waited_exited):
+                        cleanup_own_group_or_process("interrupt" if interrupted else "error")
+                    elif leader_unreaped or waited_exited:
+                        cleaned_up_group = True
+                        _cleanup_descendant_process_group(
+                            process.pid,
+                            process_group_id,
+                            reason="interrupt" if interrupted else "error",
+                            pipes_closed=pipes_all_eof,
+                        )
                 while True:
                     try:
                         returncode = process.wait()
@@ -4792,9 +4805,12 @@ def _waitid_nowait(pid: int) -> bool | None:
     if hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
         try:
             info = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-        except (ChildProcessError, OSError):
+        except ChildProcessError:
             return None
-        return info is not None
+        except OSError:
+            pass
+        else:
+            return info is not None
     if sys.platform == "darwin":
         return _waitid_nowait_darwin(pid)
     if sys.platform.startswith("linux"):
@@ -5199,20 +5215,37 @@ def _cleanup_descendant_process_group(
             except OSError:
                 return "error"
 
-    term_err = send_signal(signal.SIGTERM)
-    if term_err is not None:
-        return None
-    evidence["signals_sent"].append("SIGTERM")
-    deadline = time.monotonic() + 0.25
+    # Wrap the entire SIGTERM dispatch -> grace transition so a KeyboardInterrupt anywhere
+    # before SIGKILL (including on time.monotonic()) escalates to SIGKILL rather than escaping.
+    sent_term = False
     try:
+        term_err = send_signal(signal.SIGTERM)
+        if term_err is not None:
+            return None
+        sent_term = True
+        evidence["signals_sent"].append("SIGTERM")
+        deadline = time.monotonic() + 0.25
+        # Require two consecutive empty scans so a descendant forked during SIGTERM handling
+        # (after /proc enumeration but before the parent exited) cannot slip past as terminated.
+        empty_scans = 0
         while time.monotonic() < deadline:
             if not has_live_descendants(after_sigkill=False):
-                evidence["result"] = "terminated"
-                evidence["process_alive_after_cleanup"] = False
-                return evidence
+                empty_scans += 1
+                if empty_scans >= 2:
+                    evidence["result"] = "terminated"
+                    evidence["process_alive_after_cleanup"] = False
+                    return evidence
+            else:
+                empty_scans = 0
             time.sleep(0.01)
     except KeyboardInterrupt:
         evidence["interrupted"] = True
+        if not sent_term:
+            term_err = send_signal(signal.SIGTERM)
+            if term_err is not None:
+                return None
+        if "SIGTERM" not in evidence["signals_sent"]:
+            evidence["signals_sent"].append("SIGTERM")
     kill_err = send_signal(signal.SIGKILL)
     if kill_err == "absent":
         evidence["result"] = "terminated"
@@ -5222,14 +5255,24 @@ def _cleanup_descendant_process_group(
         evidence["result"] = "cleanup_failed"
         evidence["process_alive_after_cleanup"] = True
         return evidence
-    evidence["signals_sent"].append("SIGKILL")
-    kill_deadline = time.monotonic() + 0.25
-    while time.monotonic() < kill_deadline:
+    kill_deadline: float | None = None
+    kill_empty_scans = 0
+    while True:
         try:
+            if "SIGKILL" not in evidence["signals_sent"]:
+                evidence["signals_sent"].append("SIGKILL")
+            if kill_deadline is None:
+                kill_deadline = time.monotonic() + 0.25
             if not has_live_descendants(after_sigkill=True):
-                evidence["result"] = "killed"
-                evidence["process_alive_after_cleanup"] = False
-                return evidence
+                kill_empty_scans += 1
+                if kill_empty_scans >= 2:
+                    evidence["result"] = "killed"
+                    evidence["process_alive_after_cleanup"] = False
+                    return evidence
+            else:
+                kill_empty_scans = 0
+            if time.monotonic() >= kill_deadline:
+                break
             time.sleep(0.01)
         except KeyboardInterrupt:
             evidence["interrupted"] = True

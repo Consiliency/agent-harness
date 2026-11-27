@@ -13,6 +13,7 @@ strict and bound the post-exit collection.
 """
 from __future__ import annotations
 
+import errno
 import queue
 import subprocess
 import sys
@@ -937,6 +938,211 @@ def test_interrupt_during_post_sigkill_liveness_probe_still_reaps_leader(tmp_pat
         assert probe_interrupted is True
         assert result.returncode == 0
         assert result.interrupted is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_broken_pipe_during_post_exit_drain_still_cleans_up_descendant(tmp_path, monkeypatch):
+    """If consume() raises BrokenPipeError during post-exit drain after leader exit,
+    the finally block must still clean up same-group descendants before reaping the leader."""
+    marker = tmp_path / "post_exit_broken_pipe_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('first-line', flush=True)\n"
+        "print('post-exit-line', flush=True)\n"
+    )
+    orig_print = print
+
+    def broken_on_second(*args, **kwargs):
+        if args and "post-exit-line" in str(args[0]):
+            raise BrokenPipeError("stdout closed during post-exit drain")
+        return orig_print(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", broken_on_second)
+    try:
+        with pytest.raises(BrokenPipeError):
+            launcher.launch(
+                _child(script),
+                log_path=tmp_path / "run" / "output.log",
+                stream_output=True,
+                timeout_seconds=10.0,
+            )
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_interrupt_on_monotonic_after_sigterm_still_escalates_to_sigkill(tmp_path, monkeypatch):
+    """A KeyboardInterrupt raised on time.monotonic() right after SIGTERM dispatch must
+    not escape cleanup; it must proceed to SIGKILL and kill SIGTERM-ignoring descendants."""
+    marker = tmp_path / "monotonic_interrupt_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('leader-done', flush=True)\n"
+    )
+    orig_killpg = launcher.os.killpg
+    orig_monotonic = launcher.time.monotonic
+    sigterm_sent = False
+    injected = False
+
+    def spy_killpg(pgid, sig):
+        nonlocal sigterm_sent
+        if sig == launcher.signal.SIGTERM:
+            sigterm_sent = True
+        return orig_killpg(pgid, sig)
+
+    def interrupting_monotonic():
+        nonlocal injected
+        if sigterm_sent and not injected:
+            injected = True
+            raise KeyboardInterrupt
+        return orig_monotonic()
+
+    monkeypatch.setattr(launcher.os, "killpg", spy_killpg)
+    monkeypatch.setattr(launcher.time, "monotonic", interrupting_monotonic)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.8,
+        )
+        assert injected is True
+        assert result.returncode == 0
+        assert result.interrupted is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_waitid_eperm_falls_back_to_linux_proc_without_premature_reap(tmp_path, monkeypatch):
+    """When os.waitid fails with EPERM on Linux, _waitid_nowait must fall back to /proc
+    so the leader stays unreaped and post-exit descendant cleanup runs."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux /proc fallback test")
+    marker = tmp_path / "eperm_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('leader-done', flush=True)\n"
+    )
+
+    def eperm_waitid(*args, **kwargs):
+        raise PermissionError(errno.EPERM, "waitid blocked by seccomp")
+
+    monkeypatch.setattr(launcher.os, "waitid", eperm_waitid)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.8,
+        )
+        assert result.returncode == 0
+        assert result.drain_incomplete is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["reason"] == "post_exit_pipe_open"
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_provisional_empty_proc_scan_does_not_skip_sigkill_for_forked_replacement(tmp_path, monkeypatch):
+    """A single empty /proc scan during SIGTERM handling (when a worker forks a replacement
+    and exits mid-scan) must be treated as provisional so a second scan catches the
+    replacement and escalates to SIGKILL."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux /proc scan confirmation test")
+    marker = tmp_path / "fork_replacement.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('leader-done', flush=True)\n"
+    )
+    orig_live = launcher._live_pgid_members_exist
+    calls = 0
+
+    def transient_empty_first_scan(pgid, *, leader_pid):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return False
+        return orig_live(pgid, leader_pid=leader_pid)
+
+    monkeypatch.setattr(launcher, "_live_pgid_members_exist", transient_empty_first_scan)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.8,
+        )
+        assert calls >= 2
+        assert result.returncode == 0
         assert result.cleanup_evidence is not None
         assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
         assert result.cleanup_evidence["result"] == "killed"
