@@ -4028,25 +4028,27 @@ def run_loop(
                 fleet_missing_gates = _gate_outcome.missing_gates
                 fleet_produced_gates = _gate_outcome.produced_gates
                 automation_status = _gate_outcome.automation_status
-                event_blocker = _gate_outcome.event_blocker
-                if _gate_outcome.blocked_reason is not None:
-                    acceptance_quality_failure = True
-                    status_after_launch = "blocked"
-                    set_phase_status(
-                        repo,
-                        roadmap,
-                        alias,
-                        classifications,
-                        status_after_launch,
-                        reason=_gate_outcome.blocked_reason,
-                        trigger=launch_action,
-                        selection=selection,
-                        action=action,
-                    )
-                if runner_verification_blocked:
-                    # agent-harness#2135: runner-owned verification failed closed; keep the
-                    # phase blocked and prevent downstream closeout/metric reduction from
-                    # treating the child's self-reported status as complete.
+                if not runner_verification_blocked:
+                    event_blocker = _gate_outcome.event_blocker
+                    if _gate_outcome.blocked_reason is not None:
+                        acceptance_quality_failure = True
+                        status_after_launch = "blocked"
+                        set_phase_status(
+                            repo,
+                            roadmap,
+                            alias,
+                            classifications,
+                            status_after_launch,
+                            reason=_gate_outcome.blocked_reason,
+                            trigger=launch_action,
+                            selection=selection,
+                            action=action,
+                        )
+                else:
+                    # agent-harness#2135: runner-owned verification failed closed; keep its
+                    # blocker and runner_verification_failed transition authoritative while
+                    # still recording produced-gates evidence and fleet metrics, and prevent
+                    # downstream closeout/metric reduction from treating the child as complete.
                     automation_status = "blocked"
                 if (
                     event_blocker is None
