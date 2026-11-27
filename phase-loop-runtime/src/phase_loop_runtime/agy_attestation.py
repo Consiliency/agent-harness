@@ -129,7 +129,7 @@ def _opener_for(transport):
     """
     if transport is None:
         return _Opener()
-    if (isinstance(transport, _provenance._DEFAULT_TRANSPORT_CLASS)
+    if (issubclass(type(transport), _provenance._DEFAULT_TRANSPORT_CLASS)
             and type(transport).open is _provenance._DEFAULT_TRANSPORT_OPEN
             and "open" not in getattr(transport, "__dict__", ())):
         context_factory = (

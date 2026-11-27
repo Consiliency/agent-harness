@@ -536,3 +536,20 @@ assert len(fake.urls) == 1
 """
     proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_specd_mock_transport_uses_custom_transport_path(monkeypatch):
+    """agent-harness#2043: unittest.mock.Mock(spec=prov._Transport) fools isinstance() via __class__
+    but is not a real _Transport subclass; _opener_for() must call its open() directly."""
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(
+        att,
+        "_Opener",
+        lambda **_: (_ for _ in ()).throw(AssertionError("_Opener must not run for Mock(spec=_Transport)")),
+    )
+    mock_transport = Mock(spec=prov._Transport)
+    mock_transport.open.return_value = _Response(404, b"")
+    asset = _asset(b"archive")
+    assert att.attestation_status(asset, transport=mock_transport) == "absent"
+    mock_transport.open.assert_called_once()
