@@ -8,6 +8,7 @@ tests probe their prerequisites read-only first and skip with an explicit
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import gc
 import importlib
@@ -1559,4 +1560,328 @@ def test_an_owned_launch_without_its_bwrap_in_the_prefix_is_refused_and_releases
                               process_owner=["/usr/bin/bwrap", "--unshare-pid", "--"])
     assert not started
     assert set(tp._HELD_GATES) == held
+    assert _fd_count() == baseline
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#2005: integration coverage for the Gemini-profile adoption call inside
+# _run_leg_with_liveness (uncapped profile-owned launch).
+# --------------------------------------------------------------------------------------
+
+class _FakeGeminiHeartbeatProfile:
+    """Minimal stand-in for ``gemini_heartbeat.GeminiHeartbeatProfile`` in liveness tests."""
+
+    def __init__(self, *, admit_fn):
+        self.executable = "/heartbeat/agy"
+        self.env = {"PATH": "/usr/bin:/bin"}
+        self.mount_args = ["--info-fd", "9", "--block-fd", "10"]
+        self.process = None
+        self.init_fd: int | None = None
+        self.identity: dict[str, int] | None = None
+        self.quiescent = False
+        self.evidence: dict[str, object] = {}
+        self.admit_calls = 0
+        self.quiescence_checks = 0
+        self.init_fd_open_at_quiescence: bool | None = None
+        self._admit_fn = admit_fn
+
+    def admit(self, proc, cancel):
+        self.admit_calls += 1
+        self._admit_fn(self, proc, cancel)
+
+    def verify_quiescence(self):
+        self.quiescence_checks += 1
+        if self.init_fd is not None:
+            os.fstat(self.init_fd)
+            self.init_fd_open_at_quiescence = True
+        self.quiescent = True
+
+    def close(self):
+        if self.init_fd is not None:
+            fd, self.init_fd = self.init_fd, None
+            os.close(fd)
+
+
+def _setup_uncapped_gemini_liveness(monkeypatch, tmp_path):
+    """Wire ``_run_leg_with_liveness`` for a fake-host uncapped Gemini profile launch."""
+    profile_lifecycle: list[str] = []
+    monkeypatch.setattr(panel, "_probes_seat", lambda *args, **kwargs: False)
+    monkeypatch.setattr(panel, "_filtered_holder_namespace", lambda: 1)
+    monkeypatch.setattr(
+        panel, "_seat_owner",
+        lambda view, *, filtered_network=False: [
+            "/usr/bin/bwrap", "--unshare-pid", *view, "--",
+        ],
+    )
+    monkeypatch.setattr(
+        panel, "_compose_launch_prefix",
+        lambda cwd, owner=(), retain_caps=(): [
+            "/bin/sh", "-c",
+            "IFS= read -r line && cat >/dev/null && printf '%s\\n' \"$line\"",
+            "sh", "--info-fd",
+        ],
+    )
+
+    @contextlib.contextmanager
+    def _fake_seat_command_profile(command, *, env, cwd, gemini_profile=None, **kwargs):
+        profile_lifecycle.append("enter")
+        try:
+            yield list(command), panel.SeatProfile(
+                env={"PATH": "/usr/bin:/bin"},
+                mount_args=tuple(gemini_profile.mount_args) if gemini_profile is not None else (),
+            )
+        finally:
+            profile_lifecycle.append("exit")
+
+    monkeypatch.setattr(panel, "_seat_command_profile", _fake_seat_command_profile)
+    monitor = panel._ReviewMonitor(
+        tmp_path / "monitor.json", "gemini-adoption", 0, threading.Event(),
+    )
+    return monitor, profile_lifecycle
+
+
+def _run_uncapped_gemini_leg(tmp_path, monitor, profile, *, input_text="adopted\n"):
+    egress_token = panel._EGRESS_LAUNCH_PREFIX.set(("fake-egress",))
+    try:
+        with panel._uncapped_nonseat_probe():
+            return panel._run_leg_with_liveness(
+                [profile.executable],
+                cwd=tmp_path,
+                env=profile.env,
+                deadline_s=10.0,
+                stall_threshold_s=10.0,
+                input_text=input_text,
+                review_monitor=monitor,
+                gemini_profile=profile,
+            )
+    finally:
+        panel._EGRESS_LAUNCH_PREFIX.reset(egress_token)
+
+
+def test_run_leg_with_liveness_adopts_duplicate_gemini_init_fd_on_uncapped_launch(
+        monkeypatch, tmp_path, short_graces):
+    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(monkeypatch, tmp_path)
+    observed: dict[str, object] = {}
+    real_dup = os.dup
+
+    def _recording_dup(fd):
+        duplicated = real_dup(fd)
+        observed["dup_src"] = fd
+        observed["dup_dst"] = duplicated
+        return duplicated
+
+    _patch(monkeypatch, panel, "os", dup=_recording_dup)
+
+    def _admit(self, proc, cancel):
+        assert cancel is monitor.cancel
+        assert proc.poll() is None
+        proof = tp.proof_of(proc)
+        assert proof is not None and proof.status == tp.PENDING
+        observed["proof"] = proof
+        self.init_fd = os.pidfd_open(proc.pid)
+        self.identity = {"init_pid": proc.pid}
+        real_adopt = proof.adopt_init
+
+        def _spy_adopt(fd, deadline=None):
+            observed["adopted_fd"] = fd
+            observed["adopted_stat"] = (os.fstat(fd).st_dev, os.fstat(fd).st_ino)
+            ok = real_adopt(fd, deadline=deadline)
+            observed["status_after_adopt"] = proof.status
+            return ok
+
+        monkeypatch.setattr(proof, "adopt_init", _spy_adopt)
+
+    profile = _FakeGeminiHeartbeatProfile(admit_fn=_admit)
+    baseline = _fd_count()
+    try:
+        result = _run_uncapped_gemini_leg(tmp_path, monitor, profile)
+        assert result.returncode == 0
+        assert result.stdout == "adopted\n"
+        assert result.stderr == ""
+        assert profile.admit_calls == 1
+        assert profile.quiescence_checks == 1
+        assert profile.init_fd_open_at_quiescence is True
+        assert profile_lifecycle == ["enter", "exit"]
+        proof = observed["proof"]
+        assert observed["dup_src"] == profile.init_fd
+        assert observed["adopted_fd"] == observed["dup_dst"]
+        assert observed["adopted_fd"] != profile.init_fd
+        assert observed["status_after_adopt"] == tp.INCOMPLETE
+        assert proof.status == tp.PROVEN and proof.reason == "init_exited"
+        # Adoption transferred a duplicate: the profile's own descriptor stayed open.
+        assert profile.init_fd is not None
+        profile_stat = os.fstat(profile.init_fd)
+        assert observed["adopted_stat"] == (profile_stat.st_dev, profile_stat.st_ino)
+        assert _group_gone(profile.process.pid)
+    finally:
+        profile.close()
+    assert _fd_count() == baseline
+
+
+@pytest.mark.parametrize("failure_mode", ["admit_raises", "missing_init_fd"])
+def test_run_leg_with_liveness_refuses_gemini_admission_failure_and_reaps(
+        monkeypatch, tmp_path, short_graces, failure_mode):
+    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(monkeypatch, tmp_path)
+    observed: dict[str, object] = {"dup_calls": 0, "adopt_calls": 0}
+    real_dup = os.dup
+
+    def _recording_dup(fd):
+        observed["dup_calls"] += 1
+        return real_dup(fd)
+
+    _patch(monkeypatch, panel, "os", dup=_recording_dup)
+
+    def _admit(self, proc, cancel):
+        assert proc.poll() is None
+        proof = tp.proof_of(proc)
+        assert proof is not None and proof.status == tp.PENDING
+        observed["proof"] = proof
+        real_adopt = proof.adopt_init
+
+        def _spy_adopt(fd, deadline=None):
+            observed["adopt_calls"] += 1
+            return real_adopt(fd, deadline=deadline)
+
+        monkeypatch.setattr(proof, "adopt_init", _spy_adopt)
+        if failure_mode == "admit_raises":
+            raise ValueError("gemini_heartbeat_admission_handshake_failed")
+        # missing_init_fd: admit returns without pinning an init pidfd.
+
+    profile = _FakeGeminiHeartbeatProfile(admit_fn=_admit)
+    baseline = _fd_count()
+    try:
+        with pytest.raises(panel.ProviderProcessGroupQuiescenceError) as exc_info:
+            _run_uncapped_gemini_leg(tmp_path, monitor, profile)
+        assert isinstance(exc_info.value.__context__, ValueError)
+        assert "gemini_heartbeat_admission_handshake_failed" in str(exc_info.value.__context__)
+        assert profile.admit_calls == 1
+        assert observed["dup_calls"] == 0
+        assert observed["adopt_calls"] == 0
+        assert profile_lifecycle == ["enter", "exit"]
+        proof = observed["proof"]
+        assert proof.status == tp.UNKNOWN and proof.reason == "witness_missing"
+        assert profile.process is not None and profile.process.poll() is not None
+        assert _group_gone(profile.process.pid)
+    finally:
+        profile.close()
+    assert _fd_count() == baseline
+
+
+def test_run_leg_with_liveness_handles_gemini_init_fd_duplication_failure(
+        monkeypatch, tmp_path, short_graces):
+    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(monkeypatch, tmp_path)
+    observed: dict[str, object] = {"adopt_calls": 0}
+
+    def _failing_dup(fd):
+        observed["dup_src"] = fd
+        raise OSError(errno.EMFILE, "too many open files")
+
+    _patch(monkeypatch, panel, "os", dup=_failing_dup)
+
+    def _admit(self, proc, cancel):
+        assert proc.poll() is None
+        proof = tp.proof_of(proc)
+        assert proof is not None and proof.status == tp.PENDING
+        observed["proof"] = proof
+        self.init_fd = os.pidfd_open(proc.pid)
+        self.identity = {"init_pid": proc.pid}
+        real_adopt = proof.adopt_init
+
+        def _spy_adopt(fd, deadline=None):
+            observed["adopt_calls"] += 1
+            return real_adopt(fd, deadline=deadline)
+
+        monkeypatch.setattr(proof, "adopt_init", _spy_adopt)
+
+    profile = _FakeGeminiHeartbeatProfile(admit_fn=_admit)
+    baseline = _fd_count()
+    try:
+        with pytest.raises(panel.ProviderProcessGroupQuiescenceError) as exc_info:
+            _run_uncapped_gemini_leg(tmp_path, monitor, profile)
+        assert isinstance(exc_info.value.__context__, OSError)
+        assert exc_info.value.__context__.errno == errno.EMFILE
+        assert observed["dup_src"] == profile.init_fd
+        assert observed["adopt_calls"] == 0
+        assert profile.quiescence_checks == 1
+        assert profile.init_fd_open_at_quiescence is True
+        assert profile_lifecycle == ["enter", "exit"]
+        proof = observed["proof"]
+        assert proof.status == tp.UNKNOWN and proof.reason == "witness_missing"
+        assert profile.process is not None and profile.process.poll() is not None
+        assert _group_gone(profile.process.pid)
+        assert profile.init_fd is not None
+        os.fstat(profile.init_fd)
+    finally:
+        profile.close()
+    assert _fd_count() == baseline
+
+
+def test_run_leg_with_liveness_closes_duplicate_and_reaps_when_adopt_init_refuses(
+        monkeypatch, tmp_path, short_graces):
+    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(monkeypatch, tmp_path)
+    observed: dict[str, object] = {}
+    real_dup = os.dup
+
+    def _recording_dup(fd):
+        duplicated = real_dup(fd)
+        observed["dup_dst"] = duplicated
+        return duplicated
+
+    _patch(monkeypatch, panel, "os", dup=_recording_dup)
+
+    def _admit(self, proc, cancel):
+        assert proc.poll() is None
+        proof = tp.proof_of(proc)
+        assert proof is not None and proof.status == tp.PENDING
+        observed["proof"] = proof
+        self.init_fd = os.pidfd_open(proc.pid)
+        self.identity = {"init_pid": proc.pid}
+        # Reject the single adoption attempt via the real adopt_init lock-busy path
+        # so adopt_init itself closes the transferred duplicate before returning False.
+        real_acquire = proof._acquire
+        real_adopt = proof.adopt_init
+        reject_next = {"flag": True}
+
+        def _busy_once(deadline):
+            if reject_next["flag"]:
+                reject_next["flag"] = False
+                return False
+            return real_acquire(deadline)
+
+        def _spy_adopt(fd, deadline=None):
+            observed["adopted_fd"] = fd
+            ok = real_adopt(fd, deadline=deadline)
+            observed["adopt_returned"] = ok
+            try:
+                os.fstat(fd)
+                observed["dup_closed_immediately"] = False
+            except OSError as exc:
+                observed["dup_closed_immediately"] = exc.errno == errno.EBADF
+            return ok
+
+        monkeypatch.setattr(proof, "_acquire", _busy_once)
+        monkeypatch.setattr(proof, "adopt_init", _spy_adopt)
+
+    profile = _FakeGeminiHeartbeatProfile(admit_fn=_admit)
+    baseline = _fd_count()
+    try:
+        with pytest.raises(panel.ProviderProcessGroupQuiescenceError) as exc_info:
+            _run_uncapped_gemini_leg(tmp_path, monitor, profile)
+        assert isinstance(exc_info.value.__context__, ValueError)
+        assert "gemini_heartbeat_admission_handshake_failed" in str(exc_info.value.__context__)
+        assert observed["adopted_fd"] == observed["dup_dst"]
+        assert observed["adopted_fd"] != profile.init_fd
+        assert observed["adopt_returned"] is False
+        assert observed["dup_closed_immediately"] is True
+        assert profile.quiescence_checks == 1
+        assert profile.init_fd_open_at_quiescence is True
+        assert profile_lifecycle == ["enter", "exit"]
+        proof = observed["proof"]
+        assert proof.status == tp.UNKNOWN and proof.reason == "witness_missing"
+        assert profile.process is not None and profile.process.poll() is not None
+        assert _group_gone(profile.process.pid)
+        assert profile.init_fd is not None
+        os.fstat(profile.init_fd)
+    finally:
+        profile.close()
     assert _fd_count() == baseline

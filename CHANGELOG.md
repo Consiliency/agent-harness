@@ -15,6 +15,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `agy-qualification status`) and `agy_integrity.AgyImageUnqualified`, while keeping
   `status`, `code`, admission decisions, QCI, and the agy store key unchanged
   (agent-harness#2053).
+- Add focused integration tests in `test_provider_tree_proof.py` driving
+  `_run_leg_with_liveness`'s uncapped Gemini-profile init-descriptor adoption path,
+  covering duplicate `os.dup`/`adopt_init` transfer, admission failures, `os.dup`
+  `EMFILE` failure, and `adopt_init` refusal with process-group reaping and descriptor
+  cleanup (agent-harness#2005).
 
 ### Fixed
 
