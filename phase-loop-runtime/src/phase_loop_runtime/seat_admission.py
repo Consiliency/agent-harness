@@ -10,7 +10,19 @@ from .executable_dependency import ExecutableDependencyError
 
 
 Status = Literal["admits", "refuses", "unknown"]
-Reason = Literal["platform_unsupported", "inventory_failed", "launch_measurement", "provider_absent"]
+Reason = Literal[
+    "platform_unsupported",
+    "inventory_failed",
+    "launch_measurement",
+    "provider_absent",
+    "image_unreadable",
+    "store_unsafe",
+    "host_unknown",
+    "self_qualification_disabled",
+    "qualification_failed",
+    "no_qualification_record",
+    "admission_error",
+]
 
 
 @dataclass(frozen=True)

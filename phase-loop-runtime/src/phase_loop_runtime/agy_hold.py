@@ -84,6 +84,13 @@ _LOG = logging.getLogger(__name__)
 # Candidate loading in one process is serialized (AGYFRESH §1.2). Re-entrant, so a nested
 # admission on the same thread waits for nothing rather than for itself.
 _LOCK = threading.RLock()
+_SEARCH_FAULT_STATE = threading.local()
+
+
+def _record_search_fault(reason: str) -> None:
+    faults = getattr(_SEARCH_FAULT_STATE, "faults", None)
+    if faults is not None:
+        faults.append(reason)
 
 
 class HeldCandidate(NamedTuple):
@@ -127,6 +134,49 @@ def hold_deny() -> frozenset[str] | None:
         return frozenset(load_agy_hold_deny())
     except Exception:  # noqa: BLE001 - any config failure disables the hold
         return None
+
+
+_DEFAULT_HOLD_ENABLED = hold_enabled
+_DEFAULT_HOLD_DENY = hold_deny
+
+
+def _hold_enabled_state() -> Literal["enabled", "disabled", "error"]:
+    """Single-pass read distinguishing explicit ``hold = false`` from a config read/parse fault."""
+    if hold_enabled is not _DEFAULT_HOLD_ENABLED:
+        try:
+            return "enabled" if hold_enabled() else "disabled"
+        except Exception:  # noqa: BLE001
+            return "error"
+    from .advisor_board.config import load_agy_hold
+    try:
+        return "enabled" if load_agy_hold() is True else "disabled"
+    except Exception:  # noqa: BLE001
+        return "error"
+
+
+def _hold_deny_state() -> tuple[Literal["ok", "error"], frozenset[str] | None]:
+    """Single-pass read of ``[agy] hold_deny`` distinguishing a valid list from a config fault."""
+    if hold_deny is not _DEFAULT_HOLD_DENY:
+        try:
+            value = hold_deny()
+        except Exception:  # noqa: BLE001
+            return "error", None
+        return ("error", None) if value is None else ("ok", value)
+    from .advisor_board.config import load_agy_hold_deny
+    try:
+        return "ok", frozenset(load_agy_hold_deny())
+    except Exception:  # noqa: BLE001
+        return "error", None
+
+
+def _hold_config_error() -> bool:
+    """Whether reading ``[agy] hold`` or ``[agy] hold_deny`` fails."""
+    state = _hold_enabled_state()
+    if state == "error":
+        return True
+    if state == "enabled":
+        return _hold_deny_state()[0] == "error"
+    return False
 
 
 def retain(image, store, *, cache_version: "CacheVersion | None" = None) -> None:
@@ -239,6 +289,7 @@ def _unchanged(fd: int, directory: int, name: str, before: os.stat_result) -> bo
     try:
         named = os.stat(name, dir_fd=directory, follow_symlinks=False)
     except OSError:
+        _record_search_fault("admission_error")
         return False
     return stat.S_ISREG(named.st_mode) and (named.st_dev, named.st_ino) == (before.st_dev, before.st_ino)
 
@@ -262,6 +313,7 @@ def _hint_versions(store_anchor: int | None) -> set[tuple[int, int, int]]:
     try:
         names = _list_names(store_anchor)
     except OSError:
+        _record_search_fault("store_unsafe")
         return found
     if names is None:
         return found
@@ -317,6 +369,7 @@ def candidates(*, members: Iterable[dict], cache: int | None, store_anchor: int 
         try:
             names = _list_names(cache)
         except OSError:
+            _record_search_fault("store_unsafe")
             names = None
         for name in sorted(names or ()):
             if not _DIGEST_NAME.fullmatch(name):
@@ -329,6 +382,7 @@ def candidates(*, members: Iterable[dict], cache: int | None, store_anchor: int 
         try:
             names = _list_names(anchor)
         except OSError:
+            _record_search_fault("admission_error")
             continue
         per_version: dict[tuple[int, int, int], list[str]] = {}
         for name in sorted(names or ()):
@@ -379,6 +433,7 @@ def select(ordered: list[tuple[HeldCandidate, int]], *, predicate: Predicate, ex
         try:
             directory, fd, before, name = _open_candidate(anchor, candidate)
         except OSError:
+            _record_search_fault("admission_error")
             continue
         image = None
         try:
@@ -388,11 +443,14 @@ def select(ordered: list[tuple[HeldCandidate, int]], *, predicate: Predicate, ex
             examined.add(identity)
             # The bound is read at call time (H4); an oversized candidate is a local skip.
             if before.st_size > agy_provenance.MAX_MEMBER_BYTES:
+                if candidate.origin == "cache":
+                    _record_search_fault("store_unsafe")
                 continue
             budget[candidate.authenticated] -= 1
             try:
                 image = gh.VerifiedImage.from_fd(fd)
             except (OSError, ValueError, gh.AgyCanaryEvidenceError):
+                _record_search_fault("admission_error")
                 continue
             if not _unchanged(fd, directory, name, before):
                 image.close()
@@ -403,6 +461,7 @@ def select(ordered: list[tuple[HeldCandidate, int]], *, predicate: Predicate, ex
                 image = None
                 raise ValueError(_CANCELLED)
         except OSError:
+            _record_search_fault("admission_error")
             if image is not None:
                 image.close()
                 image = None
@@ -410,8 +469,12 @@ def select(ordered: list[tuple[HeldCandidate, int]], *, predicate: Predicate, ex
         finally:
             os.close(fd)
             os.close(directory)
-        if image.sha256 in rejected or (candidate.origin == "cache" and image.sha256 != candidate.name):
-            # Already rejected, or a cache file whose content is not the digest it is named by.
+        if candidate.origin == "cache" and image.sha256 != candidate.name:
+            # A cache file whose content is not the digest it is named by.
+            _record_search_fault("store_unsafe")
+            image.close()
+            continue
+        if image.sha256 in rejected:
             image.close()
             continue
         try:
@@ -448,19 +511,29 @@ def search(*, members: Iterable[dict], store_dir: Path | None, cache_version: Ca
                 try:
                     store_anchor = open_anchor(store_dir)
                     opened.append(store_anchor)
-                except (OSError, ValueError):
+                except OSError as exc:
+                    if exc.errno != errno.ENOENT:
+                        _record_search_fault("store_unsafe")
+                    store_anchor = None
+                except ValueError:
                     store_anchor = None
                 if store_anchor is not None:
                     try:
                         cache = _open_dir_at(HELD_DIRNAME, store_anchor)
                         opened.append(cache)
-                    except OSError:
+                    except OSError as exc:
+                        if exc.errno != errno.ENOENT:
+                            _record_search_fault("store_unsafe")
                         cache = None
             vendor = []
             for index, root in enumerate(VENDOR_STORES):
                 try:
                     anchor = open_anchor(root)
-                except (OSError, ValueError):
+                except OSError as exc:
+                    if exc.errno != errno.ENOENT:
+                        _record_search_fault("admission_error")
+                    continue
+                except ValueError:
                     continue
                 opened.append(anchor)
                 vendor.append((index, anchor))
