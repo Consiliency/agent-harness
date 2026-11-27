@@ -44,6 +44,11 @@ _MANAGED_POLICY_ID = "phase-loop-seat"
 _MANAGED_POLICY_VERSION = "1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _LEG = re.compile(r"^[a-z][a-z0-9-]*$")
+_CLAUDE_CODE_VERSION = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}")
+_CLAUDE_PACKAGE_NAME = re.compile(
+    r"@anthropic-ai/claude-code(?:-(?:linux|darwin|win32)-(?:x64|arm64)(?:-musl)?)?"
+)
+_PACKAGE_JSON_MAX_BYTES = 65_536
 _FRONTDOOR_PREFIX = "exec /usr/bin/python3 -I "
 _SHELL_WRAPPER_EXPORT = re.compile(
     r'export [A-Z_][A-Z0-9_]*=(?:[A-Za-z0-9._/:@+-]|"\$PATH")*'
@@ -73,6 +78,67 @@ class SeatSubject:
     release_id: str | None
     requirement: DependencyRequirement | None
     binary_sha256: str | None = None
+    provider_version: str | None = None
+
+
+def normalize_claude_code_version(value: object) -> str:
+    """Validate a content-free Claude Code version string, falling back to ``unknown``."""
+    if type(value) is str and _CLAUDE_CODE_VERSION.fullmatch(value):
+        return value
+    return "unknown"
+
+
+def _package_owns_executable(data: dict, pkg_dir: Path, selected: Path) -> bool:
+    name = data.get("name")
+    if type(name) is not str or not _CLAUDE_PACKAGE_NAME.fullmatch(name):
+        return False
+    try:
+        rel = selected.relative_to(pkg_dir).as_posix()
+    except ValueError:
+        return False
+    files = data.get("files")
+    if isinstance(files, list) and any(
+        type(entry) is str and entry.removeprefix("./") == rel for entry in files
+    ):
+        return True
+    bin_field = data.get("bin")
+    if type(bin_field) is str and bin_field.removeprefix("./") == rel:
+        return True
+    if isinstance(bin_field, dict) and any(
+        type(target) is str and target.removeprefix("./") == rel for target in bin_field.values()
+    ):
+        return True
+    return False
+
+
+def claude_code_version_for_subject(path: Path | None, *, managed: bool = True) -> str:
+    """Read the Claude Code version from verified managed ``package.json`` metadata without
+    executing the binary (agent-harness#2170). Returns ``unknown`` whenever managed provenance
+    or valid package metadata is unavailable."""
+    if path is None or not managed:
+        return "unknown"
+    try:
+        selected = Path(path).resolve(strict=True)
+    except OSError:
+        return "unknown"
+    candidates = [selected.parent / "package.json"]
+    if selected.parent.name == "bin":
+        candidates.append(selected.parent.parent / "package.json")
+    for candidate in candidates:
+        try:
+            descriptor = _open_managed_file(candidate)
+            try:
+                raw = _read_stable(descriptor, _PACKAGE_JSON_MAX_BYTES, code="package_metadata")
+            finally:
+                os.close(descriptor)
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, ExecutableDependencyError, UnicodeDecodeError, ValueError, TypeError, RecursionError):
+            continue
+        if isinstance(data, dict) and _package_owns_executable(data, candidate.parent, selected):
+            version = normalize_claude_code_version(data.get("version"))
+            if version != "unknown":
+                return version
+    return "unknown"
 
 
 def register_provider_executable(leg: str, executable: str) -> None:
@@ -187,7 +253,8 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
         raise ExecutableDependencyError("subject_mismatch", "standalone provider") from exc
     if harness != leg or _names_managed_root(path):
         raise ExecutableDependencyError("subject_mismatch", "provider")
-    return SeatSubject(leg, "standalone", path, None, None)
+    version = "unknown" if leg == "claude" else None
+    return SeatSubject(leg, "standalone", path, None, None, provider_version=version)
 
 
 def managed_grok_image_digest(path: Path) -> str:
@@ -349,7 +416,8 @@ def _managed_subject(leg: str, target: Path) -> SeatSubject:
         policy_version=_MANAGED_POLICY_VERSION,
         base_profile_sha256=pin["base_profile_sha256"],
     )
-    return SeatSubject(leg, "managed_release", selected, release_id, requirement)
+    version = claude_code_version_for_subject(selected, managed=True) if leg == "claude" else None
+    return SeatSubject(leg, "managed_release", selected, release_id, requirement, provider_version=version)
 
 
 def _names_managed_root(path: Path) -> bool:
@@ -618,7 +686,9 @@ __all__ = [
     "MANAGED_RELEASES_ROOT",
     "SeatSubject",
     "SubjectSource",
+    "claude_code_version_for_subject",
     "deployment_kind",
+    "normalize_claude_code_version",
     "open_managed_authority",
     "register_provider_executable",
     "resolve_seat_subject",

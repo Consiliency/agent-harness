@@ -828,6 +828,7 @@ time.sleep(30)
     assert fields["journal_events_after_submit"] == str(count)
     assert fields["last_journal_event_type"] == last_type
     assert fields["api_error_seen"] == "false"
+    assert fields["claude_code_version"] == "unknown"
     if state == "assistant_started":
         assert 0 <= float(fields["first_assistant_event_age_s"]) < 5
     else:
@@ -885,6 +886,210 @@ def test_claude_stall_journal_distinguishes_api_errors_from_assistant_events():
     )
     assert "assistant_event_seen=true first_assistant_event_age_s=7.000" in with_stream
     assert "last_journal_event_type=stream_event" in with_stream
+    assert "claude_code_version=unknown" in with_stream
+
+    with_version = pi._claude_post_submit_diagnostic(
+        [json.dumps(record) for record in records],
+        submit_offset=1.0, start_wall=0, elapsed=10, claude_code_version="2.1.331",
+    )
+    assert with_version.endswith("claude_code_version=2.1.331")
+    with_untrusted = pi._claude_post_submit_diagnostic(
+        [json.dumps(record) for record in records],
+        submit_offset=1.0, start_wall=0, elapsed=10, claude_code_version="2.1.331 secret",
+    )
+    assert with_untrusted.endswith("claude_code_version=unknown")
+    assert "secret" not in with_untrusted
+
+
+def test_jailed_claude_version_flows_to_diagnostics_verdict_and_board_record(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    seat_dir = tmp_path / "seat"
+    (seat_dir / "seat-home").mkdir(parents=True)
+    (seat_dir / "seat-out").mkdir(parents=True)
+    pkg_dir = tmp_path / "claude-pkg"
+    pkg_dir.mkdir()
+    provider_bin = pkg_dir / "claude"
+    provider_bin.write_bytes(b"binary")
+    (pkg_dir / "package.json").write_text('{"version": "2.1.331"}', encoding="utf-8")
+
+    jail = SimpleNamespace(
+        env={"HOME": "/seat/home", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "9"},
+        profile_id="test", profile_digest="0" * 64, filter_digest="1" * 64,
+        redacted_owner=lambda: ["bwrap"], provider_path=str(provider_bin),
+        claude_code_version="2.1.331",
+    )
+    seat = pi._JailedSeat(
+        jail=jail, probe_jail=jail, holder_pid=os.getpid(), token=b"seat-secret-token",
+        review_dir=tmp_path, seat_dir=seat_dir, source="login", expires_at=None, notices=[],
+    )
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_broker_claude_tui_command", lambda **k: [sys.executable, "-c", "pass"])
+    monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **k: (
+        k["stall_diagnostic_sink"].append(pi._claude_post_submit_diagnostic(
+            [], submit_offset=0.5, start_wall=0.0, elapsed=10.0,
+            claude_code_version=k["claude_code_version"],
+        )) or (1, "", pi._HarnessCode("claude_tui_stalled"), "Processing...")
+    ))
+    monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: b"")
+    monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda *a, **k: [])
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda j: None)
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: "healthy")
+
+    broker_evidence: dict[str, object] = {}
+    sink: list[pi._LegFailure] = []
+
+    @pi._retained_leg_exec
+    def _run(leg):
+        return pi._exec_jailed_claude_leg(
+            seat, timeout_s=10, backstop_s=10, model=None, effort=None, prompt="review",
+            broker_evidence=broker_evidence, failure_detail_sink=sink,
+        )
+
+    spawned = _run("claude")
+    assert spawned[0] == "DEGRADED"
+    assert broker_evidence["claude_code_version"] == "2.1.331"
+    detail = pi._resolve_leg_detail(sink[0], tmp_path, "claude:test")
+    assert pi._finalize_leg_detail(detail) == detail
+    assert "claude_code_version=2.1.331" in detail
+    assert not pi._detail_is_valid(detail.replace("2.1.331", "2.1.331-evil/path"))
+
+    # Private leg_exec.v1 record carries the version.
+    leg_records = list((tmp_path / "state").rglob("leg-*.json"))
+    assert len(leg_records) == 1
+    assert json.loads(leg_records[0].read_text())["claude_code_version"] == "2.1.331"
+
+    # Streaming verdict and PanelLegResult carry the version for claude only.
+    claude_leg = pi.PanelLegResult(
+        leg="claude", status="DEGRADED", text="", detail=detail, seat_key="claude:default",
+    )
+    pi.attach_harden_isolation_evidence(claude_leg, broker_evidence)
+    object.__setattr__(claude_leg, "_leg_exec_metadata", getattr(spawned, "leg_exec_metadata", None))
+    codex_leg = pi.PanelLegResult(
+        leg="codex", status="OK", text="LGTM\nAGREE", detail=None, seat_key="codex:default",
+    )
+    assert claude_leg.claude_code_version == "2.1.331"
+    assert codex_leg.claude_code_version is None
+
+    verdict_dir = tmp_path / "verdicts"
+    pi._write_incremental_verdict(verdict_dir, 0, claude_leg)
+    pi._write_incremental_verdict(verdict_dir, 1, codex_leg)
+    claude_verdict = json.loads((verdict_dir / "leg-0000-claude_default.verdict.json").read_text())
+    codex_verdict = json.loads((verdict_dir / "leg-0001-codex_default.verdict.json").read_text())
+    assert claude_verdict["claude_code_version"] == "2.1.331"
+    assert "claude_code_version" not in codex_verdict
+
+    # Board JSON record exposes claude_code_version on the Claude leg only.
+    stdout, _stderr = _run_board(tmp_path, (claude_leg, codex_leg), json_out=True)
+    board_payload = json.loads(stdout)
+    legs_by_key = {entry["seat_key"]: entry for entry in board_payload["legs"]}
+    assert legs_by_key["claude:default"]["claude_code_version"] == "2.1.331"
+    assert "claude_code_version" not in legs_by_key["codex:default"]
+    assert not pi._detail_is_valid(detail.replace("2.1.331", "2.1.331-rc.1"))
+    assert not pi._detail_is_valid(detail.replace("2.1.331", "2.1.331-.."))
+
+
+def test_jailed_claude_cancellation_preserves_versioned_exec_record(tmp_path, monkeypatch):
+    from dataclasses import replace as dc_replace
+    import threading
+    from harden_tdd_guard import invoke_sanctioned_board_control
+    from phase_loop_runtime.advisor_board import DEFAULT_BOARD
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: "healthy")
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_publish_seat_modes", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda **_k: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda *_a: (True, ""))
+    monkeypatch.setattr(pi, "board_preflight_requalify", lambda *a, **k: None)
+    cancel = threading.Event()
+
+    @pi._retained_leg_exec
+    def _spawn(leg, _prompt):
+        observation = pi._EXEC_OBSERVATION.get()
+        assert observation is not None
+        observation["claude_code_version"] = "2.1.331"
+        cancel.set()
+        return pi._BrokeredSpawnResult(
+            "DEGRADED", "", pi._HarnessCode("claude_tui_stalled"),
+            evidence={"claude_code_version": "2.1.331"},
+        )
+
+    board = dc_replace(
+        DEFAULT_BOARD,
+        seats=(next(s for s in DEFAULT_BOARD.seats if s.harness == "claude"),),
+    )
+    panel = invoke_sanctioned_board_control(
+        board, "review me", spawn=_spawn, stream_dir=tmp_path / "stream",
+        cancel_event=cancel, max_concurrency=1, monitoring_policy="heartbeat_only",
+    )
+    leg = panel.legs[0]
+    assert leg.status == "UNAVAILABLE"
+    assert leg.detail == "review_operation_cancelled"
+    assert leg.claude_code_version == "2.1.331"
+    records = list((tmp_path / "state").rglob("leg-*.json"))
+    assert len(records) == 1
+    stored = json.loads(records[0].read_text())
+    assert stored["claude_code_version"] == "2.1.331"
+    assert leg._leg_exec_metadata["attempt_id"] == stored["attempt_id"]
+
+
+def test_jailed_claude_early_refusals_record_version_or_unknown(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: "healthy")
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda _p: tmp_path)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (
+        SimpleNamespace(jailed=True, decision=None), [], None
+    ))
+    monkeypatch.setattr(pi, "_release_seat_route", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_republish_jailed_claude_mode", lambda *a, **k: None)
+    monkeypatch.setattr(pi._claude_seat_transport, "resolve_jailed_claude_transport", lambda: ("tui", None))
+    monkeypatch.setattr(
+        pi, "_await_claude_login",
+        lambda *a, **k: SimpleNamespace(outcome=pi._seat_credentials.LOGIN_MISSING, waited_s=0.0),
+    )
+
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    spawned = pi._default_spawn(
+        "claude", "artifact", repo_dir=tmp_path, mode="review", model="claude-opus-4-7",
+        review_authorization=auth, canonical_repo_authority=tmp_path, env={"PATH": "/usr/bin"},
+    )
+    assert spawned[0] == "DEGRADED"
+    assert spawned.leg_exec_metadata["claude_code_version"] == "unknown"
+    records = sorted((tmp_path / "state").rglob("leg-*.json"))
+    assert len(records) == 1
+    assert json.loads(records[0].read_text())["claude_code_version"] == "unknown"
+
+    # Subject resolved with managed version, then _prepare_jailed_claude refuses before jail build.
+    resolved_subject = pi._seat_subject.SeatSubject(
+        "claude", "managed_release", tmp_path / "claude", "rel-1", None, provider_version="2.1.331",
+    )
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a, **k: (resolved_subject, None))
+    monkeypatch.setattr(pi, "_validate_jail_dependency", lambda *a, **k: None)
+    review_dir = tmp_path / "review"
+    review_dir.mkdir()
+
+    @pi._retained_leg_exec
+    def _prep_refusal(leg):
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused) as exc_info:
+            pi._prepare_jailed_claude(
+                review_dir, tmp_path / "seat-prep", auth, 1, os.getpid(), ("a", "b"),
+                transport="tui",
+            )
+        return "DEGRADED", "", pi._HarnessCode(exc_info.value.code)
+
+    prep_res = _prep_refusal("claude")
+    assert prep_res.leg_exec_metadata["claude_code_version"] == "2.1.331"
+    all_records = sorted((tmp_path / "state").rglob("leg-*.json"))
+    assert len(all_records) == 2
+    versions = {json.loads(r.read_text())["claude_code_version"] for r in all_records}
+    assert versions == {"unknown", "2.1.331"}
 
 
 @pytest.mark.parametrize("detail, limited", [

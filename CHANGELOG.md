@@ -6,8 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- Jailed Claude TUI legs now read the selected Claude Code version from verified
+  managed `package.json` metadata without executing the binary, recording it (or
+  `unknown`) in content-free leg diagnostics and board records (agent-harness#2170).
+
 ### Fixed
 
+- Keep a phase `blocked` with its `runner_verification_failed` blocker when runner-owned
+  verification fails closed, instead of letting a child's `complete` closeout overwrite
+  the phase status to `complete` (agent-harness#2135).
+- `test_jevdrill_usage::test_probe_descendant_cleanup_and_deadline` now accepts Linux
+  dead states (`X`/`x`) and vanished `/proc/<pid>/stat` entries alongside `Z`, removing
+  the reaper-timing flake under hosted CI load (agent-harness#2153).
+- Raise the `test.yml` `clean-room (standalone-from-wheel, Gate A)` job timeout from
+  150 to 210 minutes (matching `publish-pypi.yml` from agent-harness#2191) after slow
+  hosted runners hit the 150-minute cap at 88% with no test failures (agent-harness#766).
 - Patch `sandbox_placement._sleep` instead of process-wide `time.sleep` in
   `test_file_lock_checks_budget_after_retry_sleep` so background threads in
   single-process Gate A runs cannot advance the test's fake clock before `flock`
