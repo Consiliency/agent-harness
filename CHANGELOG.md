@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.48] - 2026-11-27
+
 ### Added
 
 - Jailed Claude TUI legs now read the selected Claude Code version from verified

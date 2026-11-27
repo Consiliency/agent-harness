@@ -18,6 +18,61 @@ publication. The qualification host installs the released
 `phase-loop-runtime[agy-watch]`, since the job signs its App token with the extra's
 `cryptography`.
 
+## 0.7.48 release preparation
+
+Expected unpublished artifacts are `phase_loop_runtime-0.7.48-py3-none-any.whl`
+and `phase_loop_runtime-0.7.48.tar.gz`. The runtime requires Python 3.12 or newer.
+The lock is unchanged apart from the package version.
+
+This release carries seven runtime and diagnostic fixes plus CI and test
+stabilization merged since `v0.7.47`:
+- Jailed Claude TUI legs read the selected Claude Code version from verified
+  managed `package.json` metadata without executing the binary and record it (or
+  `unknown`) in content-free leg diagnostics and board records
+  (agent-harness#2170).
+- Failed `agy` NDJSON `event="result"` records classify structured error fields
+  into `provider_error_class` on both nonzero native exits and exit-0
+  `final_result_invalid` failures without scanning prose or retaining raw text
+  (agent-harness#2215).
+- Runner-owned verification failure keeps the phase `blocked` with
+  `runner_verification_failed` instead of allowing a later child `complete`
+  closeout to overwrite it (agent-harness#2135).
+- Launcher post-exit stdout/stderr drain is bounded by the launch deadline,
+  marks incomplete drains (`drain_incomplete=True`, usage `UNKNOWN`), stops the
+  reader thread without deadlocking on pipe close, hardens non-blocking live
+  stdout display against concurrent writers and interrupts, and terminates
+  surviving descendants in the child's process group when a grandchild holds
+  stdout open past child exit (agent-harness#2129, agent-harness#2128).
+- Window control launches (`_open_window_launch`) bind the route's live
+  `QualificationKey` onto each control seat's jail and probe jail via
+  `_bind_route_qualification` and require matching keys at launch, so hosts
+  holding only v2 `QualificationKey` pass records admit window control launches
+  while missing or mismatched keys fail closed before spawn
+  (agent-harness#2111).
+- Missing managed-tooling seat authority or pin entries map to the ordinary
+  notice `seat_dependency_authority_missing` (leaving integrity/subject failures
+  on `seat_sandbox_refused:identity`), and `gemini_credential_near_expiry`
+  accurately describes an expired, near-expiry, unreadable, or unrenewed login
+  file (agent-harness#2109).
+- `SandboxPlacementLifecycle.cancel_launch_owner` bounds WORKER-cancel waits and
+  lock holds against the unfenced `h + 2T/3` renewal fence (moving launcher
+  verification and status polling outside `launch_operation_lock` via
+  `signal_guard` while keeping legacy and wrapper adapters safely on the
+  lock-held fence-capped path), and `mark_start_intent` refuses local
+  generations once `_renewal_current` is false (agent-harness#2159).
+- Test and CI stabilization: `test.yml` Gate A timeout raised to 210 minutes
+  (agent-harness#766), `test_jevdrill_usage` dead-state acceptance
+  (agent-harness#2153), and `test_file_lock_checks_budget_after_retry_sleep`
+  scoped sleep patching (agent-harness#2207).
+
+Qualification inputs compared with the `v0.7.47` tag:
+
+| Seat | Inputs that moved | Stable inputs |
+| --- | --- | --- |
+| Claude | Seat-window runtime digest and release identity. The Claude SDK proof inputs `panel_invoker.py::_prepare_jailed_claude`, `seat_route.py`, `seat_route_contract.py`, `seat_subject.py`, and `test_seats_claude_transport.py` change, so SDK admission requires a fresh boundary proof. | Production jail profile, all six `QualificationKey` fields for the same launch inputs (the jail-digest read set is pinned and unchanged). TUI remains the default. |
+| Gemini | Seat-window runtime digest and release identity. | Production jail profile, all six `QualificationKey` fields, the agy validator closure and QCI. |
+| Codex | Seat-window runtime digest and release identity. | Production jail profile and all six `QualificationKey` fields. |
+
 ## 0.7.47 release preparation
 
 Expected unpublished artifacts are `phase_loop_runtime-0.7.47-py3-none-any.whl`
