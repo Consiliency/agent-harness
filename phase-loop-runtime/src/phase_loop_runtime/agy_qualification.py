@@ -1860,11 +1860,21 @@ def _doctor_hold_fault(env, *, subject_sha256: str | None, store: Store) -> Verd
             fault = hold_faults[0] if hold_faults else "admission_error"
             return fault if fault in VERDICT_REFUSAL_REASONS else "admission_error"
         excluded, cache_version, predicate, store_dir = predicates
+
+        def doctor_predicate(image, candidate):
+            decision = predicate(image, candidate)
+            if decision is None:
+                return None
+            # Only a release-qualified candidate is guaranteed to admit without help
+            # measurement; keep scanning past unmeasured locally_qualified candidates
+            # within the bounded budget so any cache/candidate fault is still surfaced.
+            return decision if decision[1] == "release_qualified" else None
+
         held = agy_hold.search(
             members=gh.catalog_members(),
             store_dir=store_dir,
             cache_version=cache_version,
-            predicate=predicate,
+            predicate=doctor_predicate,
             excluded=excluded,
         )
         if held is not None:

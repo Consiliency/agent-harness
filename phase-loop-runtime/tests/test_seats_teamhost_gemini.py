@@ -1410,20 +1410,38 @@ def test_verdict_refusal_reasons_hardening_r5(tmp_path, monkeypatch):
     finally:
         held_dir.chmod(0o700)
 
-    # r6/r7 P1/P2: Corrupted cached hold image (bytes != filename digest) -> store_unsafe in BOTH modes
+    # r6/r7/r8: Corrupted cached hold image (bytes != filename digest) -> store_unsafe in BOTH modes,
+    # even when another intact cached candidate has provenance-only (no qualified record).
+    prov_only_bytes = b"#!/bin/sh\necho prov-only\n"
+    prov_only_path = _subject(tmp_path, "agy-prov-only", prov_only_bytes)
+    prov_only_digest = sha256(prov_only_bytes).hexdigest()
+    asset_low = SimpleNamespace(name=HOST.asset, version="9.9.8", digest="sha256:" + "1" * 64)
+    store.put_provenance(
+        SimpleNamespace(image_sha256=prov_only_digest, platform=HOST.name, asset=asset_low),
+        q.agy_profile_digest(),
+    )
+    prov_only_img = gh.VerifiedImage.from_bytes(prov_only_bytes, prov_only_path)
+    try:
+        agy_hold.retain(prov_only_img, store, cache_version=lambda _d, _v: (9, 9, 8))
+    finally:
+        prov_only_img.close()
+
     cached_file = held_dir / sha256(lkg_bytes).hexdigest()
     cached_file.write_bytes(b"#!/bin/sh\necho corrupted\n")
     cached_file.chmod(0o600)
     try:
-        assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
-            "refuses", "agy_image_unqualified", "store_unsafe"
-        )
-        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
-            "refuses", "agy_image_unqualified", "store_unsafe"
-        )
+        with monkeypatch.context() as ctx:
+            ctx.setattr(q, "measure_help", lambda *_a, **_kw: HELP)
+            assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+                "refuses", "agy_image_unqualified", "store_unsafe"
+            )
+            assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+                "refuses", "agy_image_unqualified", "store_unsafe"
+            )
     finally:
         cached_file.write_bytes(lkg_bytes)
         cached_file.chmod(0o600)
+        (held_dir / prov_only_digest).unlink(missing_ok=True)
 
     # r6 P2: self_qualification=false + hold=true + unsafe host_dir (0777) -> store_unsafe in BOTH modes
     cfg_file = tmp_path / "cfg" / "agent-harness" / "advisor-boards.toml"
