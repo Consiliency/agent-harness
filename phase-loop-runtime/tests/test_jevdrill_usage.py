@@ -261,7 +261,7 @@ def test_probe_descendant_cleanup_and_deadline(tmp_path, monkeypatch):
     assert time.monotonic() - started < 1
     pid = int(marker.read_text())
     stat = __import__("pathlib").Path("/proc") / str(pid) / "stat"
-    deadline = time.monotonic() + 1.0
+    deadline = time.monotonic() + .3
     # Linux /proc/<pid>/stat can report Z (zombie) or X/x (dead) while reaping, or vanish
     # outright; all prove the descendant exited (agent-harness#2153).
     state = _proc_stat_state(stat)
