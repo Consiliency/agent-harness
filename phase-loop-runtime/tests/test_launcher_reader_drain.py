@@ -386,23 +386,28 @@ def test_sigterm_trapping_descendant_closing_pipe_is_escalated_to_sigkill(tmp_pa
         _kill_pid_best_effort(marker)
 
 
-def test_interrupt_during_post_exit_drain_skips_descendant_cleanup_after_reap(tmp_path, monkeypatch):
+def test_interrupt_during_post_exit_drain_cleans_up_descendant_before_reap(tmp_path, monkeypatch):
     """If KeyboardInterrupt fires during post-exit drain after leader_unreaped was set,
-    _cleanup_process_group reaps the leader and post-exit descendant cleanup must NOT
-    signal a potentially recycled PGID."""
+    cleanup must signal the pinned process group BEFORE reaping the leader and must NOT
+    run a second cleanup after reap."""
     marker = tmp_path / "interrupt_grandchild.pid"
     script = (
-        "import subprocess, sys\n"
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
         "proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-        f"open({str(marker)!r}, 'w').write(str(proc.pid))\n"
+        "open(marker, 'w').write(str(proc.pid))\n"
         "print('leader-done', flush=True)\n"
     )
-    descendant_calls = []
-    monkeypatch.setattr(
-        launcher,
-        "_cleanup_descendant_process_group",
-        lambda *a, **k: descendant_calls.append((a, k)),
-    )
+    orig_descendant_cleanup = launcher._cleanup_descendant_process_group
+    cleanup_calls = []
+
+    def spy_descendant_cleanup(process_pid, process_group_id, *, reason, pipes_closed):
+        cleanup_calls.append((reason, process_pid, process_group_id))
+        return orig_descendant_cleanup(
+            process_pid, process_group_id, reason=reason, pipes_closed=pipes_closed,
+        )
+
+    monkeypatch.setattr(launcher, "_cleanup_descendant_process_group", spy_descendant_cleanup)
     interrupt_fired = False
     orig_waitid = launcher._child_exited_no_reap
     leader_exited = threading.Event()
@@ -431,6 +436,40 @@ def test_interrupt_during_post_exit_drain_skips_descendant_cleanup_after_reap(tm
         )
         assert interrupt_fired is True
         assert result.interrupted is True
-        assert descendant_calls == []
+        assert len(cleanup_calls) == 1
+        assert cleanup_calls[0][0] == "interrupt"
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["reason"] == "interrupt"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
     finally:
         _kill_pid_best_effort(marker)
+
+
+def test_live_pgid_members_exist_detects_live_worker_thread_when_main_thread_is_zombie(tmp_path, monkeypatch):
+    """If a multi-threaded descendant's main thread exits (state Z) while a worker thread
+    remains alive under /proc/<pid>/task/, _live_pgid_members_exist must still report True."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux /proc layout test")
+    fake_proc = tmp_path / "proc"
+    pid_dir = fake_proc / "424242"
+    (pid_dir / "task" / "424242").mkdir(parents=True)
+    (pid_dir / "task" / "424243").mkdir(parents=True)
+    (pid_dir / "stat").write_text("424242 (worker) Z 1 77777 77777 0 -1\n", encoding="ascii")
+    (pid_dir / "task" / "424242" / "stat").write_text("424242 (worker) Z 1 77777 77777 0 -1\n", encoding="ascii")
+    (pid_dir / "task" / "424243" / "stat").write_text("424243 (worker) S 1 77777 77777 0 -1\n", encoding="ascii")
+
+    real_path = launcher.Path
+
+    def patched_path(arg, *rest):
+        if arg == "/proc" and not rest:
+            return fake_proc
+        return real_path(arg, *rest)
+
+    monkeypatch.setattr(launcher, "Path", patched_path)
+    assert launcher._live_pgid_members_exist(77777, leader_pid=100001) is True
+    (pid_dir / "task" / "424243" / "stat").write_text("424243 (worker) Z 1 77777 77777 0 -1\n", encoding="ascii")
+    assert launcher._live_pgid_members_exist(77777, leader_pid=100001) is False

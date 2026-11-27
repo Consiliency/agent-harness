@@ -766,7 +766,7 @@
   {"count": 1, "function": "_codex_executor_input_manifest", "module": "launcher", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_codex_usage_version", "module": "launcher", "primitive": "launch_owned", "role": "owned"},
   {"count": 1, "function": "_launch_windows_owned", "module": "launcher", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "_live_pgid_members_exist", "module": "launcher", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "_live_pgid_members_exist.read_stat_fields", "module": "launcher", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_read_supervisor_status", "module": "launcher", "primitive": "subprocess.Popen", "role": "supervisor"},
   {"count": 1, "function": "_salvage_snapshot", "module": "launcher", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_salvage_snapshot", "module": "launcher", "primitive": "subprocess.Popen", "role": "supervisor"},

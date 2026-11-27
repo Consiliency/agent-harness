@@ -3385,8 +3385,17 @@ def launch(
                         break
                 except KeyboardInterrupt:
                     interrupted = True
-                    leader_unreaped = False
-                    cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
+                    if leader_unreaped and getattr(process, "returncode", None) is None:
+                        cleanup_evidence = _cleanup_descendant_process_group(
+                            process.pid,
+                            process_group_id,
+                            reason="interrupt",
+                            pipes_closed=pipes_all_eof,
+                        )
+                        leader_unreaped = False
+                    else:
+                        leader_unreaped = False
+                        cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
                     if _codex_usage_observer is not None:
                         drain()
                         drain_incomplete = streams_done != {"stdout", "stderr"}
@@ -4727,8 +4736,9 @@ def _pipe_writers_closed(pipe) -> bool:
 
 
 def _live_pgid_members_exist(pgid: int, *, leader_pid: int) -> bool | None:
-    """Return whether any live (non-zombie/non-dead) process other than ``leader_pid``
-    belongs to ``pgid``, or ``None`` when ``/proc`` inspection is unavailable."""
+    """Return whether any live (non-zombie/non-dead) process or thread other than
+    ``leader_pid`` belongs to ``pgid``, or ``None`` when ``/proc`` inspection is
+    unavailable."""
     if not sys.platform.startswith("linux"):
         return None
     proc_root = Path("/proc")
@@ -4738,29 +4748,49 @@ def _live_pgid_members_exist(pgid: int, *, leader_pid: int) -> bool | None:
         entries = list(os.scandir(proc_root))
     except OSError:
         return None
+
+    def read_stat_fields(path: Path) -> list[str] | None:
+        try:
+            stat_text = path.read_text(encoding="ascii", errors="replace")
+        except OSError:
+            return None
+        rparen = stat_text.rfind(")")
+        if rparen < 0:
+            return None
+        fields = stat_text[rparen + 2:].split()
+        return fields if len(fields) >= 3 else None
+
     for entry in entries:
         if not entry.name.isdigit():
             continue
         pid = int(entry.name)
         if pid == leader_pid:
             continue
-        try:
-            stat_text = (proc_root / entry.name / "stat").read_text(encoding="ascii", errors="replace")
-        except OSError:
-            continue
-        rparen = stat_text.rfind(")")
-        if rparen < 0:
-            continue
-        fields = stat_text[rparen + 2:].split()
-        if len(fields) < 3:
+        fields = read_stat_fields(proc_root / entry.name / "stat")
+        if fields is None:
             continue
         state = fields[0]
         try:
             proc_pgid = int(fields[2])
         except ValueError:
             continue
-        if proc_pgid == pgid and state not in {"Z", "X", "x"}:
+        if proc_pgid != pgid:
+            continue
+        if state not in {"Z", "X", "x"}:
             return True
+        # A multi-threaded process whose main thread called pthread_exit() reports
+        # state "Z" at /proc/<pid>/stat while worker threads stay alive under task/.
+        task_dir = proc_root / entry.name / "task"
+        try:
+            task_entries = list(os.scandir(task_dir))
+        except OSError:
+            continue
+        for task in task_entries:
+            if not task.name.isdigit():
+                continue
+            task_fields = read_stat_fields(task_dir / task.name / "stat")
+            if task_fields is not None and task_fields[0] not in {"Z", "X", "x"}:
+                return True
     return False
 
 
@@ -5045,7 +5075,7 @@ def _cleanup_descendant_process_group(
     def has_live_descendants() -> bool:
         live = _live_pgid_members_exist(process_group_id, leader_pid=process_pid)
         if live is not None:
-            return live
+            return live or not pipes_closed()
         return not pipes_closed()
 
     try:
