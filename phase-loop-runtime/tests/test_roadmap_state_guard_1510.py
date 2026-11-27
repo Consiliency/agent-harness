@@ -28,12 +28,29 @@ V10_REL = "specs/phase-plans-v10.md"
 V11_REL = "specs/phase-plans-v11.md"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate every test (fixture setup and runtime CLI/discovery git calls) from
+    inherited GIT_* variables and host global/system git configuration."""
+    for key in list(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Phase Loop Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Phase Loop Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+
+
 def _git_env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.setdefault("GIT_AUTHOR_NAME", "Phase Loop Test")
-    env.setdefault("GIT_AUTHOR_EMAIL", "test@example.com")
-    env.setdefault("GIT_COMMITTER_NAME", "Phase Loop Test")
-    env.setdefault("GIT_COMMITTER_EMAIL", "test@example.com")
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_AUTHOR_NAME"] = "Phase Loop Test"
+    env["GIT_AUTHOR_EMAIL"] = "test@example.com"
+    env["GIT_COMMITTER_NAME"] = "Phase Loop Test"
+    env["GIT_COMMITTER_EMAIL"] = "test@example.com"
     return env
 
 
@@ -130,6 +147,8 @@ def _assert_state_remedy_in_message(message: str, repo: Path | None = None) -> N
     assert "phase-loop archive-state" in message
     assert ".phase-loop__state.json" in message
     assert ".phase-loop__events.jsonl" in message
+    assert ".phase-loop/" in message
+    assert ".codex__phase-loop__" in message
     assert "ls -a" in message
     if repo is not None:
         assert str(repo) not in message
@@ -181,6 +200,58 @@ def test_stale_v10_state_refused_before_v11_registry_with_remedy_and_archive_rec
     assert discovery.select_roadmap(repo) == v11.resolve()
     assert calls[-1][2] == "registry"
     assert calls[-1][1].resolve() == v11.resolve()
+
+
+def test_stale_legacy_codex_state_refused_and_archived_with_legacy_dotfiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, v10, v11 = _build_v10_v11_repo(tmp_path)
+    write_state(repo, provenanced_state(repo, v10, {"ALPHA": "executing"}))
+    canonical_state = repo / ".phase-loop" / "state.json"
+    legacy_dir = repo / ".codex" / "phase-loop"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_state = legacy_dir / "state.json"
+    canonical_state.replace(legacy_state)
+    canonical_state.parent.rmdir()
+    legacy_events = legacy_dir / "events.jsonl"
+    legacy_events.write_text(
+        json.dumps({"action": "plan", "roadmap": str(v10)}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(roadmap_lint.NonActiveSelectionError) as exc:
+        discovery.select_roadmap(repo)
+    _assert_state_remedy_in_message(str(exc.value), repo=repo)
+    assert V10_REL in str(exc.value)
+
+    sentinel = Mock(side_effect=AssertionError("run_loop must not be reached"))
+    monkeypatch.setattr(cli, "run_loop", sentinel)
+    assert cli.main(["run", "--repo", str(repo)]) == 2
+    err = capsys.readouterr().err
+    assert "roadmap status refusal" in err
+    assert "Traceback" not in err
+    _assert_state_remedy_in_message(err, repo=repo)
+    sentinel.assert_not_called()
+
+    assert cli.main(["archive-state", "--repo", str(repo)]) == 0
+    _ = capsys.readouterr()
+    archive_dirs = [p for p in archive_root(repo).iterdir() if p.is_dir()]
+    assert len(archive_dirs) == 1
+    archived_names = {p.name for p in archive_dirs[0].iterdir()}
+    assert ".codex__phase-loop__state.json" in archived_names
+    assert ".codex__phase-loop__events.jsonl" in archived_names
+    assert not legacy_state.exists()
+
+    calls: list[str] = []
+    real_gate = discovery._return_selectable_roadmap
+
+    def _spy(spy_repo: Path, spy_candidate: Path, spy_source: str) -> Path:
+        calls.append(spy_source)
+        return real_gate(spy_repo, spy_candidate, spy_source)
+
+    monkeypatch.setattr(discovery, "_return_selectable_roadmap", _spy)
+    assert discovery.select_roadmap(repo) == v11.resolve()
+    assert calls == ["registry"]
 
 
 def test_superseded_state_error_also_names_archive_state_and_dotfiles(tmp_path: Path) -> None:

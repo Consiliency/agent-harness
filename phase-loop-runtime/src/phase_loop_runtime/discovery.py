@@ -411,8 +411,10 @@ class AmbiguousRoadmapError(RuntimeError):
 
 _STATE_NON_ACTIVE_REMEDY = (
     ". Run `phase-loop archive-state` to archive stale state "
-    "(the archive holds `.phase-loop__state.json` / `.phase-loop__events.jsonl`, "
-    "visible with `ls -a`) and fall through to the active roadmap."
+    "(archives are dot-prefixed—e.g. `.phase-loop__state.json` / "
+    "`.phase-loop__events.jsonl` for the current `.phase-loop/` layout, "
+    "or `.codex__phase-loop__*` for legacy `.codex/phase-loop/` state—visible "
+    "with `ls -a`) and fall through to the active roadmap."
 )
 
 
@@ -431,8 +433,10 @@ class SupersededRoadmapStateError(RuntimeError):
         super().__init__(
             f"phase-loop state selects a superseded roadmap: {roadmap} "
             "(all manifest entries are retired). Run `phase-loop archive-state` "
-            "(the archive holds `.phase-loop__state.json` / `.phase-loop__events.jsonl`, "
-            "visible with `ls -a`) or remove stale state to fall through "
+            "(archives are dot-prefixed—e.g. `.phase-loop__state.json` / "
+            "`.phase-loop__events.jsonl` for the current `.phase-loop/` layout, "
+            "or `.codex__phase-loop__*` for legacy `.codex/phase-loop/` state—visible "
+            "with `ls -a`) or remove stale state to fall through "
             "to the active roadmap: rm .phase-loop/state.json"
         )
 
