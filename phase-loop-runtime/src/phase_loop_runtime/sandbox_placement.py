@@ -4600,7 +4600,7 @@ class PlacementLifecycle:
         # polling outside the operation lock and acquire the lock only to revalidate
         # the generation/fence and deliver SIGTERM to the verified pinned launcher.
         try:
-            if started and _launch_cancel_supports(self.launch_cancel, "signal_guard"):
+            if started and _launch_cancel_uses_signal_guard(self.launch_cancel):
                 with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
                     if not lock.held or self._owned_claim(key) != claim:
                         return "owner_unverified"
@@ -5835,6 +5835,11 @@ def _landed_launch_owner(claim: Mapping[str, object]) -> str:
     return "unverified"
 
 
+def _launch_cancel_uses_signal_guard(fn: Callable[..., str]) -> bool:
+    """Explicit opt-in required so generic ``**kwargs`` wrappers stay on the legacy lock path."""
+    return getattr(fn, "_supports_signal_guard", False) is True
+
+
 def _launch_cancel_supports(fn: Callable[..., str], param: str) -> bool:
     import inspect
 
@@ -5855,7 +5860,7 @@ def _invoke_launch_cancel(
     kwargs: dict[str, object] = {}
     if _launch_cancel_supports(fn, "deadline"):
         kwargs["deadline"] = deadline
-    if signal_guard is not None and _launch_cancel_supports(fn, "signal_guard"):
+    if signal_guard is not None and _launch_cancel_uses_signal_guard(fn):
         kwargs["signal_guard"] = signal_guard
     return fn(claim, wait_s, **kwargs)
 
@@ -5876,6 +5881,9 @@ def _landed_launch_cancel(
         state_root=default_state_root(), attempt_id=run_id, wait_seconds=wait,
         deadline=deadline, signal_guard=signal_guard,
     )
+
+
+_landed_launch_cancel._supports_signal_guard = True  # type: ignore[attr-defined]
 
 
 def _remove_tree(path: Path) -> None:

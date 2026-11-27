@@ -351,6 +351,7 @@ def build_launch_service(
                     worker_root, str(claim["run_id"]), wait,
                     deadline=deadline, signal_guard=signal_guard,
                 )
+            _lifecycle_cancel._supports_signal_guard = True  # type: ignore[attr-defined]
         else:
             def _lifecycle_cancel(claim, wait):
                 return cancel_worker(worker_root, str(claim["run_id"]), wait)

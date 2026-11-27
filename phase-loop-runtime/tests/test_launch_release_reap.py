@@ -1186,7 +1186,6 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
     fence_at = heartbeat + ttl * 2 / 3
     clock = Clock(fence_at - 1.5)
     monkeypatch.setattr(sp, "_monotonic", clock)
-    monkeypatch.setattr(patch_return.time, "monotonic", clock)
     monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
 
     with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
@@ -1268,7 +1267,9 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
         sleeps.append(seconds)
         clock.now += seconds
 
-    monkeypatch.setattr(patch_return.time, "sleep", fake_sleep)
+    # Replace patch_return.time with a test-local namespace rather than mutating the
+    # process-wide time module so foreign threads calling time.sleep cannot interfere.
+    monkeypatch.setattr(patch_return, "time", SimpleNamespace(monotonic=clock, sleep=fake_sleep))
     monkeypatch.setattr(life, "launch_cancel", sp._landed_launch_cancel)
 
     # Case 1: verification crosses fence_at while still unfenced -> lock was not held during
@@ -1323,20 +1324,26 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
     assert signals_sent == []
     monkeypatch.setattr(life, "launch_lock", orig_launch_lock)
 
-    # Case 5: legacy 2-arg launch_cancel adapter also caps its reservation-lock deadline
-    # against fence_at before waiting on launch_lock under launch_operation_lock.
-    legacy_locks = []
-    clock.now = fence_at - 0.5
+    # Case 5: legacy 2-arg and generic **kwargs launch_cancel adapters stay on the lock-held
+    # legacy path and cap both their reservation-lock deadline and wait against fence_at.
+    for make_adapter in (
+        lambda rec: (lambda claim, wait_s: (rec.append((life._holds_operation(rid, generation), wait_s)), "cancelled")[1]),
+        lambda rec: (lambda claim, wait_s, **kwargs: (rec.append((life._holds_operation(rid, generation), wait_s)), "cancelled")[1]),
+    ):
+        legacy_locks = []
+        legacy_calls = []
+        clock.now = fence_at - 0.5
 
-    def spy_legacy_lock(reservation_id, *, timeout_s, deadline=None, **kwargs):
-        if life._holds_operation(rid, generation):
-            legacy_locks.append((timeout_s, deadline))
-        return orig_launch_lock(reservation_id, timeout_s=timeout_s, deadline=deadline, **kwargs)
+        def spy_legacy_lock(reservation_id, *, timeout_s, deadline=None, **kwargs):
+            if life._holds_operation(rid, generation):
+                legacy_locks.append((timeout_s, deadline))
+            return orig_launch_lock(reservation_id, timeout_s=timeout_s, deadline=deadline, **kwargs)
 
-    monkeypatch.setattr(life, "launch_lock", spy_legacy_lock)
-    monkeypatch.setattr(life, "launch_cancel", lambda claim, wait_s: "cancelled")
-    assert life.cancel_launch_owner(*key, deadline=clock.now + 20.5) == "cancelled"
-    assert legacy_locks == [(pytest.approx(0.5), pytest.approx(fence_at))]
+        monkeypatch.setattr(life, "launch_lock", spy_legacy_lock)
+        monkeypatch.setattr(life, "launch_cancel", make_adapter(legacy_calls))
+        assert life.cancel_launch_owner(*key, deadline=clock.now + 20.5) == "cancelled"
+        assert legacy_locks == [(pytest.approx(0.5), pytest.approx(fence_at))]
+        assert legacy_calls == [(True, pytest.approx(0.5))]
     monkeypatch.setattr(life, "launch_lock", orig_launch_lock)
     monkeypatch.setattr(life, "launch_cancel", sp._landed_launch_cancel)
 
