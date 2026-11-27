@@ -179,28 +179,6 @@ def _hold_config_error() -> bool:
     return False
 
 
-def _hold_dir_fault(store_dir: Path) -> Literal["ok", "store_unsafe"]:
-    """Read-only check for an unsafe or unreadable store anchor or ``held/`` directory."""
-    store_anchor = cache = None
-    try:
-        try:
-            store_anchor = open_anchor(store_dir)
-        except OSError as exc:
-            return "ok" if exc.errno == errno.ENOENT else "store_unsafe"
-        except ValueError:
-            return "ok"
-        try:
-            cache = _open_dir_at(HELD_DIRNAME, store_anchor)
-        except OSError as exc:
-            return "ok" if exc.errno == errno.ENOENT else "store_unsafe"
-        return "ok"
-    finally:
-        if cache is not None:
-            os.close(cache)
-        if store_anchor is not None:
-            os.close(store_anchor)
-
-
 def retain(image, store, *, cache_version: "CacheVersion | None" = None) -> None:
     """Keep an admitted image in the harness cache, ``held/<sha256>`` (AGYFRESH §2.8).
 

@@ -1843,6 +1843,41 @@ def _admit_last_known_good(env, *, store=None, faults: list[str] | None = None):
             image.close()
 
 
+def _doctor_hold_fault(env, *, subject_sha256: str | None, store: Store) -> VerdictReason | None:
+    """Spawn-free, bounded hold walk for doctor-mode refusal classification (agent-harness#2053)."""
+    from . import agy_hold
+
+    prev_faults = getattr(_HOLD_FAULT_STATE, "faults", None)
+    prev_search_faults = getattr(agy_hold._SEARCH_FAULT_STATE, "faults", None)
+    hold_faults: list[str] = []
+    _HOLD_FAULT_STATE.faults = hold_faults
+    agy_hold._SEARCH_FAULT_STATE.faults = hold_faults
+    try:
+        predicates = _hold_predicates(
+            env, subject_sha256=subject_sha256, store=store, measure=False
+        )
+        if predicates is None:
+            fault = hold_faults[0] if hold_faults else "admission_error"
+            return fault if fault in VERDICT_REFUSAL_REASONS else "admission_error"
+        excluded, cache_version, predicate, store_dir = predicates
+        held = agy_hold.search(
+            members=gh.catalog_members(),
+            store_dir=store_dir,
+            cache_version=cache_version,
+            predicate=predicate,
+            excluded=excluded,
+        )
+        if held is not None:
+            held.image.close()
+            return None
+        if hold_faults and hold_faults[0] in VERDICT_REFUSAL_REASONS:
+            return hold_faults[0]
+        return None
+    finally:
+        _HOLD_FAULT_STATE.faults = prev_faults
+        agy_hold._SEARCH_FAULT_STATE.faults = prev_search_faults
+
+
 def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVerdict:
     """Report the admission decision while keeping doctor-mode checks spawn-free."""
     path = subject_path or shutil.which("agy", path=env.get("PATH", os.defpath))
@@ -1894,16 +1929,11 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
                         _host()
                     except ValueError:
                         return AgyVerdict("refuses", "agy_image_unqualified", "host_unknown")
-                    if agy_hold._hold_deny_state()[0] == "error":
-                        return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
-                    hold_store = Store()
-                    hold_store_state = hold_store.status()
-                    if (hold_store_state == "unsafe"
-                            or (hold_store_state == "absent"
-                                and hold_store._has_orphaned_entries())
-                            or (hold_store_state == "ok"
-                                and agy_hold._hold_dir_fault(hold_store.host_dir) == "store_unsafe")):
-                        return AgyVerdict("refuses", "agy_image_unqualified", "store_unsafe")
+                    hold_fault = _doctor_hold_fault(
+                        env, subject_sha256=image_sha256, store=Store()
+                    )
+                    if hold_fault is not None:
+                        return AgyVerdict("refuses", "agy_image_unqualified", hold_fault)
         return AgyVerdict("refuses", "agy_image_unqualified", reason)
 
     cfg_state = _self_qualification_config_state()

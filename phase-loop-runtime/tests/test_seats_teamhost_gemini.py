@@ -1410,11 +1410,14 @@ def test_verdict_refusal_reasons_hardening_r5(tmp_path, monkeypatch):
     finally:
         held_dir.chmod(0o700)
 
-    # r6 P1: Corrupted cached hold image (bytes != filename digest) -> store_unsafe (not no_qualification_record)
+    # r6/r7 P1/P2: Corrupted cached hold image (bytes != filename digest) -> store_unsafe in BOTH modes
     cached_file = held_dir / sha256(lkg_bytes).hexdigest()
     cached_file.write_bytes(b"#!/bin/sh\necho corrupted\n")
     cached_file.chmod(0o600)
     try:
+        assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
         assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
             "refuses", "agy_image_unqualified", "store_unsafe"
         )
