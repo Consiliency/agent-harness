@@ -3200,21 +3200,30 @@ def launch(
                 process.stdin.write(stdin_text if _codex_usage_observer is None else stdin_text.encode())
                 process.stdin.close()
             reader_stop = threading.Event()
+            pipe_eof = threading.Event()
+            stream_eofs = {"stdout": threading.Event(), "stderr": threading.Event()}
             streams_done = set()
             readers = []
+            using_default_reader = _codex_usage_observer is None and _read_lines is _DEFAULT_READ_LINES
             if _codex_usage_observer is None:
                 reader_args = (
-                    (process.stdout, line_queue, reader_stop)
-                    if _read_lines is _DEFAULT_READ_LINES
+                    (process.stdout, line_queue, reader_stop, pipe_eof)
+                    if using_default_reader
                     else (process.stdout, line_queue)
                 )
                 readers.append(threading.Thread(target=_read_lines, args=reader_args, daemon=True))
             else:
                 for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
                     readers.append(threading.Thread(target=_read_usage_lines,
-                        args=(pipe, line_queue, name, reader_stop), daemon=True))
+                        args=(pipe, line_queue, name, reader_stop, stream_eofs[name]), daemon=True))
             for reader in readers:
                 reader.start()
+
+            def pipes_all_eof() -> bool:
+                if _codex_usage_observer is not None:
+                    return all(ev.is_set() for ev in stream_eofs.values())
+                return pipe_eof.is_set() if using_default_reader else reader_eof
+
             def consume(record):
                 if _codex_usage_observer is None:
                     rendered = record
@@ -3243,30 +3252,54 @@ def launch(
                 bound = now_ts + 1.0
                 if (not timed_out and not stalled and not interrupted
                         and action != "review" and timeout_seconds is not None):
-                    bound = max(now_ts + 0.05, min(bound, started_monotonic + timeout_seconds))
+                    bound = min(bound, started_monotonic + timeout_seconds)
                 return bound
 
             def drain():
                 deadline = post_exit_deadline()
-                while streams_done != {"stdout", "stderr"} and time.monotonic() < deadline:
+                while streams_done != {"stdout", "stderr"}:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
                     try:
-                        consume(line_queue.get(timeout=min(0.05, max(0.001, deadline - time.monotonic()))))
+                        consume(line_queue.get(timeout=min(0.05, max(0.001, remaining))))
                     except Empty:
                         pass
                 if streams_done != {"stdout", "stderr"}:
                     _codex_usage_observer.invalidate("incomplete_drain")
+
+            def drain_plain():
+                nonlocal reader_eof
+                drain_deadline = post_exit_deadline()
+                while not reader_eof:
+                    remaining = drain_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        line = line_queue.get(timeout=remaining)
+                    except Empty:
+                        break
+                    if line is None:
+                        reader_eof = True
+                    else:
+                        consume(line)
             last_heartbeat = 0.0
             timed_out = False
             interrupted = False
             stalled = False
             drain_incomplete = False
+            leader_unreaped = False
             cleanup_evidence: dict[str, Any] | None = None
             last_heartbeat_summary: dict[str, Any] | None = None
             reader_eof = False
             while True:
                 try:
+                    wait_s = 0.05 if _codex_usage_observer is not None else 1.0
+                    if action != "review" and timeout_seconds is not None:
+                        remaining_launch = started_monotonic + timeout_seconds - time.monotonic()
+                        wait_s = min(wait_s, 0.05, max(0.005, remaining_launch))
                     try:
-                        line = line_queue.get(timeout=0.05 if _codex_usage_observer is not None else 1)
+                        line = line_queue.get(timeout=wait_s)
                         if line is None and _codex_usage_observer is None:
                             reader_eof = True
                     except Empty:
@@ -3285,7 +3318,7 @@ def launch(
                             quiet_warning_seconds=quiet_warning_seconds,
                             quiet_blocker_seconds=quiet_blocker_seconds,
                             command=command,
-                            returncode=process.poll(),
+                            returncode=getattr(process, "returncode", None),
                             process_group_id=process_group_id,
                         )
                         last_heartbeat_summary = heartbeat
@@ -3300,7 +3333,7 @@ def launch(
                                 flush=True,
                             )
                         last_heartbeat = now
-                        if action != "review" and heartbeat.get("stalled_suspect") and process.poll() is None:
+                        if action != "review" and heartbeat.get("stalled_suspect") and not _child_exited_no_reap(process)[0]:
                             stalled = True
                             salvage = _salvage_snapshot(
                                 command=command,
@@ -3313,7 +3346,7 @@ def launch(
                             )
                             cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="stalled")
                             cleanup_evidence["salvage_snapshot"] = salvage
-                    if action != "review" and timeout_seconds is not None and now - started_monotonic >= timeout_seconds and process.poll() is None:
+                    if action != "review" and timeout_seconds is not None and now - started_monotonic >= timeout_seconds and not _child_exited_no_reap(process)[0]:
                         timed_out = True
                         salvage = _salvage_snapshot(
                             command=command,
@@ -3326,7 +3359,9 @@ def launch(
                         )
                         cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
                         cleanup_evidence["salvage_snapshot"] = salvage
-                    if process.poll() is not None:
+                    exited_now, unreaped_now = _child_exited_no_reap(process)
+                    if exited_now:
+                        leader_unreaped = unreaped_now
                         if _codex_usage_observer is not None:
                             drain()
                             drain_incomplete = streams_done != {"stdout", "stderr"}
@@ -3335,19 +3370,7 @@ def launch(
                         # pipe or the reader. Collect until the reader's EOF sentinel,
                         # bounded by the launch's own deadline (and at most 1 s): the
                         # budget is checked before each dequeue (agent-harness#2129).
-                        drain_deadline = post_exit_deadline()
-                        while not reader_eof:
-                            remaining = drain_deadline - time.monotonic()
-                            if remaining <= 0:
-                                break
-                            try:
-                                line = line_queue.get(timeout=remaining)
-                            except Empty:
-                                break
-                            if line is None:
-                                reader_eof = True
-                            else:
-                                consume(line)
+                        drain_plain()
                         drain_incomplete = not reader_eof
                         break
                 except KeyboardInterrupt:
@@ -3356,17 +3379,21 @@ def launch(
                     if _codex_usage_observer is not None:
                         drain()
                         drain_incomplete = streams_done != {"stdout", "stderr"}
+                    else:
+                        drain_plain()
+                        drain_incomplete = not reader_eof
                     break
-            returncode = process.wait()
-            if drain_incomplete:
+            if drain_incomplete and not pipes_all_eof() and leader_unreaped:
                 descendant_cleanup = _cleanup_descendant_process_group(
                     process.pid, process_group_id, reason="post_exit_pipe_open",
+                    pipes_closed=pipes_all_eof,
                 )
                 if descendant_cleanup is not None:
                     if cleanup_evidence is None:
                         cleanup_evidence = descendant_cleanup
                     else:
                         cleanup_evidence["post_exit_descendant_cleanup"] = descendant_cleanup
+            returncode = process.wait()
             reader_stop.set()
             for reader in readers:
                 reader.join(timeout=1)
@@ -4634,7 +4661,41 @@ def _codex_usage_version(executable, env, cwd, timeout):
             process.wait(timeout=1)
 
 
-def _read_usage_lines(pipe, line_queue, name, stop):
+def _child_exited_no_reap(process: Any) -> tuple[bool, bool]:
+    """Return ``(exited, leader_unreaped)`` without reaping on platforms with ``waitid`` +
+    ``WNOWAIT`` so the child's PID/PGID stays pinned through descendant signaling."""
+    if getattr(process, "returncode", None) is not None:
+        return True, False
+    poll_fn = getattr(type(process), "poll", None)
+    if (
+        getattr(poll_fn, "__module__", None) == "subprocess"
+        and hasattr(os, "waitid")
+        and hasattr(os, "WNOWAIT")
+        and isinstance(getattr(process, "pid", None), int)
+    ):
+        try:
+            info = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except (ChildProcessError, OSError):
+            return process.poll() is not None, False
+        return (True, True) if info is not None else (False, False)
+    return process.poll() is not None, False
+
+
+def _make_fd_poller(fd: int):
+    if hasattr(select, "poll"):
+        poller = select.poll()
+        poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        return poller
+    return None
+
+
+def _fd_ready(fd: int, poller, timeout_s: float = 0.05) -> bool:
+    if poller is not None:
+        return bool(poller.poll(int(timeout_s * 1000)))
+    return bool(select.select([fd], [], [], timeout_s)[0])
+
+
+def _read_usage_lines(pipe, line_queue, name, stop, eof_event=None):
     pending = b""
     def emit(raw):
         try:
@@ -4646,13 +4707,19 @@ def _read_usage_lines(pipe, line_queue, name, stop):
     try:
         fd = pipe.fileno()
         os.set_blocking(fd, False)
+        poller = _make_fd_poller(fd)
         while not stop.is_set():
-            if not select.select([fd], [], [], 0.05)[0]:
+            if not _fd_ready(fd, poller, 0.05):
                 continue
-            raw = os.read(fd, 65536)
+            try:
+                raw = os.read(fd, 65536)
+            except BlockingIOError:
+                continue
             if not raw:
                 if pending:
                     emit(pending)
+                if eof_event is not None:
+                    eof_event.set()
                 line_queue.put((name, "eof", None))
                 return
             pending += raw
@@ -4667,17 +4734,65 @@ def _read_usage_lines(pipe, line_queue, name, stop):
         line_queue.put((name, "error", None))
 
 
-def _read_lines(stdout, line_queue: Queue[str | None], stop: threading.Event | None = None) -> None:
+def _read_lines(
+    stdout,
+    line_queue: Queue[str | None],
+    stop: threading.Event | None = None,
+    eof_event: threading.Event | None = None,
+) -> None:
     if stop is not None and sys.platform != "win32" and hasattr(stdout, "fileno"):
         encoding = getattr(stdout, "encoding", None) or "utf-8"
         decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
-        pending = ""
+        fragments: list[str] = []
+        trailing_cr = False
         eof_reached = False
+
+        def feed(chunk: str, *, final: bool = False) -> None:
+            nonlocal trailing_cr
+            if trailing_cr:
+                if chunk.startswith("\n"):
+                    line_queue.put("".join(fragments) + "\n")
+                    fragments.clear()
+                    chunk = chunk[1:]
+                    trailing_cr = False
+                elif chunk or final:
+                    line_queue.put("".join(fragments) + "\n")
+                    fragments.clear()
+                    trailing_cr = False
+            if chunk:
+                chunk = chunk.replace("\r\n", "\n")
+                if not final and chunk.endswith("\r"):
+                    trailing_cr = True
+                    body = chunk[:-1]
+                else:
+                    body = chunk
+                body = body.replace("\r", "\n")
+                if "\n" in body:
+                    parts = body.split("\n")
+                    fragments.append(parts[0])
+                    line_queue.put("".join(fragments) + "\n")
+                    fragments.clear()
+                    for mid in parts[1:-1]:
+                        line_queue.put(mid + "\n")
+                    if parts[-1]:
+                        fragments.append(parts[-1])
+                elif body:
+                    fragments.append(body)
+            if final:
+                if trailing_cr:
+                    line_queue.put("".join(fragments) + "\n")
+                    fragments.clear()
+                    trailing_cr = False
+                elif fragments:
+                    line_queue.put("".join(fragments))
+                    fragments.clear()
+
         try:
             fd = stdout.fileno()
             os.set_blocking(fd, False)
+            poller = _make_fd_poller(fd)
             while not stop.is_set():
-                if not select.select([fd], [], [], 0.05)[0]:
+                if not _fd_ready(fd, poller, 0.05):
                     continue
                 try:
                     raw = os.read(fd, 65536)
@@ -4686,34 +4801,22 @@ def _read_lines(stdout, line_queue: Queue[str | None], stop: threading.Event | N
                 if not raw:
                     eof_reached = True
                     break
-                pending += decoder.decode(raw)
-                pending = pending.replace("\r\n", "\n")
-                # Preserve a lone trailing CR so a CR/LF split across chunks stays one newline.
-                trailing_cr = pending.endswith("\r")
-                body = pending[:-1] if trailing_cr else pending
-                body = body.replace("\r", "\n")
-                parts = body.split("\n")
-                for line in parts[:-1]:
-                    line_queue.put(line + "\n")
-                pending = parts[-1] + ("\r" if trailing_cr else "")
+                feed(decoder.decode(raw))
             if eof_reached:
-                pending += decoder.decode(b"", final=True)
-                pending = pending.replace("\r\n", "\n").replace("\r", "\n")
-                if pending:
-                    parts = pending.split("\n")
-                    for line in parts[:-1]:
-                        line_queue.put(line + "\n")
-                    if parts[-1]:
-                        line_queue.put(parts[-1])
+                feed(decoder.decode(b"", final=True), final=True)
         except (OSError, ValueError):
-            eof_reached = True
+            eof_reached = False
         finally:
             if eof_reached:
+                if eof_event is not None:
+                    eof_event.set()
                 line_queue.put(None)
         return
     try:
         for line in stdout:
             line_queue.put(line)
+        if eof_event is not None:
+            eof_event.set()
     finally:
         line_queue.put(None)
 
@@ -4842,10 +4945,16 @@ def _cleanup_process_group(process: subprocess.Popen, process_group_id: int | No
 
 
 def _cleanup_descendant_process_group(
-    process_pid: int, process_group_id: int | None, *, reason: str,
+    process_pid: int,
+    process_group_id: int | None,
+    *,
+    reason: str,
+    pipes_closed: Callable[[], bool],
 ) -> dict[str, Any] | None:
     """Terminate surviving descendants in a child's own process group after child exit
-    (agent-harness#2129). Never signals the caller's own process group."""
+    (agent-harness#2129). Caller must keep the leader unreaped until signaling finishes so
+    the PGID cannot be recycled. Uses pipe EOF (not ``killpg(0)``) to detect exit so
+    unreaped zombies never register as live descendants."""
     if process_group_id is None or not hasattr(os, "killpg"):
         return None
     try:
@@ -4871,13 +4980,9 @@ def _cleanup_descendant_process_group(
     evidence["signals_sent"].append("SIGTERM")
     deadline = time.monotonic() + 0.25
     while time.monotonic() < deadline:
-        try:
-            os.killpg(process_group_id, 0)
-        except ProcessLookupError:
+        if pipes_closed():
             evidence["result"] = "terminated"
             return evidence
-        except OSError:
-            break
         time.sleep(0.01)
     try:
         os.killpg(process_group_id, signal.SIGKILL)
@@ -4890,13 +4995,9 @@ def _cleanup_descendant_process_group(
         return evidence
     kill_deadline = time.monotonic() + 0.25
     while time.monotonic() < kill_deadline:
-        try:
-            os.killpg(process_group_id, 0)
-        except ProcessLookupError:
+        if pipes_closed():
             evidence["result"] = "killed"
             return evidence
-        except OSError:
-            break
         time.sleep(0.01)
     evidence["result"] = "cleanup_failed"
     return evidence

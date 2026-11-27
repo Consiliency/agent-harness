@@ -158,6 +158,19 @@ def _proc_alive(pid: int) -> bool:
     return True
 
 
+def _kill_pid_best_effort(marker):
+    import os
+    import signal
+
+    if not marker.exists():
+        return
+    try:
+        pid = int(marker.read_text(encoding="utf-8").strip())
+        os.kill(pid, signal.SIGKILL)
+    except (OSError, ValueError):
+        pass
+
+
 def test_grandchild_holding_stdout_open_past_child_exit_is_bounded_and_cleaned(tmp_path):
     marker = tmp_path / "grandchild.pid"
     script = (
@@ -167,26 +180,29 @@ def test_grandchild_holding_stdout_open_past_child_exit_is_bounded_and_cleaned(t
         f"Path({str(marker)!r}).write_text(str(p.pid), encoding='utf-8')\n"
         "print('child-done', flush=True)\n"
     )
-    started = time.monotonic()
-    result = launcher.launch(
-        _child(script),
-        log_path=tmp_path / "run" / "output.log",
-        timeout_seconds=0.5,
-    )
-    elapsed = time.monotonic() - started
-    assert elapsed < 3.0
-    assert result.returncode == 0
-    assert "child-done" in result.output
-    assert result.drain_incomplete is True
-    assert result.event_metadata()["drain_incomplete"] is True
-    assert result.cleanup_evidence is not None
-    assert result.cleanup_evidence["reason"] == "post_exit_pipe_open"
-    assert result.cleanup_evidence["result"] in {"terminated", "killed"}
-    grandchild_pid = int(marker.read_text(encoding="utf-8"))
-    deadline = time.monotonic() + 1.0
-    while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert not _proc_alive(grandchild_pid)
+    try:
+        started = time.monotonic()
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.5,
+        )
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.5
+        assert result.returncode == 0
+        assert "child-done" in result.output
+        assert result.drain_incomplete is True
+        assert result.event_metadata()["drain_incomplete"] is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["reason"] == "post_exit_pipe_open"
+        assert result.cleanup_evidence["result"] in {"terminated", "killed"}
+        grandchild_pid = int(marker.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
 
 
 def test_grandchild_holding_stdout_open_marks_usage_unknown_and_cleans_group(tmp_path, monkeypatch):
@@ -201,20 +217,79 @@ def test_grandchild_holding_stdout_open_marks_usage_unknown_and_cleans_group(tmp
         f"Path({str(marker)!r}).write_text(str(p.pid), encoding='utf-8')\n"
     )
     spec = synthetic_spec(tmp_path, monkeypatch, tail=tail)
-    started = time.monotonic()
-    result = launcher.launch_with_spec(
-        spec.__class__(**{**spec.__dict__, "launch_timeout_seconds": 0.6}),
-        codex_usage_capture=True,
-    )
-    elapsed = time.monotonic() - started
-    assert elapsed < 3.0
-    assert result.returncode == 0
-    assert result.drain_incomplete is True
-    assert result.jevdrill_usage is None
-    assert result.cleanup_evidence is not None
-    assert result.cleanup_evidence["reason"] == "post_exit_pipe_open"
-    grandchild_pid = int(marker.read_text(encoding="utf-8"))
-    deadline = time.monotonic() + 1.0
-    while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert not _proc_alive(grandchild_pid)
+    try:
+        started = time.monotonic()
+        result = launcher.launch_with_spec(
+            spec.__class__(**{**spec.__dict__, "launch_timeout_seconds": 0.6}),
+            codex_usage_capture=True,
+        )
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0
+        assert result.returncode == 0
+        assert result.drain_incomplete is True
+        assert result.jevdrill_usage is None
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["reason"] == "post_exit_pipe_open"
+        assert result.cleanup_evidence["result"] in {"terminated", "killed"}
+        grandchild_pid = int(marker.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_read_lines_handles_high_fd_large_line_and_errors():
+    import os
+
+    # High fd (>= 1024) must succeed via poll() without FD_SETSIZE ValueError.
+    r_fd, w_fd = os.pipe()
+    high_fd = None
+    try:
+        try:
+            high_fd = os.dup2(r_fd, 1024)
+        except OSError:
+            high_fd = r_fd
+        q: queue.Queue = queue.Queue()
+        stop = threading.Event()
+        eof = threading.Event()
+        payload = ("x" * (2 * 1024 * 1024)) + "\nsecond\n"
+
+        def writer():
+            view = memoryview(payload.encode("utf-8"))
+            sent = 0
+            while sent < len(view):
+                sent += os.write(w_fd, view[sent:sent + 65536])
+            os.close(w_fd)
+
+        t = threading.Thread(target=writer, daemon=True)
+        t.start()
+        fake_stream = type("S", (), {"fileno": lambda self: high_fd, "encoding": "utf-8"})()
+        started = time.monotonic()
+        launcher._read_lines(fake_stream, q, stop, eof)
+        elapsed = time.monotonic() - started
+        t.join(timeout=5)
+        assert eof.is_set()
+        assert elapsed < 2.0
+        first = q.get_nowait()
+        second = q.get_nowait()
+        sentinel = q.get_nowait()
+        assert len(first) == 2 * 1024 * 1024 + 1
+        assert second == "second\n"
+        assert sentinel is None
+    finally:
+        for fd in {r_fd, high_fd}:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    # A reader error must NOT fabricate EOF.
+    err_q: queue.Queue = queue.Queue()
+    err_eof = threading.Event()
+    broken = type("Broken", (), {"fileno": lambda self: -1, "encoding": "utf-8"})()
+    launcher._read_lines(broken, err_q, threading.Event(), err_eof)
+    assert not err_eof.is_set()
+    assert err_q.empty()
