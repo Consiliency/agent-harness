@@ -23,6 +23,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Add an autouse real-`PATH` provider-executable resolution guard in
+  `test_panel_invoker.py`, stub `board_preflight_requalify` and `_publish_seat_modes`
+  across the remaining sanctioned board-invocation tests, and inject a hermetic
+  compatibility matrix and isolated `base_env` so `test_panel_invoker.py` fails fast
+  on any regression instead of resolving host provider binaries or running live `agy`
+  qualification (agent-harness#2054).
 - Give `test_openshell_backend.py`'s `pipeline` fixture and
   `test_untrusted_or_lost_result_refused_no_replay` load-proof `ANSWER_BOUND_S` and
   placement deadline headroom (and assert `not decision.placement._launch_failed`) so

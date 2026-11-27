@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import hashlib
 import json
+import os
+import shutil
 import pytest
 
 from test_seat_resource_caps import isolated as isolated, memory_host as memory_host
@@ -25,6 +27,491 @@ from phase_loop_runtime.panel_invoker import (
     invoke_panel_request,
     panel_leg_timeout_seconds,
 )
+
+
+def _host_path_dirs(env_path: str | None = None) -> frozenset[str]:
+    """Normalized absolute directories present on the host's real PATH / os.defpath."""
+    raw = os.environ.get("PATH", "") if env_path is None else env_path
+    dirs: set[str] = set()
+    for source in (raw, os.defpath):
+        if not source:
+            continue
+        for raw_entry in source.split(os.pathsep):
+            entry = os.getcwd() if raw_entry == "" else raw_entry
+            dirs.add(os.path.abspath(entry))
+            dirs.add(os.path.realpath(entry))
+    return frozenset(dirs)
+
+
+def _provider_executable_names() -> frozenset[str]:
+    from phase_loop_runtime import panel_invoker as pi, seat_subject
+
+    with seat_subject._PROVIDER_LOCK:
+        registered = tuple(seat_subject._PROVIDER_EXECUTABLES.values())
+    return frozenset(
+        name.lower() for name in (*pi._PROVIDER_BASENAMES, *registered)
+    )
+
+
+def _dir_in_host_dirs(directory: str, host_dirs: frozenset[str]) -> bool:
+    return (
+        os.path.abspath(directory) in host_dirs
+        or os.path.realpath(directory) in host_dirs
+    )
+
+
+def _split_unnormalized_parts(raw_str: str) -> tuple[str, list[str]]:
+    """Split ``raw_str`` into ``(anchor, parts)`` without collapsing ``..`` before symlink resolution."""
+    if os.path.isabs(raw_str):
+        anchor = Path(raw_str).anchor or os.sep
+        tail = raw_str[len(anchor):]
+        return anchor, [part for part in tail.split(os.sep) if part]
+    cwd = os.getcwd()
+    anchor = Path(cwd).anchor or os.sep
+    cwd_parts = [part for part in cwd[len(anchor):].split(os.sep) if part]
+    rel_parts = [part for part in raw_str.split(os.sep) if part]
+    return anchor, cwd_parts + rel_parts
+
+
+def _walk_path_hops(
+    candidate: Path | str,
+    *,
+    is_dir: bool = False,
+    max_hops: int = 40,
+) -> tuple[set[str], set[str]]:
+    """Resolve ``candidate`` component-by-component, preserving symlinks before ``..``.
+
+    ``touched_dirs`` records only directories where an entry was actually looked up or
+    traversed via a symlink hop (the final search directory / leaf parent directory, plus
+    the containing directory of each symlink encountered) — never ordinary non-symlink
+    ancestor directories above an isolated subdirectory.
+    """
+    anchor, remaining = _split_unnormalized_parts(os.fsdecode(candidate))
+    resolved = anchor
+    touched_dirs: set[str] = set()
+    touched_leaf_names: set[str] = set()
+    hops = 0
+
+    while remaining:
+        part = remaining.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            resolved = os.path.dirname(resolved)
+            continue
+        next_path = os.path.join(resolved, part)
+        is_leaf = not remaining
+        if is_leaf and not is_dir:
+            touched_dirs.add(resolved)
+            touched_leaf_names.add(part.lower())
+        if os.path.islink(next_path) and hops < max_hops:
+            hops += 1
+            # The symlink entry itself resides in ``resolved``.
+            touched_dirs.add(resolved)
+            try:
+                target = os.readlink(next_path)
+            except OSError:
+                resolved = next_path
+                continue
+            target_path = Path(target)
+            if is_leaf and not is_dir and target_path.name:
+                touched_leaf_names.add(target_path.name.lower())
+            if os.path.isabs(target):
+                target_anchor = target_path.anchor or os.sep
+                resolved = target_anchor
+                target_parts = [p for p in target[len(target_anchor):].split(os.sep) if p]
+                remaining = target_parts + remaining
+            else:
+                target_parts = [p for p in target.split(os.sep) if p]
+                remaining = target_parts + remaining
+        else:
+            resolved = next_path
+
+    if is_dir:
+        touched_dirs.add(resolved)
+        touched_dirs.add(os.path.realpath(resolved))
+    else:
+        final_real = os.path.realpath(resolved)
+        touched_dirs.add(os.path.dirname(resolved))
+        touched_dirs.add(os.path.dirname(final_real))
+        if os.path.basename(final_real):
+            touched_leaf_names.add(os.path.basename(final_real).lower())
+    return touched_dirs, touched_leaf_names
+
+
+def _path_touches_host_dirs(
+    candidate: Path | str,
+    host_dirs: frozenset[str],
+    *,
+    is_dir: bool = False,
+) -> bool:
+    """Return True if any traversed parent/directory component or symlink hop lies in ``host_dirs``."""
+    touched_dirs, _ = _walk_path_hops(candidate, is_dir=is_dir)
+    return any(_dir_in_host_dirs(directory, host_dirs) for directory in touched_dirs)
+
+
+def _path_links_provider_through_host_dirs(
+    candidate: Path | str,
+    host_dirs: frozenset[str],
+    provider_names: frozenset[str],
+) -> bool:
+    """Return True if ``candidate`` touches ``host_dirs`` and names a provider at any leaf hop."""
+    touched_dirs, touched_leaf_names = _walk_path_hops(candidate, is_dir=False)
+    return bool(
+        (touched_leaf_names & provider_names)
+        and any(_dir_in_host_dirs(directory, host_dirs) for directory in touched_dirs)
+    )
+
+
+def _install_real_path_provider_guard(
+    monkeypatch,
+    *,
+    host_dirs: frozenset[str] | None = None,
+) -> None:
+    """Install the real-PATH provider resolution guard (agent-harness#2054)."""
+    from phase_loop_runtime import panel_invoker as pi, seat_subject
+
+    blocked_dirs = _host_path_dirs() if host_dirs is None else host_dirs
+    real_which = getattr(shutil.which, "_real_which", shutil.which)
+    real_resolve_subject = getattr(
+        seat_subject.resolve_seat_subject,
+        "_real_resolve_seat_subject",
+        seat_subject.resolve_seat_subject,
+    )
+    real_wrapper_lines = getattr(
+        seat_subject._wrapper_lines,
+        "_real_wrapper_lines",
+        seat_subject._wrapper_lines,
+    )
+    real_provider_source = getattr(
+        pi._seat_provider_source,
+        "_real_seat_provider_source",
+        pi._seat_provider_source,
+    )
+    real_shell_wrapper_target = getattr(
+        pi._shell_wrapper_target,
+        "_real_shell_wrapper_target",
+        pi._shell_wrapper_target,
+    )
+    real_native_provider_target = getattr(
+        pi._native_provider_target,
+        "_real_native_provider_target",
+        pi._native_provider_target,
+    )
+    real_frontdoor_target = getattr(
+        pi._frontdoor_target,
+        "_real_frontdoor_target",
+        pi._frontdoor_target,
+    )
+
+    def _guarded_which(cmd, mode=os.F_OK | os.X_OK, path=None):
+        text = os.fsdecode(cmd)
+        basename = Path(text).name.lower()
+        provider_names = _provider_executable_names()
+        dirname = os.path.dirname(text)
+        if dirname:
+            if basename in provider_names and _path_touches_host_dirs(text, blocked_dirs):
+                pytest.fail(
+                    f"provider executable {text!r} resolved from real PATH during "
+                    "test_panel_invoker (agent-harness#2054)"
+                )
+            if os.path.lexists(text) and _path_links_provider_through_host_dirs(
+                text, blocked_dirs, provider_names
+            ):
+                pytest.fail(
+                    f"provider executable alias {text!r} resolved through real PATH during "
+                    "test_panel_invoker (agent-harness#2054)"
+                )
+        else:
+            effective_path = (
+                os.environ.get("PATH", os.defpath)
+                if path is None
+                else os.fsdecode(path)
+            )
+            if effective_path:
+                for raw_entry in effective_path.split(os.pathsep):
+                    entry = os.getcwd() if raw_entry == "" else raw_entry
+                    if basename in provider_names and _path_touches_host_dirs(
+                        entry, blocked_dirs, is_dir=True
+                    ):
+                        pytest.fail(
+                            f"provider executable {text!r} searched in real PATH directory "
+                            f"{entry!r} during test_panel_invoker (agent-harness#2054)"
+                        )
+                    candidate = os.path.join(entry, text)
+                    if os.path.lexists(candidate):
+                        if basename in provider_names and _path_touches_host_dirs(
+                            candidate, blocked_dirs
+                        ):
+                            pytest.fail(
+                                f"provider executable {text!r} links through real PATH at "
+                                f"{candidate!r} during test_panel_invoker (agent-harness#2054)"
+                            )
+                        if _path_links_provider_through_host_dirs(
+                            candidate, blocked_dirs, provider_names
+                        ):
+                            pytest.fail(
+                                f"provider executable alias {text!r} links through real PATH at "
+                                f"{candidate!r} during test_panel_invoker (agent-harness#2054)"
+                            )
+        found = real_which(cmd, mode=mode, path=path)
+        if found is not None:
+            found_text = os.fsdecode(found)
+            if (
+                basename in provider_names and _path_touches_host_dirs(found_text, blocked_dirs)
+            ) or _path_links_provider_through_host_dirs(found_text, blocked_dirs, provider_names):
+                pytest.fail(
+                    f"provider executable {text!r} resolved to real PATH binary {found!r} "
+                    "during test_panel_invoker (agent-harness#2054)"
+                )
+        return found
+
+    def _guarded_wrapper_lines(path):
+        lines, trusted = real_wrapper_lines(path)
+        if lines:
+            last = lines[-1]
+            match = seat_subject._SHELL_WRAPPER_EXEC.fullmatch(last)
+            if match is not None and _path_touches_host_dirs(match.group(1), blocked_dirs):
+                pytest.fail(
+                    f"provider wrapper target {match.group(1)!r} resolved into real PATH during "
+                    "test_panel_invoker (agent-harness#2054)"
+                )
+        return lines, trusted
+
+    def _guarded_resolve_subject(leg, env):
+        subject = real_resolve_subject(leg, env)
+        if subject.subject_path is not None and _path_touches_host_dirs(
+            subject.subject_path, blocked_dirs
+        ):
+            pytest.fail(
+                f"seat subject {leg!r} resolved to real PATH binary {subject.subject_path!r} "
+                "during test_panel_invoker (agent-harness#2054)"
+            )
+        return subject
+
+    def _guarded_native_provider_target(target, provider, *args, **kwargs):
+        if _path_touches_host_dirs(target, blocked_dirs):
+            pytest.fail(
+                f"provider launcher target {target!r} resolved through real PATH during "
+                "test_panel_invoker (agent-harness#2054)"
+            )
+        resolved = real_native_provider_target(target, provider, *args, **kwargs)
+        if resolved is not None and _path_touches_host_dirs(resolved, blocked_dirs):
+            pytest.fail(
+                f"provider launcher target {target!r} resolved to real PATH binary {resolved!r} "
+                "during test_panel_invoker (agent-harness#2054)"
+            )
+        return resolved
+
+    def _guarded_frontdoor_target(line, provider, *args, **kwargs):
+        resolved = real_frontdoor_target(line, provider, *args, **kwargs)
+        if resolved is not None and _path_touches_host_dirs(resolved, blocked_dirs):
+            pytest.fail(
+                f"provider frontdoor target {resolved!r} resolved through real PATH during "
+                "test_panel_invoker (agent-harness#2054)"
+            )
+        return resolved
+
+    def _guarded_shell_wrapper_target(source, name=None):
+        target = real_shell_wrapper_target(source, name)
+        if target is not None and _path_touches_host_dirs(target, blocked_dirs):
+            pytest.fail(
+                f"provider shell wrapper {source!r} targeted real PATH binary {target!r} "
+                "during test_panel_invoker (agent-harness#2054)"
+            )
+        return target
+
+    def _guarded_provider_source(command, env):
+        cmd_text = os.fsdecode(command)
+        if os.path.dirname(cmd_text) and _path_touches_host_dirs(cmd_text, blocked_dirs):
+            pytest.fail(
+                f"provider source {command!r} resolved through real PATH during "
+                "test_panel_invoker (agent-harness#2054)"
+            )
+        harness, source = real_provider_source(command, env)
+        if source is not None and _path_touches_host_dirs(source, blocked_dirs):
+            pytest.fail(
+                f"provider source {command!r} resolved to real PATH binary {source!r} "
+                "during test_panel_invoker (agent-harness#2054)"
+            )
+        return harness, source
+
+    _guarded_which._real_which = real_which
+    _guarded_wrapper_lines._real_wrapper_lines = real_wrapper_lines
+    _guarded_resolve_subject._real_resolve_seat_subject = real_resolve_subject
+    _guarded_native_provider_target._real_native_provider_target = real_native_provider_target
+    _guarded_frontdoor_target._real_frontdoor_target = real_frontdoor_target
+    _guarded_shell_wrapper_target._real_shell_wrapper_target = real_shell_wrapper_target
+    _guarded_provider_source._real_seat_provider_source = real_provider_source
+
+    monkeypatch.setattr(shutil, "which", _guarded_which)
+    monkeypatch.setattr(seat_subject, "_wrapper_lines", _guarded_wrapper_lines)
+    monkeypatch.setattr(seat_subject, "resolve_seat_subject", _guarded_resolve_subject)
+    monkeypatch.setattr(pi, "_native_provider_target", _guarded_native_provider_target)
+    monkeypatch.setattr(pi, "_frontdoor_target", _guarded_frontdoor_target)
+    monkeypatch.setattr(pi, "_shell_wrapper_target", _guarded_shell_wrapper_target)
+    monkeypatch.setattr(pi, "_seat_provider_source", _guarded_provider_source)
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_path_provider_resolution(monkeypatch):
+    """Fail fast if any test in test_panel_invoker resolves a provider CLI from real PATH.
+
+    Catches unstubbed preflight/resolution regressions (agent-harness#2054) both on
+    developer hosts where provider CLIs are installed and on hosted CI where they are
+    absent, while still permitting isolated fake binaries in temporary directories.
+    """
+    _install_real_path_provider_guard(monkeypatch)
+
+
+def _hermetic_base_env(root: Path) -> dict[str, str]:
+    """Isolated environment whose PATH contains only an empty test directory."""
+    empty_bin = root / "empty-bin"
+    empty_bin.mkdir(exist_ok=True)
+    return {"PATH": str(empty_bin)}
+
+
+def _hermetic_matrix():
+    """Compatibility matrix with an injected probe that never consults ambient PATH."""
+    from phase_loop_runtime.advisor_board.matrix import default_matrix
+
+    return default_matrix(env={}, probe=lambda _cli: True)
+
+
+def test_real_path_provider_resolution_guard_trips_and_allows_isolated_bin(tmp_path, monkeypatch):
+    """agent-harness#2054: guard fails on real-PATH provider lookups even if binary is absent."""
+    from phase_loop_runtime import panel_invoker as pi, seat_subject
+
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy")
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=os.environ.get("PATH", os.defpath))
+    host_dir = next(d for d in os.defpath.split(os.pathsep) if d)
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which(str(Path(host_dir) / "agy"))
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        seat_subject.resolve_seat_subject("gemini", {"PATH": os.environ.get("PATH", os.defpath)})
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        pi.board_preflight_requalify(DEFAULT_BOARD)
+    fake_bin = tmp_path / "isolated-bin"
+    fake_bin.mkdir()
+    fake_agy = fake_bin / "agy"
+    fake_agy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_agy.chmod(0o700)
+    assert shutil.which("agy", path=str(fake_bin)) == str(fake_agy)
+    # Effective PATH via os.environ["PATH"] matches explicit path= for isolated dirs.
+    with monkeypatch.context() as mp:
+        mp.setenv("PATH", str(fake_bin))
+        assert shutil.which("agy") == str(fake_agy)
+    # Non-provider executables remain resolvable as usual.
+    assert shutil.which("sh") is not None
+
+
+def test_real_path_provider_resolution_guard_catches_hops_wrappers_cwd_and_late_registration(
+    tmp_path, monkeypatch
+):
+    """agent-harness#2054: guard catches parent/leaf symlink hops, renamed aliases, wrappers, empty PATH entries, and late registrations."""
+    from phase_loop_runtime import panel_invoker as pi, seat_subject
+
+    fake_host_bin = tmp_path / "fake-host-bin"
+    fake_host_bin.mkdir()
+    opt_dir = tmp_path / "opt-agy"
+    opt_dir.mkdir()
+    versioned_agy = opt_dir / "agy"
+    versioned_agy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    versioned_agy.chmod(0o700)
+    host_hop = fake_host_bin / "agy"
+    host_hop.symlink_to(versioned_agy)
+
+    # Parent directory symlink chain: isolated-parent/bin -> fake-host-bin/link -> opt-agy
+    host_dir_link = fake_host_bin / "link"
+    host_dir_link.symlink_to(opt_dir)
+    isolated_parent = tmp_path / "isolated-parent"
+    isolated_parent.mkdir()
+    parent_hop_bin = isolated_parent / "bin"
+    parent_hop_bin.symlink_to(host_dir_link)
+
+    isolated_bin = tmp_path / "isolated-bin"
+    isolated_bin.mkdir()
+    (isolated_bin / "agy").symlink_to(host_hop)
+    (isolated_bin / "renamed-agy").symlink_to(host_hop)
+    (isolated_bin / "renamed-dangling").symlink_to(fake_host_bin / "codex")
+
+    dangling_bin = tmp_path / "dangling-bin"
+    dangling_bin.mkdir()
+    (dangling_bin / "agy").symlink_to(fake_host_bin / "missing-agy")
+
+    wrapper_bin = tmp_path / "wrapper-bin"
+    wrapper_bin.mkdir()
+    wrapper_agy = wrapper_bin / "agy"
+    wrapper_agy.write_text(f'#!/bin/sh\nexec {host_hop} "$@"\n', encoding="utf-8")
+    wrapper_agy.chmod(0o700)
+
+    trailing_cwd = tmp_path / "trailing-cwd"
+    trailing_cwd.mkdir()
+    cwd_agy = trailing_cwd / "agy"
+    cwd_agy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    cwd_agy.chmod(0o700)
+    monkeypatch.chdir(trailing_cwd)
+
+    _install_real_path_provider_guard(
+        monkeypatch,
+        host_dirs=_host_path_dirs(f"{fake_host_bin}:")
+        | {os.path.abspath(fake_host_bin), os.path.realpath(fake_host_bin)},
+    )
+
+    # 1. Intermediate leaf symlink hop through a host PATH dir to an image outside PATH.
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=str(isolated_bin))
+    # 2. Parent-directory symlink chain through a host PATH dir (both which and resolve_seat_subject).
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=str(parent_hop_bin))
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        seat_subject.resolve_seat_subject("gemini", {"PATH": str(parent_hop_bin)})
+    # 3. Renamed symlinks (live and dangling) pointing to a provider through a host PATH dir.
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("renamed-agy", path=str(isolated_bin))
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("renamed-dangling", path=str(isolated_bin))
+    # 4. Dangling symlink pointing into a host PATH dir (real shutil.which would return None).
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=str(dangling_bin))
+    # 5. Temporary shell launcher exec-ing a host PATH symlink via both resolve_seat_subject
+    #    and direct _seat_provider_source.
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        seat_subject.resolve_seat_subject("gemini", {"PATH": str(wrapper_bin)})
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        pi._seat_provider_source(str(wrapper_agy), {"PATH": str(wrapper_bin)})
+    # 6. Original PATH with trailing ':' captures cwd as a host search directory.
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=":")
+    # 7. Empty PATH components also catch explicit chdir into a host PATH dir.
+    monkeypatch.chdir(fake_host_bin)
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=":")
+    # 8. Provider registered after fixture setup is still guarded dynamically.
+    monkeypatch.setitem(seat_subject._PROVIDER_EXECUTABLES, "custom", "custom-cli")
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("custom-cli", path=str(fake_host_bin))
+
+    # 9. Symlink followed by '..' resolves symlink before '..' (both live and missing target).
+    nested_dir = fake_host_bin / "nested"
+    nested_dir.mkdir()
+    nested_agy = nested_dir / "agy"
+    nested_agy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    nested_agy.chmod(0o700)
+    alias_to_nested = tmp_path / "alias-to-nested"
+    alias_to_nested.symlink_to(nested_dir)
+    # Ordinary subdirectory under a host PATH ancestor is allowed when searched directly.
+    assert shutil.which("agy", path=str(nested_dir)) == str(nested_agy)
+    # Traversing alias/.. lands in fake_host_bin and must be rejected (live and missing).
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=f"{alias_to_nested}{os.sep}..")
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which(f"{alias_to_nested}{os.sep}..{os.sep}agy")
+    host_hop.unlink()
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which(f"{alias_to_nested}{os.sep}..{os.sep}agy")
 
 
 def _install_firstseat_supplier_double(monkeypatch):
@@ -401,9 +888,13 @@ def test_seats_firstseat_exec_record_dependency_probe(monkeypatch):
 
 
 @pytest.mark.parametrize("missing", [None, "claude", "gemini", "grok", "codex", "all"])
-def test_seats_firstseat_exec_record_composed_board(tmp_path, missing):
-    from phase_loop_runtime import panel_invoker as pi
+def test_seats_firstseat_exec_record_composed_board(tmp_path, monkeypatch, missing):
+    from phase_loop_runtime import agy_qualification, panel_invoker as pi
     from phase_loop_runtime.advisor_board.composition import compose_review_board_report
+    monkeypatch.setattr(pi, "board_preflight_requalify", lambda *a, **kw: None)
+    monkeypatch.setattr(pi, "_publish_seat_modes", lambda *a, **kw: ())
+    monkeypatch.setattr(agy_qualification, "requalify_once",
+        lambda *a, **kw: pytest.fail("live Agy qualification in composed-board test"))
     composition = compose_review_board_report(is_available=lambda v: missing != "all" and v != missing,
                                                auth_ok=lambda v: True)
     outcome = composition.policy_outcome("plan")
@@ -415,11 +906,13 @@ def test_seats_firstseat_exec_record_composed_board(tmp_path, missing):
         assert outcome.status == "policy_refused" and outcome.fix
         with pytest.raises(pi.PresidentPolicyError):
             invoke_sanctioned_review_transport(composition.board, "fixture", spawn=spawn,
+                base_env=_hermetic_base_env(tmp_path), matrix=_hermetic_matrix(),
                 landing_tier="plan", president_invoke=deferring_president)
         assert not launched
     else:
         assert outcome.status == "admitted"
         result = invoke_sanctioned_review_transport(composition.board, "fixture", spawn=spawn,
+            base_env=_hermetic_base_env(tmp_path), matrix=_hermetic_matrix(),
             landing_tier="plan", president_invoke=deferring_president, max_concurrency=1)
         assert set(launched) == {"claude", "gemini", "codex", "grok"}
         assert result.legs
@@ -432,6 +925,7 @@ def test_seats_firstseat_exec_record_board_returns(tmp_path, monkeypatch, failur
     # Live Agy qualification would run inside the guard's authorization window
     # (agent-harness#2142); the records under test never depend on it.
     monkeypatch.setattr(panel_invoker, "board_preflight_requalify", lambda *a, **kw: None)
+    monkeypatch.setattr(panel_invoker, "_publish_seat_modes", lambda *a, **kw: ())
     monkeypatch.setattr(agy_qualification, "requalify_once",
         lambda *a, **kw: pytest.fail("live Agy qualification in record test"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -441,6 +935,7 @@ def test_seats_firstseat_exec_record_board_returns(tmp_path, monkeypatch, failur
             raise ValueError("fixture text omitted from records")
         return "OK", "AGREE"
     result = invoke_sanctioned_review_transport(composed.board, "fixture", spawn=spawn,
+        base_env=_hermetic_base_env(tmp_path), matrix=_hermetic_matrix(),
         landing_tier="plan", president_invoke=deferring_president, max_concurrency=1)
     records = list((tmp_path / "state").rglob("leg-*.json"))
     assert len(records) == len(result.legs) == 4
@@ -2145,7 +2640,15 @@ class PanelInvokerTest(unittest.TestCase):
             seen[leg] = artifact
             return ("ok", "AGREE")
 
-        with TemporaryDirectory() as td:
+        with (
+            TemporaryDirectory() as td,
+            patch("phase_loop_runtime.panel_invoker.board_preflight_requalify", return_value=None),
+            patch("phase_loop_runtime.panel_invoker._publish_seat_modes", return_value=()),
+            patch(
+                "phase_loop_runtime.agy_qualification.requalify_once",
+                side_effect=lambda *a, **kw: pytest.fail("live Agy qualification in board-ref test"),
+            ),
+        ):
             bundle = Path(td) / "bundle.md"
             bundle.write_text("FROM_BOARD_REF", encoding="utf-8")
             ref = Path(td) / "private.txt"
@@ -2156,6 +2659,8 @@ class PanelInvokerTest(unittest.TestCase):
                 artifact_ref=str(bundle),
                 context_refs=[str(ref)],
                 spawn=spawn,
+                base_env=_hermetic_base_env(Path(td)),
+                matrix=_hermetic_matrix(),
                 landing_tier="production_code",
                 president_invoke=deferring_president,
             )
@@ -2170,11 +2675,22 @@ class PanelInvokerTest(unittest.TestCase):
             seen_timeouts[leg] = kwargs.get("timeout_s")
             return ("OK", "AGREE")
 
-        with patch("phase_loop_runtime.panel_invoker._default_spawn_via_provider", side_effect=spawn):
+        with (
+            TemporaryDirectory() as td,
+            patch("phase_loop_runtime.panel_invoker.board_preflight_requalify", return_value=None),
+            patch("phase_loop_runtime.panel_invoker._publish_seat_modes", return_value=()),
+            patch(
+                "phase_loop_runtime.agy_qualification.requalify_once",
+                side_effect=lambda *a, **kw: pytest.fail("live Agy qualification in timeout-override test"),
+            ),
+            patch("phase_loop_runtime.panel_invoker._default_spawn_via_provider", side_effect=spawn),
+        ):
             invoke_sanctioned_review_transport(
                 DEFAULT_BOARD,
                 "ARTIFACT",
                 timeouts_by_leg={"gemini": 137},
+                base_env=_hermetic_base_env(Path(td)),
+                matrix=_hermetic_matrix(),
                 max_concurrency=1,
                 landing_tier="production_code",
                 president_invoke=deferring_president,
@@ -2248,7 +2764,7 @@ def test_seat_memory_survives_board_verdict_paths(
 ):
     from dataclasses import replace
     from threading import Event
-    from phase_loop_runtime import panel_invoker as pi, seat_resource_caps as caps
+    from phase_loop_runtime import agy_qualification, panel_invoker as pi, seat_resource_caps as caps
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
     from harden_tdd_guard import invoke_sanctioned_board_control
     from test_seat_resource_caps import _memory_readings
@@ -2262,6 +2778,11 @@ def test_seat_memory_survives_board_verdict_paths(
     monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda *_args: (True, ""))
     monkeypatch.setattr(pi, "board_preflight_requalify", lambda *args, **kwargs: None)
     monkeypatch.setattr(pi, "_preflight_gemini_heartbeat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        agy_qualification,
+        "requalify_once",
+        lambda *args, **kwargs: pytest.fail("live Agy qualification in seat-memory test"),
+    )
     body_done = Event()
     observe = pi._ReviewMonitor.observe
 
@@ -2309,6 +2830,7 @@ def test_seat_memory_survives_board_verdict_paths(
     monitored = outcome in {"cancelled", "monitor_failed", "body_oserror"}
     result = invoke_sanctioned_board_control(
         board, "fixture prompt", spawn=spawn, stream_dir=records,
+        base_env=_hermetic_base_env(tmp_path), matrix=_hermetic_matrix(),
         cancel_event=cancel, max_concurrency=1, **({"monitoring_policy": "heartbeat_only"}
                                                  if monitored else {}),
     )
