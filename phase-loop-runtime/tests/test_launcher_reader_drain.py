@@ -2273,14 +2273,18 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
             os.close(w3)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipe stdout test")
 def test_live_stdout_streaming_stops_when_deadline_expires_between_chunks(tmp_path):
     """Deterministic fake-clock test: synchronize on leader exit, continuously drain a
     4 KiB stdout pipe so the sink stays writable after chunk 1, and verify that expiring
     the post-exit deadline after chunk 1 stops live streaming while full output is captured."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux F_SETPIPE_SZ test")
     import fcntl
     import json
     import os
+
+    if not hasattr(fcntl, "F_SETPIPE_SZ"):
+        pytest.skip("Linux F_SETPIPE_SZ test")
 
     report = tmp_path / "chunk_deadline.json"
     log_path = tmp_path / "chunk_deadline.log"
@@ -2356,9 +2360,11 @@ def test_live_stdout_streaming_stops_when_deadline_expires_between_chunks(tmp_pa
                 break
             displayed.extend(chunk)
     reader = threading.Thread(target=_drain_reader, daemon=True)
+    reader_started = False
     try:
         fcntl.fcntl(w, fcntl.F_SETPIPE_SZ, 4096)
         reader.start()
+        reader_started = True
         env = dict(os.environ)
         env.pop("PYTHONUNBUFFERED", None)
         env["PYTHONPATH"] = os.pathsep.join(sys.path)
@@ -2379,7 +2385,8 @@ def test_live_stdout_streaming_stops_when_deadline_expires_between_chunks(tmp_pa
     finally:
         if w >= 0:
             os.close(w)
-        reader.join(timeout=1.0)
+        if reader_started:
+            reader.join(timeout=1.0)
         os.close(r)
 
 
