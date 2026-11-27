@@ -8,9 +8,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
-- Jailed Claude TUI legs now read the selected Claude Code version from sibling
-  `package.json` metadata without executing the binary, recording it (or `unknown`) in
-  content-free leg diagnostics and board records (agent-harness#2170).
+- Jailed Claude TUI legs now read the selected Claude Code version from verified
+  managed `package.json` metadata without executing the binary, recording it (or
+  `unknown`) in content-free leg diagnostics and board records (agent-harness#2170).
 
 ## [0.7.47] - 2026-11-26
 

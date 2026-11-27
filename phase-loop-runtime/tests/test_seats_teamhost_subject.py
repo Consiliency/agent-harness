@@ -742,7 +742,11 @@ def test_managed_claude_subject_reads_package_json_version_without_executing(
     release, native = _release(releases)
     pkg = native.parent / "package.json"
     pkg.write_text(
-        json.dumps({"name": "@anthropic-ai/claude-code-linux-x64", "version": "2.1.331"}),
+        json.dumps({
+            "name": "@anthropic-ai/claude-code-linux-x64",
+            "version": "2.1.331",
+            "files": [native.name],
+        }),
         encoding="utf-8",
     )
     pkg.chmod(0o644)
@@ -761,7 +765,10 @@ def test_managed_claude_subject_reads_package_json_version_without_executing(
     assert subject.provider_version == "2.1.331"
 
 
-@pytest.mark.parametrize("case", ["missing", "symlink", "malformed", "invalid_value", "oversized"])
+@pytest.mark.parametrize("case", [
+    "missing", "symlink", "malformed", "invalid_value", "prerelease", "empty_suffix",
+    "oversized", "wrong_package", "unlisted_binary",
+])
 def test_claude_subject_version_falls_back_to_unknown_without_failing(
     managed_fs, tmp_path, case
 ):
@@ -770,16 +777,70 @@ def test_claude_subject_version_falls_back_to_unknown_without_failing(
     pkg = native.parent / "package.json"
     if case == "symlink":
         target = tmp_path / "external-package.json"
-        target.write_text('{"version": "2.1.331"}', encoding="utf-8")
+        target.write_text(
+            json.dumps({
+                "name": "@anthropic-ai/claude-code-linux-x64",
+                "version": "2.1.331",
+                "files": [native.name],
+            }),
+            encoding="utf-8",
+        )
         pkg.symlink_to(target)
     elif case == "malformed":
         pkg.write_text("{not-json", encoding="utf-8")
         pkg.chmod(0o644)
     elif case == "invalid_value":
-        pkg.write_text(json.dumps({"version": "2.1.331 private-secret"}), encoding="utf-8")
+        pkg.write_text(
+            json.dumps({
+                "name": "@anthropic-ai/claude-code-linux-x64",
+                "version": "2.1.331 private-secret",
+                "files": [native.name],
+            }),
+            encoding="utf-8",
+        )
+        pkg.chmod(0o644)
+    elif case == "prerelease":
+        pkg.write_text(
+            json.dumps({
+                "name": "@anthropic-ai/claude-code-linux-x64",
+                "version": "2.1.331-rc.1",
+                "files": [native.name],
+            }),
+            encoding="utf-8",
+        )
+        pkg.chmod(0o644)
+    elif case == "empty_suffix":
+        pkg.write_text(
+            json.dumps({
+                "name": "@anthropic-ai/claude-code-linux-x64",
+                "version": "2.1.331-..",
+                "files": [native.name],
+            }),
+            encoding="utf-8",
+        )
         pkg.chmod(0o644)
     elif case == "oversized":
-        pkg.write_text('{"version": "2.1.331", "pad": "' + ("x" * 70_000) + '"}', encoding="utf-8")
+        pkg.write_text(
+            '{"name": "@anthropic-ai/claude-code-linux-x64", "files": ["claude"], '
+            '"version": "2.1.331", "pad": "' + ("x" * 70_000) + '"}',
+            encoding="utf-8",
+        )
+        pkg.chmod(0o644)
+    elif case == "wrong_package":
+        pkg.write_text(
+            json.dumps({"name": "unrelated-pkg", "version": "2.1.331", "files": [native.name]}),
+            encoding="utf-8",
+        )
+        pkg.chmod(0o644)
+    elif case == "unlisted_binary":
+        pkg.write_text(
+            json.dumps({
+                "name": "@anthropic-ai/claude-code-linux-x64",
+                "version": "2.1.331",
+                "files": ["other-binary"],
+            }),
+            encoding="utf-8",
+        )
         pkg.chmod(0o644)
     door = _frontdoor(tmp_path / f"bin-{case}", release, native)
     _pin(pin, release.name)
@@ -790,15 +851,22 @@ def test_claude_subject_version_falls_back_to_unknown_without_failing(
     assert subject.provider_version == "unknown"
 
 
-def test_standalone_claude_subject_reads_parent_package_json_for_bin_layout(
+def test_standalone_claude_subject_records_unknown_without_managed_provenance(
     managed_fs, tmp_path
 ):
     _root, _releases, _pin_path = managed_fs
     pkg_root = tmp_path / "claude-pkg"
     exe = _exe(pkg_root / "bin/claude", b"standalone")
-    (pkg_root / "package.json").write_text('{"version": "2.1.330-rc.1"}', encoding="utf-8")
+    (pkg_root / "package.json").write_text(
+        json.dumps({
+            "name": "@anthropic-ai/claude-code",
+            "version": "2.1.330",
+            "bin": {"claude": "bin/claude"},
+        }),
+        encoding="utf-8",
+    )
 
     subject = seat_subject.resolve_seat_subject("claude", {"PATH": str(exe.parent)})
 
     assert subject.source == "standalone"
-    assert subject.provider_version == "2.1.330-rc.1"
+    assert subject.provider_version == "unknown"

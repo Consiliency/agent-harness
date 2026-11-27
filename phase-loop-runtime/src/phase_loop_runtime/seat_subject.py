@@ -44,7 +44,10 @@ _MANAGED_POLICY_ID = "phase-loop-seat"
 _MANAGED_POLICY_VERSION = "1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _LEG = re.compile(r"^[a-z][a-z0-9-]*$")
-_CLAUDE_CODE_VERSION = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,31})?")
+_CLAUDE_CODE_VERSION = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}")
+_CLAUDE_PACKAGE_NAME = re.compile(
+    r"@anthropic-ai/claude-code(?:-(?:linux|darwin|win32)-(?:x64|arm64)(?:-musl)?)?"
+)
 _PACKAGE_JSON_MAX_BYTES = 65_536
 _FRONTDOOR_PREFIX = "exec /usr/bin/python3 -I "
 _SHELL_WRAPPER_EXPORT = re.compile(
@@ -85,43 +88,53 @@ def normalize_claude_code_version(value: object) -> str:
     return "unknown"
 
 
-def _read_package_json(path: Path, *, managed: bool) -> bytes:
-    if managed:
-        descriptor = _open_managed_file(path)
-        try:
-            return _read_stable(descriptor, _PACKAGE_JSON_MAX_BYTES, code="package_metadata")
-        finally:
-            os.close(descriptor)
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0)
-    descriptor = os.open(path, flags)
+def _package_owns_executable(data: dict, pkg_dir: Path, selected: Path) -> bool:
+    name = data.get("name")
+    if type(name) is not str or not _CLAUDE_PACKAGE_NAME.fullmatch(name):
+        return False
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > _PACKAGE_JSON_MAX_BYTES:
-            raise OSError("unusable package.json")
-        raw = os.read(descriptor, _PACKAGE_JSON_MAX_BYTES + 1)
-        if len(raw) > _PACKAGE_JSON_MAX_BYTES:
-            raise OSError("oversized package.json")
-        return raw
-    finally:
-        os.close(descriptor)
+        rel = selected.relative_to(pkg_dir).as_posix()
+    except ValueError:
+        return False
+    files = data.get("files")
+    if isinstance(files, list) and any(
+        type(entry) is str and entry.removeprefix("./") == rel for entry in files
+    ):
+        return True
+    bin_field = data.get("bin")
+    if type(bin_field) is str and bin_field.removeprefix("./") == rel:
+        return True
+    if isinstance(bin_field, dict) and any(
+        type(target) is str and target.removeprefix("./") == rel for target in bin_field.values()
+    ):
+        return True
+    return False
 
 
-def claude_code_version_for_subject(path: Path | None, *, managed: bool = False) -> str:
-    """Read the Claude Code version from sibling ``package.json`` metadata without executing
-    the binary (agent-harness#2170). Returns ``unknown`` whenever unavailable or invalid."""
-    if path is None:
+def claude_code_version_for_subject(path: Path | None, *, managed: bool = True) -> str:
+    """Read the Claude Code version from verified managed ``package.json`` metadata without
+    executing the binary (agent-harness#2170). Returns ``unknown`` whenever managed provenance
+    or valid package metadata is unavailable."""
+    if path is None or not managed:
         return "unknown"
-    selected = Path(path)
+    try:
+        selected = Path(path).resolve(strict=True)
+    except OSError:
+        return "unknown"
     candidates = [selected.parent / "package.json"]
     if selected.parent.name == "bin":
         candidates.append(selected.parent.parent / "package.json")
     for candidate in candidates:
         try:
-            raw = _read_package_json(candidate, managed=managed)
+            descriptor = _open_managed_file(candidate)
+            try:
+                raw = _read_stable(descriptor, _PACKAGE_JSON_MAX_BYTES, code="package_metadata")
+            finally:
+                os.close(descriptor)
             data = json.loads(raw.decode("utf-8"))
         except (OSError, ExecutableDependencyError, UnicodeDecodeError, ValueError, TypeError, RecursionError):
             continue
-        if isinstance(data, dict):
+        if isinstance(data, dict) and _package_owns_executable(data, candidate.parent, selected):
             version = normalize_claude_code_version(data.get("version"))
             if version != "unknown":
                 return version
@@ -240,7 +253,7 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
         raise ExecutableDependencyError("subject_mismatch", "standalone provider") from exc
     if harness != leg or _names_managed_root(path):
         raise ExecutableDependencyError("subject_mismatch", "provider")
-    version = claude_code_version_for_subject(path, managed=False) if leg == "claude" else None
+    version = "unknown" if leg == "claude" else None
     return SeatSubject(leg, "standalone", path, None, None, provider_version=version)
 
 

@@ -987,6 +987,109 @@ def test_jailed_claude_version_flows_to_diagnostics_verdict_and_board_record(
     legs_by_key = {entry["seat_key"]: entry for entry in board_payload["legs"]}
     assert legs_by_key["claude:default"]["claude_code_version"] == "2.1.331"
     assert "claude_code_version" not in legs_by_key["codex:default"]
+    assert not pi._detail_is_valid(detail.replace("2.1.331", "2.1.331-rc.1"))
+    assert not pi._detail_is_valid(detail.replace("2.1.331", "2.1.331-.."))
+
+
+def test_jailed_claude_cancellation_preserves_versioned_exec_record(tmp_path, monkeypatch):
+    from dataclasses import replace as dc_replace
+    import threading
+    from harden_tdd_guard import invoke_sanctioned_board_control
+    from phase_loop_runtime.advisor_board import DEFAULT_BOARD
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: "healthy")
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_publish_seat_modes", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda **_k: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda *_a: (True, ""))
+    monkeypatch.setattr(pi, "board_preflight_requalify", lambda *a, **k: None)
+    cancel = threading.Event()
+
+    @pi._retained_leg_exec
+    def _spawn(leg, _prompt):
+        observation = pi._EXEC_OBSERVATION.get()
+        assert observation is not None
+        observation["claude_code_version"] = "2.1.331"
+        cancel.set()
+        return pi._BrokeredSpawnResult(
+            "DEGRADED", "", pi._HarnessCode("claude_tui_stalled"),
+            evidence={"claude_code_version": "2.1.331"},
+        )
+
+    board = dc_replace(
+        DEFAULT_BOARD,
+        seats=(next(s for s in DEFAULT_BOARD.seats if s.harness == "claude"),),
+    )
+    panel = invoke_sanctioned_board_control(
+        board, "review me", spawn=_spawn, stream_dir=tmp_path / "stream",
+        cancel_event=cancel, max_concurrency=1, monitoring_policy="heartbeat_only",
+    )
+    leg = panel.legs[0]
+    assert leg.status == "UNAVAILABLE"
+    assert leg.detail == "review_operation_cancelled"
+    assert leg.claude_code_version == "2.1.331"
+    records = list((tmp_path / "state").rglob("leg-*.json"))
+    assert len(records) == 1
+    stored = json.loads(records[0].read_text())
+    assert stored["claude_code_version"] == "2.1.331"
+    assert leg._leg_exec_metadata["attempt_id"] == stored["attempt_id"]
+
+
+def test_jailed_claude_early_refusals_record_version_or_unknown(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: "healthy")
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda _p: tmp_path)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (
+        SimpleNamespace(jailed=True, decision=None), [], None
+    ))
+    monkeypatch.setattr(pi, "_release_seat_route", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_republish_jailed_claude_mode", lambda *a, **k: None)
+    monkeypatch.setattr(pi._claude_seat_transport, "resolve_jailed_claude_transport", lambda: ("tui", None))
+    monkeypatch.setattr(
+        pi, "_await_claude_login",
+        lambda *a, **k: SimpleNamespace(outcome=pi._seat_credentials.LOGIN_MISSING, waited_s=0.0),
+    )
+
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    spawned = pi._default_spawn(
+        "claude", "artifact", repo_dir=tmp_path, mode="review", model="claude-opus-4-7",
+        review_authorization=auth, canonical_repo_authority=tmp_path, env={"PATH": "/usr/bin"},
+    )
+    assert spawned[0] == "DEGRADED"
+    assert spawned.leg_exec_metadata["claude_code_version"] == "unknown"
+    records = sorted((tmp_path / "state").rglob("leg-*.json"))
+    assert len(records) == 1
+    assert json.loads(records[0].read_text())["claude_code_version"] == "unknown"
+
+    # Subject resolved with managed version, then _prepare_jailed_claude refuses before jail build.
+    resolved_subject = pi._seat_subject.SeatSubject(
+        "claude", "managed_release", tmp_path / "claude", "rel-1", None, provider_version="2.1.331",
+    )
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a, **k: (resolved_subject, None))
+    monkeypatch.setattr(pi, "_validate_jail_dependency", lambda *a, **k: None)
+    review_dir = tmp_path / "review"
+    review_dir.mkdir()
+
+    @pi._retained_leg_exec
+    def _prep_refusal(leg):
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused) as exc_info:
+            pi._prepare_jailed_claude(
+                review_dir, tmp_path / "seat-prep", auth, 1, os.getpid(), ("a", "b"),
+                transport="tui",
+            )
+        return "DEGRADED", "", pi._HarnessCode(exc_info.value.code)
+
+    prep_res = _prep_refusal("claude")
+    assert prep_res.leg_exec_metadata["claude_code_version"] == "2.1.331"
+    all_records = sorted((tmp_path / "state").rglob("leg-*.json"))
+    assert len(all_records) == 2
+    versions = {json.loads(r.read_text())["claude_code_version"] for r in all_records}
+    assert versions == {"unknown", "2.1.331"}
 
 
 @pytest.mark.parametrize("detail, limited", [
