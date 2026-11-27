@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -1602,7 +1603,26 @@ class _FakeGeminiHeartbeatProfile:
             os.close(fd)
 
 
-def _setup_uncapped_gemini_liveness(monkeypatch, tmp_path):
+def _pid_gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def _kill_if_alive(pid: int | None) -> None:
+    if pid is None:
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _setup_uncapped_gemini_liveness(monkeypatch, tmp_path, *, descendant_pid_file: Path | None = None):
     """Wire ``_run_leg_with_liveness`` for a fake-host uncapped Gemini profile launch."""
     profile_lifecycle: list[str] = []
     monkeypatch.setattr(panel, "_probes_seat", lambda *args, **kwargs: False)
@@ -1613,14 +1633,24 @@ def _setup_uncapped_gemini_liveness(monkeypatch, tmp_path):
             "/usr/bin/bwrap", "--unshare-pid", *view, "--",
         ],
     )
-    monkeypatch.setattr(
-        panel, "_compose_launch_prefix",
-        lambda cwd, owner=(), retain_caps=(): [
-            "/bin/sh", "-c",
-            "IFS= read -r line && cat >/dev/null && printf '%s\\n' \"$line\"",
-            "sh", "--info-fd",
-        ],
-    )
+    if descendant_pid_file is None:
+        script = "IFS= read -r line && cat >/dev/null && printf '%s\\n' \"$line\""
+    else:
+        pid_path = shlex.quote(str(descendant_pid_file))
+        tmp_pid_path = shlex.quote(str(descendant_pid_file) + ".tmp")
+        script = (
+            "sleep 60 </dev/null >/dev/null 2>&1 & "
+            f"printf '%s\\n' \"$!\" > {tmp_pid_path} && mv {tmp_pid_path} {pid_path} && "
+            "IFS= read -r line && cat >/dev/null && printf '%s\\n' \"$line\""
+        )
+
+    def _fake_compose_launch_prefix(cwd, owner=(), retain_caps=()):
+        # Preserve lifecycle flags only when the supplied owner actually carries them,
+        # so breaking gemini_profile forwarding through launch_owned fails the tests.
+        lifecycle = [arg for arg in owner if arg in ("--info-fd", "--block-fd")]
+        return ["/bin/sh", "-c", script, "sh", *lifecycle]
+
+    monkeypatch.setattr(panel, "_compose_launch_prefix", _fake_compose_launch_prefix)
 
     @contextlib.contextmanager
     def _fake_seat_command_profile(command, *, env, cwd, gemini_profile=None, **kwargs):
@@ -1638,6 +1668,14 @@ def _setup_uncapped_gemini_liveness(monkeypatch, tmp_path):
         tmp_path / "monitor.json", "gemini-adoption", 0, threading.Event(),
     )
     return monitor, profile_lifecycle
+
+
+def _await_same_group_descendant(pid_file: Path, leader_pid: int) -> int:
+    assert _wait_for(pid_file.exists, timeout=5.0), "same-group descendant did not publish its pid"
+    descendant_pid = int(pid_file.read_text(encoding="utf-8").strip())
+    assert descendant_pid != leader_pid
+    assert os.getpgid(descendant_pid) == leader_pid
+    return descendant_pid
 
 
 def _run_uncapped_gemini_leg(tmp_path, monitor, profile, *, input_text="adopted\n"):
@@ -1721,8 +1759,11 @@ def test_run_leg_with_liveness_adopts_duplicate_gemini_init_fd_on_uncapped_launc
 @pytest.mark.parametrize("failure_mode", ["admit_raises", "missing_init_fd"])
 def test_run_leg_with_liveness_refuses_gemini_admission_failure_and_reaps(
         monkeypatch, tmp_path, short_graces, failure_mode):
-    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(monkeypatch, tmp_path)
-    observed: dict[str, object] = {"dup_calls": 0, "adopt_calls": 0}
+    descendant_pid_file = tmp_path / "descendant.pid"
+    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(
+        monkeypatch, tmp_path, descendant_pid_file=descendant_pid_file,
+    )
+    observed: dict[str, object] = {"dup_calls": 0, "adopt_calls": 0, "descendant_pid": None}
     real_dup = os.dup
 
     def _recording_dup(fd):
@@ -1733,6 +1774,7 @@ def test_run_leg_with_liveness_refuses_gemini_admission_failure_and_reaps(
 
     def _admit(self, proc, cancel):
         assert proc.poll() is None
+        observed["descendant_pid"] = _await_same_group_descendant(descendant_pid_file, proc.pid)
         proof = tp.proof_of(proc)
         assert proof is not None and proof.status == tp.PENDING
         observed["proof"] = proof
@@ -1762,15 +1804,20 @@ def test_run_leg_with_liveness_refuses_gemini_admission_failure_and_reaps(
         assert proof.status == tp.UNKNOWN and proof.reason == "witness_missing"
         assert profile.process is not None and profile.process.poll() is not None
         assert _group_gone(profile.process.pid)
+        assert _wait_for(lambda: _pid_gone(observed["descendant_pid"]), timeout=2.0)
     finally:
+        _kill_if_alive(observed["descendant_pid"])
         profile.close()
     assert _fd_count() == baseline
 
 
 def test_run_leg_with_liveness_handles_gemini_init_fd_duplication_failure(
         monkeypatch, tmp_path, short_graces):
-    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(monkeypatch, tmp_path)
-    observed: dict[str, object] = {"adopt_calls": 0}
+    descendant_pid_file = tmp_path / "descendant.pid"
+    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(
+        monkeypatch, tmp_path, descendant_pid_file=descendant_pid_file,
+    )
+    observed: dict[str, object] = {"adopt_calls": 0, "descendant_pid": None}
 
     def _failing_dup(fd):
         observed["dup_src"] = fd
@@ -1780,6 +1827,7 @@ def test_run_leg_with_liveness_handles_gemini_init_fd_duplication_failure(
 
     def _admit(self, proc, cancel):
         assert proc.poll() is None
+        observed["descendant_pid"] = _await_same_group_descendant(descendant_pid_file, proc.pid)
         proof = tp.proof_of(proc)
         assert proof is not None and proof.status == tp.PENDING
         observed["proof"] = proof
@@ -1809,17 +1857,22 @@ def test_run_leg_with_liveness_handles_gemini_init_fd_duplication_failure(
         assert proof.status == tp.UNKNOWN and proof.reason == "witness_missing"
         assert profile.process is not None and profile.process.poll() is not None
         assert _group_gone(profile.process.pid)
+        assert _wait_for(lambda: _pid_gone(observed["descendant_pid"]), timeout=2.0)
         assert profile.init_fd is not None
         os.fstat(profile.init_fd)
     finally:
+        _kill_if_alive(observed["descendant_pid"])
         profile.close()
     assert _fd_count() == baseline
 
 
 def test_run_leg_with_liveness_closes_duplicate_and_reaps_when_adopt_init_refuses(
         monkeypatch, tmp_path, short_graces):
-    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(monkeypatch, tmp_path)
-    observed: dict[str, object] = {}
+    descendant_pid_file = tmp_path / "descendant.pid"
+    monitor, profile_lifecycle = _setup_uncapped_gemini_liveness(
+        monkeypatch, tmp_path, descendant_pid_file=descendant_pid_file,
+    )
+    observed: dict[str, object] = {"descendant_pid": None}
     real_dup = os.dup
 
     def _recording_dup(fd):
@@ -1831,6 +1884,7 @@ def test_run_leg_with_liveness_closes_duplicate_and_reaps_when_adopt_init_refuse
 
     def _admit(self, proc, cancel):
         assert proc.poll() is None
+        observed["descendant_pid"] = _await_same_group_descendant(descendant_pid_file, proc.pid)
         proof = tp.proof_of(proc)
         assert proof is not None and proof.status == tp.PENDING
         observed["proof"] = proof
@@ -1880,8 +1934,10 @@ def test_run_leg_with_liveness_closes_duplicate_and_reaps_when_adopt_init_refuse
         assert proof.status == tp.UNKNOWN and proof.reason == "witness_missing"
         assert profile.process is not None and profile.process.poll() is not None
         assert _group_gone(profile.process.pid)
+        assert _wait_for(lambda: _pid_gone(observed["descendant_pid"]), timeout=2.0)
         assert profile.init_fd is not None
         os.fstat(profile.init_fd)
     finally:
+        _kill_if_alive(observed["descendant_pid"])
         profile.close()
     assert _fd_count() == baseline
