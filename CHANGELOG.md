@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep a phase `blocked` with its `runner_verification_failed` blocker when runner-owned
+  verification fails closed, instead of letting a child's `complete` closeout overwrite
+  the phase status to `complete` (agent-harness#2135).
+
 ## [0.7.47] - 2026-11-26
 
 ### Changed

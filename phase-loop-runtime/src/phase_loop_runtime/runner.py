@@ -3958,6 +3958,7 @@ def run_loop(
             # GAPS §3.1: set when a post-launch gate or verification judged this run's own
             # output and blocked the phase, so a blocked reduction reports ``quality``.
             acceptance_quality_failure = False
+            runner_verification_blocked = False
             if not dry_run:
                 verification_plan = post_launch_plan or plan
                 if launch_action == "execute" and verification_plan is not None:
@@ -3982,6 +3983,7 @@ def run_loop(
                     if runner_verification and artifacts:
                         merge_launch_metadata(artifacts.get("metadata"), {"runner_verification": runner_verification})
                     if _runner_verification_fails_closed(runner_verification):
+                        runner_verification_blocked = True
                         acceptance_quality_failure = True
                         status_after_launch = "blocked"
                         set_phase_status(
@@ -4041,6 +4043,11 @@ def run_loop(
                         selection=selection,
                         action=action,
                     )
+                if runner_verification_blocked:
+                    # agent-harness#2135: runner-owned verification failed closed; keep the
+                    # phase blocked and prevent downstream closeout/metric reduction from
+                    # treating the child's self-reported status as complete.
+                    automation_status = "blocked"
                 if (
                     event_blocker is None
                     and child_automation
@@ -4097,11 +4104,15 @@ def run_loop(
                     if artifact_status == "planned":
                         child_automation = artifact_automation
                         automation_status = artifact_status
-                if _requires_shared_automation_closeout(result, spec) and not _repair_launch_cleared_phase(
-                    launch_action,
-                    post_launch,
-                    post_snapshot,
-                    alias,
+                if (
+                    not runner_verification_blocked
+                    and _requires_shared_automation_closeout(result, spec)
+                    and not _repair_launch_cleared_phase(
+                        launch_action,
+                        post_launch,
+                        post_snapshot,
+                        alias,
+                    )
                 ):
                     if not automation_status:
                         acceptance_quality_failure = True  # GAPS §3.1: the output has no closeout
@@ -4624,6 +4635,7 @@ def run_loop(
                 )
             elif (
                 launch_action == "execute"
+                and not runner_verification_blocked
                 and status_after_launch == "blocked"
                 and _optional_automation_literal(child_automation.get("automation_blocker_class")) == "dirty_worktree_conflict"
                 and child_automation.get("automation_verification_status") == "passed"
