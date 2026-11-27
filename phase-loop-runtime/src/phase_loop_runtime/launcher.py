@@ -4900,6 +4900,9 @@ def _cleanup_descendant_process_group(
         time.sleep(0.01)
     evidence["result"] = "cleanup_failed"
     return evidence
+
+
+def _opencode_agent(action: str) -> str:
     if action in {"roadmap", "plan", "review"}:
         return "build"
     return "build"
