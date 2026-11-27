@@ -18603,12 +18603,25 @@ def _agy_result_error_class(output: str) -> ProviderErrorClass | None:
         if not isinstance(result, dict) or result.get("status") == "SUCCESS":
             continue
         response = result.get("response")
-        if isinstance(response, str) and response.strip():
+        if response is not None and not (isinstance(response, str) and not response.strip()):
             continue
         fragments.extend(_agy_extract_result_error_fragments(result))
     if not fragments:
         return None
-    blob = "\n".join(fragments).encode("utf-8", errors="replace")[:limit]
+    bounded: list[bytes] = []
+    used = 0
+    for fragment in fragments:
+        encoded = fragment.encode("utf-8", errors="replace")
+        sep = 1 if bounded else 0
+        if used + sep + len(encoded) > limit:
+            break
+        if sep:
+            bounded.append(b"\n")
+        bounded.append(encoded)
+        used += sep + len(encoded)
+    if not bounded:
+        return None
+    blob = b"".join(bounded)
     return next((error_class for error_class, pattern in _AGY_NATIVE_EXIT_PATTERNS
                  if pattern.search(blob)), None)
 

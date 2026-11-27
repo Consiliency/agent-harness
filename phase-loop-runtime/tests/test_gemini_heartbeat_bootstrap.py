@@ -255,6 +255,9 @@ def test_qualification_provider_error_ignores_raw_text_and_unverified_codes(prov
     ({"status": "ERROR", "error": "opaque internal state"}, "unknown"),
     ({"status": "SUCCESS", "error": {"code": 429}}, "unknown"),
     ({"status": "ERROR", "response": "HTTP 429 quota exceeded", "error": {"code": 429}}, "unknown"),
+    ({"status": "ERROR", "response": ["review prose"], "error": {"code": 429}}, "unknown"),
+    ({"status": "ERROR", "response": {"text": "review prose"}, "error": {"code": 429}}, "unknown"),
+    ({"status": "ERROR", "response": 429, "error": {"code": 429}}, "unknown"),
 ])
 def test_agy_result_error_fields_classify_failed_ndjson_results(result_fields, expected):
     """Failed agy NDJSON result events carry structured error fields without non-empty prose
@@ -276,6 +279,41 @@ def test_agy_result_error_fields_classify_failed_ndjson_results(result_fields, e
     assert panel._agy_provider_error_class(
         native_rc=1, native_stdout=raw, native_stderr="HTTP 401",
     ) == "auth_missing"
+
+
+def test_agy_result_error_boundary_does_not_slice_fragment_into_marker():
+    """Complete normalized fragments are admitted up to the 64 KiB scan bound; a trailing
+    fragment ending in ``HTTP 4010`` crossing the boundary must not be sliced into ``HTTP 401``."""
+    cap = panel._LEG_LOG_MAX_BYTES
+    # Compact JSON is shorter than normalized "key: value\n" lines when repeated list
+    # items expand their key prefixes ("details: ", "detail: ", "reason: "), so one
+    # complete < 64 KiB NDJSON record can cross cap bytes right after "HTTP 401" and
+    # before the trailing "0".
+    result_obj = {
+        "status": "ERROR",
+        "details": ["a"] * 8,
+        "detail": ["a"] * 8,
+        "reason": ["a"] * 8,
+        "message": "",
+        "error": "HTTP 4010",
+    }
+    base_len = len("\n".join(panel._agy_extract_result_error_fragments(result_obj)).encode("utf-8"))
+    # Include the empty "message: " fragment overhead (10 bytes with newline) so the full
+    # normalized blob ends at cap + 1 bytes ("...HTTP 4010"), placing "0" past cap.
+    pad_len = cap + 1 - base_len - len(b"message: \n")
+    result_obj["message"] = "x" * pad_len
+    fragments = panel._agy_extract_result_error_fragments(result_obj)
+    full_blob = "\n".join(fragments).encode("utf-8")
+    assert len(full_blob) == cap + 1
+    assert full_blob[:cap].endswith(b"HTTP 401")
+    result_row = {"event": "result", "conversation_id": "s", "result": result_obj}
+    raw = json.dumps(result_row, separators=(",", ":"))
+    assert len(raw.encode("utf-8")) <= cap
+    assert panel._agy_provider_error_class(native_rc=1, native_stdout=raw) == "unknown"
+    protocol = panel._broker_gemini_stream_protocol("synthetic input")
+    rc, body, _, metadata = panel._broker_gemini_stream_result(raw, protocol)
+    assert rc == 1 and body == "" and metadata["provider_stream_outcome"] == "final_result_invalid"
+    assert panel._agy_provider_error_class(native_rc=0, stream=metadata, native_stdout=raw) == "unknown"
 
 
 def _fixture_repo(tmp_path):
