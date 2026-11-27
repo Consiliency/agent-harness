@@ -37,13 +37,15 @@ in under half that.
   tighter number would have been a guess. Since then `pytest` runs on pull requests
   (currently its py3.12 lane), because the offload path is disabled in `test.yml`
   (`OFFLOAD_SANDBOX_READY: 'false'`), and
-  `clean-room` runs only on push, schedule, dispatch and tags (agent-harness#1029).
+  `clean-room` runs only on push, schedule and dispatch (agent-harness#1029; tag runs
+  use `publish-pypi.yml`).
   Its stopgap was **150** (agent-harness#1297) until recent `main` runs grew to
   **114–118 min** (`45767391324` through `45894848795`) and the `v0.7.47` landing
   push (`45908344224`, `74aca23e`) was **cancelled at 150 min** with Gate A 88% done
   and zero failures (~170 min projected; agent-harness#766). `test.yml` `clean-room`
-  now uses **210**, matching `publish-pypi.yml`'s tag/dispatch bound (agent-harness#2191);
-  agent-harness#1345 still tracks restoring it to 100 once Gate A is reliably under ~70 min.
+  now uses **210**, matching `publish-pypi.yml`'s tag/dispatch bound (agent-harness#2191,
+  agent-harness#2192); agent-harness#1345 still tracks restoring it to 100 once Gate A is
+  reliably under ~70 min.
 
 ## The tag and dispatch path runs the full suite, and it is measured too
 
