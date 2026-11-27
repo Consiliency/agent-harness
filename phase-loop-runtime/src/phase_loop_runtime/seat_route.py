@@ -530,8 +530,13 @@ def resolve(
         from .executable_dependency import ExecutableDependencyError
 
         if isinstance(exc, ExecutableDependencyError):
+            code = (
+                "seat_dependency_authority_missing"
+                if exc.code == "authority_missing"
+                else "seat_sandbox_refused:identity"
+            )
             return _local_failure(
-                request, vendor, "seat_sandbox_refused:identity", "L6",
+                request, vendor, code, "L6",
                 variant=variant, also=also,
             )
         return _local_failure(

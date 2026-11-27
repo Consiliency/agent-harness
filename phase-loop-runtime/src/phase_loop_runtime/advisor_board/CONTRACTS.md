@@ -1526,7 +1526,9 @@ are recorded on agent-harness#1132.
   including Gemini's tooled profile -> `gemini_seat_profile_unqualified`; (5) the profile's
   allowlisted egress layer, or its named open-egress exception -> the route's egress code;
   (6) the selected subject and, for a managed release, its contract-§7 authority and declared
-  projection -> `seat_sandbox_refused:identity`; (7) the jail pass for the resulting live
+  projection -> `seat_dependency_authority_missing` when the managed tooling release has no
+  seat authority or pin entry for the vendor, or `seat_sandbox_refused:identity` when the
+  authority or projection is invalid; (7) the jail pass for the resulting live
   qualification key -> `seat_sandbox_refused:pass_store_unsafe`,
   `seat_jail_qualification_failed` or `seat_sandbox_refused:jail_unqualified`. A seat stopped
   at any of steps 0-7 is DEGRADED and not run, with that code as its detail and notice

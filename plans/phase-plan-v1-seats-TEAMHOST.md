@@ -102,8 +102,9 @@ from day one.
   - The host administrator, or the administrator’s root-owned release updater under contract §7, writes the root-owned pin (LA1-AUTHORITY-PIN).
   - Neither TEAMHOST nor a vendor phase lands a dotfiles change. From gate G-A on, until the
     declaration and the pin exist, a host's managed-release seats refuse
-    `seat_sandbox_refused:identity`; the doctor's declared `authority_missing` or
-    `authority_invalid` refinement names the item.
+    `seat_dependency_authority_missing` when the authority or pin is missing (or
+    `seat_sandbox_refused:identity` when invalid); the doctor's declared `authority_missing`
+    or `authority_invalid` refinement names the item.
   - LA-1 is not required to land code.
 
 ## Lane Index & Dependencies

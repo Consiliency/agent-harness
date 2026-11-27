@@ -120,6 +120,7 @@ BASE_OD10_CLASSES: dict[str, str] = {
     "seat_cli_qualification_store_unsafe": "ordinary",
     "seat_cli_qualification_unavailable": "ordinary",
     "seat_cli_unqualified": "ordinary",
+    "seat_dependency_authority_missing": "ordinary",
     "seat_egress_allowlist_missing": "ordinary",
     "seat_egress_integrity_failed": "security",
     "seat_egress_not_installed": "ordinary",
@@ -255,7 +256,7 @@ def test_removing_the_codex_entries_leaves_the_base_table():
     later = {code for code in contract.OD10_CLASSES if code.startswith(LATER_SEAT_PREFIXES)}
     base = {code: cls for code, cls in contract.OD10_CLASSES.items()
             if not code.startswith("codex_seat_") and code not in later}
-    assert len(BASE_OD10_CLASSES) == 130
+    assert len(BASE_OD10_CLASSES) == 131
     assert base == BASE_OD10_CLASSES
     base_closure = (
         (set(seat_jail.NOTICE_CODES) - set(CODEX_CODES) - later)

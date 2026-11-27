@@ -377,7 +377,8 @@ leaves it no path once the profile is registered. `advisory_document` and
   the splice.
 - **Cross-repo (IF-XR-1).** On a managed host, EC-CODEX-4's designated-seat-host run needs a release whose
   Codex `declaration.json` lists `CODEX_RUNTIME_FILES` at these destinations, plus its pin
-  entry. From TEAMHOST's gate G-A on, the seat refuses `authority_missing` until both exist. No
+  entry. From TEAMHOST's gate G-A on, the seat refuses `seat_dependency_authority_missing`
+  (doctor: `authority_missing`) until both exist. No
   lane here edits Consiliency/dotfiles, which builds those releases.
 - **Shared-host limits.** Before each test command, check `uptime` and `/proc/pressure/io`.
   Run targeted files serially, with no `-n`, under `timeout 900`, using system python3.14.4 for

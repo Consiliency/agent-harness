@@ -30,6 +30,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `_run_window_process`, `_run_window_leg_process`), so hosts with only v2
   `QualificationKey` pass records admit window control launches and missing or
   mismatched keys fail closed before spawn (agent-harness#2111).
+- Report missing managed-tooling seat authority or pin entries with the ordinary
+  typed notice `seat_dependency_authority_missing` instead of
+  `seat_sandbox_refused:identity`, and reword `gemini_credential_near_expiry` so it
+  accurately describes an expired or near-expiry login that has not been renewed
+  (agent-harness#2109).
 - Raise the `test.yml` `clean-room (standalone-from-wheel, Gate A)` job timeout from
   150 to 210 minutes (matching `publish-pypi.yml` from agent-harness#2191) after slow
   hosted runners hit the 150-minute cap at 88% with no test failures (agent-harness#766).

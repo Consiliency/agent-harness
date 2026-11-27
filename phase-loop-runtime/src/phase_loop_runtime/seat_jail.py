@@ -508,6 +508,11 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "seat_provider_unavailable": (
         "leg refused", "the provider CLI was not found in a supported install layout",
         "install the CLI on PATH (for codex, its vendored native binary), then re-run"),
+    "seat_dependency_authority_missing": (
+        "leg refused",
+        "no executable authority or pin entry is present for this vendor's managed tooling release",
+        "install or update the managed tooling release's seat authority and pin entry for this "
+        "vendor, then re-run"),
     "seat_filtered_egress_unavailable": (
         "leg refused", "no filtered network namespace is available for the review seat",
         "install unshare, slirp4netns and iptables and enable unprivileged user namespaces; "
@@ -517,8 +522,8 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "run the review through the CLI executor route"),
     "gemini_credential_near_expiry": (
         "leg refused",
-        "the agy login file has under 10 minutes left and the renewal (`agy models`) did not "
-        "extend it; the seat does not run",
+        "the agy login file could not be verified to have at least 10 minutes of remaining life "
+        "(expired, near expiry, unreadable, or not renewed via `agy models`); the seat does not run",
         "run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`, then re-run: it renews "
         "agy's login file (the store the seat reads, not a desktop keyring) once the login is "
         "close to its expiry; if agy asks you to sign in, run it again without `models`"),

@@ -796,14 +796,20 @@ def test_the_sdk_preflight_runs_first_and_needs_no_dependency_session(monkeypatc
 
 
 @pytest.mark.parametrize("leg", ["claude", "gemini"])
-def test_subject_resolution_refuses_with_a_typed_jail_code(monkeypatch, tmp_path, leg):
+@pytest.mark.parametrize("dep_code,expected_code", [
+    ("authority_missing", "seat_dependency_authority_missing"),
+    ("authority_invalid", seat_jail.refused("jail_build")),
+])
+def test_subject_resolution_refuses_with_a_typed_jail_code(
+    monkeypatch, tmp_path, leg, dep_code, expected_code,
+):
     from phase_loop_runtime.executable_dependency import ExecutableDependencyError
     from phase_loop_runtime import seat_subject
 
     monkeypatch.setattr(
         seat_subject, "resolve_seat_subject",
         lambda *_a, **_k: (_ for _ in ()).throw(
-            ExecutableDependencyError("authority_missing")
+            ExecutableDependencyError(dep_code)
         ),
     )
     tree = tmp_path / seat_jail.HOST_TREE_DIRNAME
@@ -832,7 +838,7 @@ def test_subject_resolution_refuses_with_a_typed_jail_code(monkeypatch, tmp_path
                 tmp_path, tmp_path / "claude-seat", authorization, 1, 1, ("", ""),
                 transport="tui",
             )
-    assert caught.value.code == seat_jail.refused("jail_build")
+    assert caught.value.code == expected_code
 
 
 # --------------------------------------------------------------------------------------

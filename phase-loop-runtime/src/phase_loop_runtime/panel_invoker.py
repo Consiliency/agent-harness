@@ -3224,7 +3224,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "seat_broker_socket_path_too_long",
     "seat_resource_caps_unavailable",
     "seat_launch_owner_required", "seat_output_path_unavailable", "seat_profile_unavailable",
-    "seat_provider_unavailable", "seat_filtered_egress_unavailable",
+    "seat_provider_unavailable", "seat_dependency_authority_missing", "seat_filtered_egress_unavailable",
     "executor_review_route_unsupported", "gemini_credential_near_expiry",
     "gemini_credential_refresh_timeout", "seat_keyring_unavailable",
     "claude_agent_view_review_unsupported", "claude_tui_journal_collection_refused",
@@ -14047,10 +14047,15 @@ def _prepare_jailed_claude(
     subject_refusal = None
     try:
         subject, dependency = _resolved_jail_subject("claude", os.environ)
-    except (FileNotFoundError, ExecutableDependencyError):
+    except (FileNotFoundError, ExecutableDependencyError) as exc:
         # No admissible subject: refused typed at the jail build, after the credential
         # step, exactly where an unresolvable executable has always been refused.
-        subject, dependency, subject_refusal = None, None, "jail_build"
+        subject, dependency = None, None
+        subject_refusal = (
+            "seat_dependency_authority_missing"
+            if isinstance(exc, ExecutableDependencyError) and exc.code == "authority_missing"
+            else _seat_jail.refused("jail_build")
+        )
     _validate_jail_dependency("claude", dependency)
     executable = (Path(dependency.subject_source) if dependency is not None
                   else None if subject is None else subject.subject_path)
@@ -14092,7 +14097,7 @@ def _prepare_jailed_claude(
         try:
             if executable is None:
                 raise _seat_jail.SeatSandboxRefused(
-                    _seat_jail.refused(subject_refusal or "identity"))
+                    subject_refusal or _seat_jail.refused("identity"))
             # ``none`` hands the builder no token at all: no token pipe is created and no
             # descriptor reaches the jail.
             token = (credential.token if credential_mode == "live"
@@ -14620,7 +14625,12 @@ def _prepare_jailed_gemini(
             "gemini", _broker_subscription_env(env),
         )
     except (FileNotFoundError, ExecutableDependencyError) as exc:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
+        code = (
+            "seat_dependency_authority_missing"
+            if isinstance(exc, ExecutableDependencyError) and exc.code == "authority_missing"
+            else _seat_jail.refused("jail_build")
+        )
+        raise _seat_jail.SeatSandboxRefused(code) from exc
     _validate_jail_dependency("gemini", dependency)
     subscription_env = _broker_subscription_env(env)
     subject_path = (Path(dependency.subject_source) if dependency is not None
