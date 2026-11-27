@@ -1239,7 +1239,10 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
 ):
     """agent-harness#2111: a window control launch whose host pass store has ONLY a v2
     QualificationKey pass (no bare profile-digest pass) carries that route key onto both
-    its jail and probe jail and is admitted by _require_qualified_jail."""
+    its jail and probe jail, uses the started proxy's allowlist_digest, and gives every
+    invocation (both watch sentinels, provider launch, and bracket step) fresh offset-0
+    launch descriptors so real _require_qualified_jail / installed_filter_sha256 admits all."""
+    import os
     from phase_loop_runtime import (
         panel_invoker as pi,
         seat_egress_proxy,
@@ -1259,10 +1262,11 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
     monkeypatch.setattr(seat_jail, "falsifier_layout_identity", lambda: layout_id)
     profile = seat_profiles.profile_for(leg)
     assert profile is not None
+    captured_allowlist_digest = seat_egress_proxy.allowlist_ref(profile.allowlist_id).content_digest
     expected_key = seat_qualification_key.key_for_launch(
         profile,
         variant=None,
-        allowlist_digest=seat_egress_proxy.allowlist_ref(profile.allowlist_id).content_digest,
+        allowlist_digest=captured_allowlist_digest,
         projection=None,
     )
     seat_jail_qualification._record_pass({
@@ -1277,6 +1281,12 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
     commit = "d" * 40
     repo = tmp_path / "repo"
     repo.mkdir()
+    provider_bin = tmp_path / f"fake-{leg}"
+    provider_bin.write_bytes(b"#!/bin/sh\nexit 0\n")
+    provider_bin.chmod(0o755)
+    egress_ca = tmp_path / "ca.pem"
+    egress_ca.write_bytes(b"fixture-ca")
+
     monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
     monkeypatch.setattr(pi._review_stage, "host_git",
                         lambda *a, **k: SimpleNamespace(stdout=commit + "\n"))
@@ -1304,42 +1314,73 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
                         lambda *a, **k: SimpleNamespace(acknowledged=True, acked_ns=1))
     monkeypatch.setattr(pi._seat_egress_proxy, "proxy_stream",
                         lambda proxy: SimpleNamespace(final=True))
-    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat: None)
     monkeypatch.setattr(pi, "_read_window_trace", lambda *a: ((), (), True))
     monkeypatch.setattr(pi, "_hold_window_fence_gap", lambda ns: None)
-    monkeypatch.setattr(pi, "_require_canonical_jail", lambda _jail: None)
-    monkeypatch.setattr(seat_jail, "actual_profile_digest",
-                        lambda _jail: expected_key.profile_digest)
+    # Fail closed if key derivation tries to re-read packaged allowlists after proxy startup.
+    monkeypatch.setattr(
+        "phase_loop_runtime.seat_route._allowlist_digest_for_launch",
+        lambda _profile: pytest.fail("key derivation re-read packaged allowlist after proxy start"),
+    )
 
-    def make_seat_jail():
-        return seat_jail.SeatJail(
-            leg=leg,
-            process_owner=("/usr/bin/bwrap",),
-            path_map={},
-            env={"HTTPS_PROXY": "http://127.0.0.1:3128", "SSL_CERT_FILE": "/seat/ca.pem"},
-            pass_fds=(),
-            seccomp_fd=-1,
-            profile_id=leg,
-            profile_digest=expected_key.profile_digest,
-            filter_digest="e" * 64,
-            seat_ids=(2, 2),
-            provider_argv0=f"/seat/bin/{leg}",
-            qualification_key=None,
+    built_jails: list[seat_jail.SeatJail] = []
+
+    def make_real_seat_jail(subdir: Path) -> seat_jail.SeatJail:
+        subdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (subdir / seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, exist_ok=True)
+        kwargs = {
+            "seat_ids": (2, 2),
+            "egress_ca": egress_ca,
+            "egress_proxy": seat_egress_proxy.GEMINI_PROXY_URL if leg == "gemini" else "http://127.0.0.1:3128",
+        }
+        if leg == "gemini":
+            gcfg = subdir / seat_jail.HOST_GEMINI_CONFIG_DIRNAME
+            gcfg.mkdir(mode=0o700, exist_ok=True)
+            kwargs["gemini_config"] = gcfg
+        jail = pi._build_jail_with_owned_inputs(
+            leg, subdir, provider_bin, artifact=b"bundle", instructions=b"instr", **kwargs,
         )
+        built_jails.append(jail)
+        return jail
+
+    def cleanup_built(seat):
+        seat_jail.close_jail_fds(seat.jail)
+        seat_jail.close_jail_fds(seat.probe_jail)
+
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", cleanup_built)
+
+    def make_proxy():
+        return seat_egress_proxy.SeatEgressProxy(
+            socket="sock",
+            proxy_url=seat_egress_proxy.GEMINI_PROXY_URL if leg == "gemini" else "http://127.0.0.1:3128",
+            front_identity=None,
+            private_proxy_token=b"proxy-tok" if leg == "gemini" else b"",
+            ca_cert=b"ca",
+            ca_sha256="1" * 64,
+            inner_sni_check=True,
+            process=SimpleNamespace(),
+            allowlist_id=profile.allowlist_id,
+            allowlist_digest=captured_allowlist_digest,
+            allowlist_sha256="6" * 64,
+        )
+
+    def two_call_prove_sentinel(run):
+        first = run(("/bin/cat", "/seat/tree/open-sentinel"), env={}, use_proxy=False, timeout_s=1)
+        second = run(("/seat/tree/exec-sentinel",), env={}, use_proxy=False, timeout_s=1)
+        return first.exit_code == 0 and second.exit_code == 0
 
     if leg == "gemini":
         qualification = _install_firstseat_supplier_double(monkeypatch)
         monkeypatch.setattr(
             pi._seat_egress_proxy, "start_private_gemini_proxy",
-            lambda **k: contextmanager(lambda: (
-                yield SimpleNamespace(socket="sock", allowlist_sha256="6" * 64)
-            ))(),
+            lambda **k: contextmanager(lambda: (yield make_proxy()))(),
         )
         monkeypatch.setattr(
             pi, "_prepare_jailed_gemini",
             lambda review_dir, seat_dir, *a, **k: pi._JailedGeminiSeat(
-                jail=make_seat_jail(), probe_jail=make_seat_jail(), holder_pid=71,
-                token=b"tok", review_dir=Path(review_dir), seat_dir=Path(seat_dir),
+                jail=make_real_seat_jail(Path(seat_dir)),
+                probe_jail=make_real_seat_jail(Path(seat_dir) / "probe"),
+                holder_pid=71, token=b"tok",
+                review_dir=Path(review_dir), seat_dir=Path(seat_dir),
                 image_sha256="a" * 64, admission_class="fixture",
                 delivered_copy=b'{"token":{"access_token":"tok"}}',
                 private_proxy_token=b"proxy-tok",
@@ -1348,14 +1389,18 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
         monkeypatch.setattr(
             qualification, "arm_watch",
             lambda layout, paths, *, kind: SimpleNamespace(
-                prove_sentinel=lambda run: run(["sentinel"], env={}, use_proxy=False, timeout_s=1).exit_code == 0,
+                prove_sentinel=two_call_prove_sentinel,
                 drain_and_close=lambda *, quiescent: SimpleNamespace(read_marker_opened=True),
             ),
             raising=False,
         )
         monkeypatch.setattr(qualification, "measure_issuer", lambda d: SimpleNamespace(), raising=False)
         monkeypatch.setattr(qualification, "scan_seat", lambda *a, **k: SimpleNamespace(), raising=False)
-        monkeypatch.setattr(qualification, "run_bracket", lambda *a, **k: SimpleNamespace(), raising=False)
+        monkeypatch.setattr(
+            qualification, "run_bracket",
+            lambda proxy, run: run(("/usr/bin/true",), env={}, use_proxy=True, timeout_s=1),
+            raising=False,
+        )
         monkeypatch.setattr(pi, "_broker_gemini_stream_protocol",
                             lambda *a, **k: SimpleNamespace(transport="input"))
         stdout = "\n".join((
@@ -1368,41 +1413,50 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
         assert supplier is not None
         monkeypatch.setattr(
             pi._seat_egress_proxy, "start_proxy",
-            lambda **k: contextmanager(lambda: (
-                yield SimpleNamespace(socket="sock", allowlist_sha256="6" * 64,
-                                      ca_cert=b"ca", proxy_url="http://proxy")
-            ))(),
+            lambda **k: contextmanager(lambda: (yield make_proxy()))(),
         )
         monkeypatch.setattr(
             pi, "_window_prepare_leg",
             lambda _leg, review_dir, seat_dir, *a, **k: pi._JailedSeat(
-                jail=make_seat_jail(), probe_jail=make_seat_jail(), holder_pid=71,
-                token=b"", review_dir=Path(review_dir), seat_dir=Path(seat_dir),
+                jail=make_real_seat_jail(Path(seat_dir)),
+                probe_jail=make_real_seat_jail(Path(seat_dir) / "probe"),
+                holder_pid=71, token=b"",
+                review_dir=Path(review_dir), seat_dir=Path(seat_dir),
                 image_sha256="a" * 64,
             ),
         )
         monkeypatch.setattr(
             supplier, "arm_watch",
             lambda layout, paths, *, kind: SimpleNamespace(
-                prove_sentinel=lambda run: run(["sentinel"], env={}, use_proxy=False, timeout_s=1).exit_code == 0,
+                prove_sentinel=two_call_prove_sentinel,
                 drain_and_close=lambda *, quiescent: "watch",
             ),
         )
         monkeypatch.setattr(supplier, "scan_secrets", lambda seat: ())
         monkeypatch.setattr(supplier, "measure_credential_scope", lambda seat: "pass")
         monkeypatch.setattr(supplier, "refresh_detected", lambda seat: "pass")
-        monkeypatch.setattr(supplier, "bracket_steps", lambda: lambda proxy, run: SimpleNamespace())
+        monkeypatch.setattr(
+            supplier, "bracket_steps",
+            lambda: lambda proxy, run: run(("/usr/bin/true",), env={}, use_proxy=True, timeout_s=1),
+        )
         stdout = json.dumps({"type": "turn.completed"})
 
     monkeypatch.setattr(pi, "_render_broker_pointer_prompt", lambda *a, **k: "frame")
-    admitted: list[tuple[object, object]] = []
+    admitted: list[tuple[int, int]] = []
 
-    def gated_run(command, *, seat_jail, probe_jail, **kwargs):
+    def gated_run(command, *, seat_jail: seat_jail.SeatJail, probe_jail: seat_jail.SeatJail, **kwargs):
         assert seat_jail.qualification_key == expected_key
         assert probe_jail.qualification_key == expected_key
+        # Exercise the REAL _require_qualified_jail -> actual_profile_digest ->
+        # installed_filter_sha256 (offset == 0 check) against the v2-only pass store.
         pi._require_qualified_jail(seat_jail)
         pi._require_qualified_jail(probe_jail)
-        admitted.append((seat_jail, probe_jail))
+        # Simulate bwrap reading both inherited seccomp memfds to EOF (advancing offsets).
+        assert len(os.read(seat_jail.seccomp_fd, 1 << 20)) > 0
+        assert len(os.read(probe_jail.seccomp_fd, 1 << 20)) > 0
+        assert os.lseek(seat_jail.seccomp_fd, 0, os.SEEK_CUR) > 0
+        assert os.lseek(probe_jail.seccomp_fd, 0, os.SEEK_CUR) > 0
+        admitted.append((seat_jail.seccomp_fd, probe_jail.seccomp_fd))
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(pi, "_run_leg_with_liveness", gated_run)
@@ -1415,8 +1469,14 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
         timeout_s=5.0,
         leg=leg,
     )
-    result = pi.window_control_launch(spec)
-    assert len(admitted) >= 2  # sentinel (_WindowJailedRun) + provider (_run_window*_process)
+    try:
+        result = pi.window_control_launch(spec)
+    finally:
+        for built in built_jails:
+            seat_jail.close_jail_fds(built)
+    # Two sentinel launches + provider launch (+ bracket launch for measured).
+    expected_launches = 4 if kind == "measured" else 3
+    assert len(admitted) == expected_launches
     assert result.error is None
     if leg == "gemini":
         assert result.status == "SUCCESS"
@@ -1432,7 +1492,8 @@ def test_window_control_launch_refuses_missing_or_mismatched_qualification_key(
     tmp_path, monkeypatch, tamper, expected_code,
 ):
     """agent-harness#2111: every window control launch boundary refuses a missing or
-    mismatched QualificationKey before _run_leg_with_liveness is invoked."""
+    mismatched QualificationKey before _run_leg_with_liveness is invoked, and a sentinel
+    refusal still drains/closes the armed watch descriptor."""
     from phase_loop_runtime import panel_invoker as pi
 
     _install_firstseat_supplier_double(monkeypatch)
@@ -1479,15 +1540,16 @@ def test_window_control_launch_refuses_missing_or_mismatched_qualification_key(
         pi._run_window_leg_process(session, ["/seat/bin/codex"], (), timeout_s=2.0)
     assert exc.value.code == expected_code
 
-    # End-to-end through window_control_launch: refused as jail_unavailable, nothing launched.
+    # End-to-end through window_control_launch: refused as jail_unavailable, watch closed, nothing launched.
     qualification = _install_firstseat_supplier_double(monkeypatch)
     tampered = make_tampered_session()
+    watch_closed: list[bool] = []
     monkeypatch.setattr(pi, "_open_window_launch", lambda spec: contextmanager(lambda: (yield tampered))())
     monkeypatch.setattr(
         qualification, "arm_watch",
         lambda layout, paths, *, kind: SimpleNamespace(
             prove_sentinel=lambda run: run(["sentinel"], env={}, use_proxy=False, timeout_s=1).exit_code == 0,
-            drain_and_close=lambda *, quiescent: None,
+            drain_and_close=lambda *, quiescent: watch_closed.append(quiescent),
         ),
         raising=False,
     )
@@ -1502,6 +1564,42 @@ def test_window_control_launch_refuses_missing_or_mismatched_qualification_key(
     ))
     assert result.error == "jail_unavailable"
     assert result.status == "NONE"
+    assert len(watch_closed) == 1
+
+
+def test_window_route_qualification_key_uses_started_proxy_allowlist_digest(monkeypatch):
+    """Key derivation binds the running SeatEgressProxy's captured allowlist_digest
+    rather than re-reading the packaged allowlist file, and refuses a proxy whose
+    allowlist_id disagrees with the profile."""
+    from phase_loop_runtime import panel_invoker as pi, seat_egress_proxy, seat_jail
+
+    monkeypatch.setattr(seat_jail, "host_identity", lambda: "a" * 64)
+    monkeypatch.setattr(seat_jail, "falsifier_layout_identity", lambda: "b" * 64)
+    monkeypatch.setattr(
+        "phase_loop_runtime.seat_route._allowlist_digest_for_launch",
+        lambda _profile: "f" * 64,
+    )
+    seat = SimpleNamespace(jail=SimpleNamespace(dependency=None, dependency_projection_digest=""))
+    proxy = seat_egress_proxy.SeatEgressProxy(
+        socket="sock", proxy_url=seat_egress_proxy.GEMINI_PROXY_URL,
+        front_identity=None, private_proxy_token=b"tok",
+        ca_cert=b"ca", ca_sha256="1" * 64, inner_sni_check=True,
+        process=SimpleNamespace(),
+        allowlist_id="gemini", allowlist_digest="e" * 64, allowlist_sha256="0" * 64,
+    )
+    key = pi._window_route_qualification_key("gemini", seat, proxy=proxy)
+    assert key.allowlist_digest == "e" * 64
+
+    wrong_proxy = seat_egress_proxy.SeatEgressProxy(
+        socket="sock", proxy_url=seat_egress_proxy.GEMINI_PROXY_URL,
+        front_identity=None, private_proxy_token=b"tok",
+        ca_cert=b"ca", ca_sha256="1" * 64, inner_sni_check=True,
+        process=SimpleNamespace(),
+        allowlist_id="codex", allowlist_digest="e" * 64, allowlist_sha256="0" * 64,
+    )
+    with pytest.raises(seat_jail.SeatSandboxRefused) as exc:
+        pi._window_route_qualification_key("gemini", seat, proxy=wrong_proxy)
+    assert exc.value.code == "seat_sandbox_refused:identity"
 
 
 def test_open_window_launch_cleans_up_seat_when_qualification_key_unavailable(

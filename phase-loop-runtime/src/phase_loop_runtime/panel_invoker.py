@@ -13831,11 +13831,11 @@ def _bind_route_qualification(seat: "_JailedSeat", route: object) -> "_JailedSea
 
 
 def _window_route_qualification_key(
-    leg: str, seat: "_JailedSeat",
+    leg: str, seat: "_JailedSeat", *, proxy: object | None = None,
 ) -> "_seat_route_contract.QualificationKey":
     """Build the route's live QualificationKey for a window control launch from the leg's
-    registered profile, active variant, shipped allowlist digest and the dependency
-    projection bound onto ``seat.jail``."""
+    registered profile, active variant, the running proxy's captured allowlist digest and
+    the dependency projection bound onto ``seat.jail``."""
     from .seat_profiles import profile_for
     from .seat_qualification_key import key_for_launch
     from .seat_route import _allowlist_digest_for_launch
@@ -13849,7 +13849,21 @@ def _window_route_qualification_key(
         variant, code = profile.variant(os.environ)
         if code is not None:
             raise _seat_jail.SeatSandboxRefused(code)
-    allowlist_digest = _allowlist_digest_for_launch(profile)
+    if profile.allowlist_id is None:
+        allowlist_digest = None
+    elif isinstance(proxy, _seat_egress_proxy.SeatEgressProxy):
+        if proxy.allowlist_id != profile.allowlist_id or not proxy.allowlist_digest:
+            raise _seat_jail.SeatSandboxRefused(
+                _seat_jail.refused("identity"),
+                "window control proxy allowlist does not match the leg profile",
+            )
+        allowlist_digest = proxy.allowlist_digest
+    elif (proxy is not None
+          and isinstance(getattr(proxy, "allowlist_digest", None), str)
+          and proxy.allowlist_digest):
+        allowlist_digest = proxy.allowlist_digest
+    else:
+        allowlist_digest = _allowlist_digest_for_launch(profile)
     projection = getattr(seat.jail, "dependency", None)
     if projection is None:
         dep_digest = getattr(seat.jail, "dependency_projection_digest", "")
@@ -13863,6 +13877,83 @@ def _window_route_qualification_key(
     except ValueError as exc:
         raise _seat_jail.SeatSandboxRefused(
             _seat_jail.refused("jail_unqualified"), str(exc)) from exc
+
+
+@contextmanager
+def _fresh_window_launch_jails(seat: "_JailedSeat"):
+    """Clone single-use launch descriptors (seccomp/bundle/instructions memfds and any
+    token pipe) at offset 0 for one window invocation so repeated launches on the same
+    seat (watch sentinels, provider launch, bracket steps) never advance the template's
+    offsets or fail ``installed_filter_sha256``."""
+    jail = getattr(seat, "jail", None)
+    probe = getattr(seat, "probe_jail", None)
+    if not isinstance(jail, _seat_jail.SeatJail) or jail.seccomp_fd < 0:
+        yield jail, probe
+        return
+    allocated: list[int] = []
+
+    def _pread_all(fd: int) -> bytes:
+        size = os.fstat(fd).st_size
+        return os.pread(fd, size, 0) if size > 0 else b""
+
+    def _clone_one(template: object, token_bytes: bytes | None) -> object:
+        if not isinstance(template, _seat_jail.SeatJail) or template.seccomp_fd < 0:
+            return template
+        new_seccomp = _seat_jail.memfd_with("seat-seccomp", _pread_all(template.seccomp_fd))
+        allocated.append(new_seccomp)
+        new_bundle = template.bundle_fd
+        if template.bundle_fd >= 0:
+            new_bundle = _seat_jail.memfd_with("seat-bundle", _pread_all(template.bundle_fd))
+            allocated.append(new_bundle)
+        new_instructions = template.instructions_fd
+        if template.instructions_fd >= 0:
+            new_instructions = _seat_jail.memfd_with(
+                "seat-instructions", _pread_all(template.instructions_fd))
+            allocated.append(new_instructions)
+        new_token = template.token_fd
+        if template.token_fd is not None:
+            new_token = _seat_jail.token_pipe(b"" if token_bytes is None else token_bytes)
+            allocated.append(new_token)
+
+        fd_map = {template.seccomp_fd: new_seccomp}
+        if template.bundle_fd >= 0:
+            fd_map[template.bundle_fd] = new_bundle
+        if template.instructions_fd >= 0:
+            fd_map[template.instructions_fd] = new_instructions
+        if template.token_fd is not None and new_token is not None:
+            fd_map[template.token_fd] = new_token
+
+        str_map = {str(old): str(new) for old, new in fd_map.items()}
+        owner = list(template.process_owner)
+        for idx, arg in enumerate(owner):
+            if arg in ("--seccomp", "--ro-bind-data") and idx + 1 < len(owner):
+                replaced = str_map.get(owner[idx + 1])
+                if replaced is not None:
+                    owner[idx + 1] = replaced
+        env = dict(template.env)
+        if (template.token_fd is not None and new_token is not None
+                and _seat_jail.CLAUDE_TOKEN_FD_ENV in env):
+            env[_seat_jail.CLAUDE_TOKEN_FD_ENV] = str(new_token)
+        pass_fds = tuple(fd_map.get(fd, fd) for fd in template.pass_fds)
+        return replace(
+            template,
+            process_owner=tuple(owner),
+            env=MappingProxyType(env),
+            pass_fds=pass_fds,
+            seccomp_fd=new_seccomp,
+            bundle_fd=new_bundle,
+            instructions_fd=new_instructions,
+            token_fd=new_token,
+        )
+
+    try:
+        yield _clone_one(jail, getattr(seat, "token", b"")), _clone_one(probe, b"probe")
+    finally:
+        for fd in allocated:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _require_window_qualification_key(
@@ -15671,19 +15762,20 @@ class _WindowJailedRun:
 
         observation = _EXEC_OBSERVATION.set(None)
         try:
-            try:
-                done = _run_leg_with_liveness(
-                    command, cwd=_seat_jail.SEAT_TREE, env=dict(self.seat.jail.env),
-                    deadline_s=float(timeout_s), input_text=payload, stdout_guard=_cap,
-                    quiescence_latch=self.quiescence_latch,
-                    seat_jail=self.seat.jail, probe_jail=self.seat.probe_jail,
-                )
-            except subprocess.TimeoutExpired as exc:
-                output = exc.output if isinstance(exc.output, str) else ""
-                return qualification.JailedStep(
-                    exit_code=None, timed_out=True,
-                    stdout=output.encode("utf-8", errors="replace")[:_WINDOW_STEP_STDOUT_CAP],
-                )
+            with _fresh_window_launch_jails(self.seat) as (launch_jail, launch_probe):
+                try:
+                    done = _run_leg_with_liveness(
+                        command, cwd=_seat_jail.SEAT_TREE, env=dict(launch_jail.env),
+                        deadline_s=float(timeout_s), input_text=payload, stdout_guard=_cap,
+                        quiescence_latch=self.quiescence_latch,
+                        seat_jail=launch_jail, probe_jail=launch_probe,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    output = exc.output if isinstance(exc.output, str) else ""
+                    return qualification.JailedStep(
+                        exit_code=None, timed_out=True,
+                        stdout=output.encode("utf-8", errors="replace")[:_WINDOW_STEP_STDOUT_CAP],
+                    )
         finally:
             _EXEC_OBSERVATION.reset(observation)
         return qualification.JailedStep(
@@ -15931,7 +16023,7 @@ def _open_window_launch(spec: WindowLaunchSpec):
             )
         # Bind the route's live QualificationKey onto both jails before any launch
         # (agent-harness#2111), using the same mechanism as _bind_route_qualification.
-        qualification_key = _window_route_qualification_key(spec.leg, seat)
+        qualification_key = _window_route_qualification_key(spec.leg, seat, proxy=proxy)
         seat = _bind_route_qualification(
             seat, SimpleNamespace(decision=SimpleNamespace(qualification_key=qualification_key)),
         )
@@ -16169,18 +16261,19 @@ def _run_window_process(
 
     observation = _EXEC_OBSERVATION.set(None)
     try:
-        try:
-            done = _run_leg_with_liveness(
-                command, cwd=_seat_jail.SEAT_GEMINI_WORKSPACE,
-                env=dict(session.seat.jail.env), deadline_s=float(timeout_s),
-                input_text=input_text, stdout_guard=_guard, stderr_guard=_guard,
-                quiescence_latch=session.quiescence_latch,
-                seat_jail=session.seat.jail, probe_jail=session.seat.probe_jail,
-                trace_output=trace_output,
-            )
-        except subprocess.TimeoutExpired as exc:
-            output = exc.output if isinstance(exc.output, str) else ""
-            return _WindowProcess(None, True, output)
+        with _fresh_window_launch_jails(session.seat) as (launch_jail, launch_probe):
+            try:
+                done = _run_leg_with_liveness(
+                    command, cwd=_seat_jail.SEAT_GEMINI_WORKSPACE,
+                    env=dict(launch_jail.env), deadline_s=float(timeout_s),
+                    input_text=input_text, stdout_guard=_guard, stderr_guard=_guard,
+                    quiescence_latch=session.quiescence_latch,
+                    seat_jail=launch_jail, probe_jail=launch_probe,
+                    trace_output=trace_output,
+                )
+            except subprocess.TimeoutExpired as exc:
+                output = exc.output if isinstance(exc.output, str) else ""
+                return _WindowProcess(None, True, output)
     finally:
         _EXEC_OBSERVATION.reset(observation)
     return _WindowProcess(done.returncode, False, done.stdout)
@@ -16259,6 +16352,21 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
                     error = "watch_unavailable"
                     watch_handle = None
                 if watch_handle is not None:
+                    watch_closed = False
+
+                    def _ensure_watch_closed(handle=watch_handle) -> None:
+                        if not watch_closed:
+                            try:
+                                handle.drain_and_close(
+                                    quiescent=session.quiescence_latch.is_quiescent(),
+                                )
+                            except Exception:
+                                close_fd = getattr(handle, "_close_fd", None)
+                                if callable(close_fd):
+                                    with contextlib.suppress(Exception):
+                                        close_fd()
+
+                    stack.callback(_ensure_watch_closed)
                     run = _WindowJailedRun(
                         session.seat, session.quiescence_latch,
                         qualification_key=getattr(session, "qualification_key", None),
@@ -16361,9 +16469,14 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
                             if end is None or not end.acknowledged:
                                 error = error or "fence_unacknowledged"
                     quiescent = session.quiescence_latch.is_quiescent()
+                    watch_closed = True
                     try:
                         watch = watch_handle.drain_and_close(quiescent=quiescent)
                     except Exception:
+                        close_fd = getattr(watch_handle, "_close_fd", None)
+                        if callable(close_fd):
+                            with contextlib.suppress(Exception):
+                                close_fd()
                         watch = None
                         error = error or "watch_unavailable"
                     if spec.kind in _WINDOW_CONTROL_KINDS:
@@ -16459,6 +16572,21 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
             if spec.kind in _WINDOW_RUNTIME_KINDS:
                 supplier.seed_runtime_plants(layout, session.paths)
             watch_handle = supplier.arm_watch(layout, session.paths, kind=spec.kind)
+            watch_closed = False
+
+            def _ensure_leg_watch_closed(handle=watch_handle) -> None:
+                if not watch_closed:
+                    try:
+                        handle.drain_and_close(
+                            quiescent=session.quiescence_latch.is_quiescent(),
+                        )
+                    except Exception:
+                        close_fd = getattr(handle, "_close_fd", None)
+                        if callable(close_fd):
+                            with contextlib.suppress(Exception):
+                                close_fd()
+
+            stack.callback(_ensure_leg_watch_closed)
             run = _WindowJailedRun(
                 session.seat, session.quiescence_latch,
                 qualification_key=getattr(session, "qualification_key", None),
@@ -16537,9 +16665,14 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
                     values["bracket"] = qualification.run_bracket(proxy, run) \
                         if steps is None else steps(proxy, run)
             quiescent = session.quiescence_latch.is_quiescent()
+            watch_closed = True
             try:
                 values["watch"] = watch_handle.drain_and_close(quiescent=quiescent)
             except Exception:
+                close_fd = getattr(watch_handle, "_close_fd", None)
+                if callable(close_fd):
+                    with contextlib.suppress(Exception):
+                        close_fd()
                 error = error or "watch_unavailable"
             values["binding"] = qualification.LaunchBinding(
                 image_sha256=str(session.seat.image_sha256),
@@ -16583,17 +16716,18 @@ def _run_window_leg_process(
 
     observation = _EXEC_OBSERVATION.set(None)
     try:
-        try:
-            done = _run_leg_with_liveness(
-                list(command), cwd="/seat/home/workspace", env=dict(session.seat.jail.env),
-                deadline_s=float(timeout_s), input_text=input_text,
-                stdout_guard=_guard, stderr_guard=_guard,
-                quiescence_latch=session.quiescence_latch,
-                seat_jail=session.seat.jail, probe_jail=session.seat.probe_jail,
-            )
-        except subprocess.TimeoutExpired as exc:
-            output = exc.output if isinstance(exc.output, str) else ""
-            return _WindowProcess(None, True, output)
+        with _fresh_window_launch_jails(session.seat) as (launch_jail, launch_probe):
+            try:
+                done = _run_leg_with_liveness(
+                    list(command), cwd="/seat/home/workspace", env=dict(launch_jail.env),
+                    deadline_s=float(timeout_s), input_text=input_text,
+                    stdout_guard=_guard, stderr_guard=_guard,
+                    quiescence_latch=session.quiescence_latch,
+                    seat_jail=launch_jail, probe_jail=launch_probe,
+                )
+            except subprocess.TimeoutExpired as exc:
+                output = exc.output if isinstance(exc.output, str) else ""
+                return _WindowProcess(None, True, output)
     finally:
         _EXEC_OBSERVATION.reset(observation)
     return _WindowProcess(done.returncode, False, done.stdout)
