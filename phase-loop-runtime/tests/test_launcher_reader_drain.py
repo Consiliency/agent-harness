@@ -1987,20 +1987,37 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
             os.close(w1)
 
     # Part 2: temporary backpressure clears before 'last' -> live display resumes!
-    first_logged = tmp_path / "first_logged.flag"
+    # Synchronize on the rejected stdout readiness check (not log flush) before draining.
+    backpressured_flag = tmp_path / "first_backpressured.flag"
     release_last = tmp_path / "release_last.flag"
     log2 = tmp_path / "resume.log"
     driver2 = (
-        "import os, sys, time\n"
+        "import os, select, sys, time\n"
         "from pathlib import Path\n"
         "from phase_loop_runtime import launcher\n"
         f"log2 = Path({str(log2)!r})\n"
-        f"first_logged = {str(first_logged)!r}\n"
+        f"backpressured_flag = Path({str(backpressured_flag)!r})\n"
         f"release_last = {str(release_last)!r}\n"
+        "stdout_fd = sys.stdout.fileno()\n"
+        "orig_poll_cls = select.poll\n"
+        "class SpyPoll:\n"
+        "    def __init__(self):\n"
+        "        self._p = orig_poll_cls()\n"
+        "        self._watching_stdout = False\n"
+        "    def register(self, fd, eventmask):\n"
+        "        if fd == stdout_fd and (eventmask & select.POLLOUT):\n"
+        "            self._watching_stdout = True\n"
+        "        return self._p.register(fd, eventmask)\n"
+        "    def poll(self, timeout=None):\n"
+        "        events = self._p.poll(timeout)\n"
+        "        if self._watching_stdout and not events and not backpressured_flag.exists():\n"
+        "            backpressured_flag.write_text('rejected', encoding='utf-8')\n"
+        "        return events\n"
+        "select.poll = SpyPoll\n"
         "child_script = (\n"
         "    'import os, time\\n'\n"
         "    'print(\"first\", flush=True)\\n'\n"
-        "    f'deadline = time.monotonic() + 5.0\\n'\n"
+        "    'deadline = time.monotonic() + 5.0\\n'\n"
         "    f'while not os.path.exists({release_last!r}) and time.monotonic() < deadline:\\n'\n"
         "    '    time.sleep(0.01)\\n'\n"
         "    'print(\"last\", flush=True)\\n'\n"
@@ -2028,12 +2045,12 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         os.close(w2)
         w2 = -1
 
-        # Wait until 'first' is written to log2 (so live display attempted 'first' under backpressure).
+        # Wait until stdout readiness check ACTUALLY rejected 'first' under backpressure.
         deadline = time.monotonic() + 3.0
-        while (not log2.exists() or "first" not in log2.read_text(encoding="utf-8")) and time.monotonic() < deadline:
+        while not backpressured_flag.exists() and time.monotonic() < deadline:
             assert p2.poll() is None, p2.stderr.read().decode(errors="replace")
             time.sleep(0.01)
-        assert "first" in log2.read_text(encoding="utf-8")
+        assert backpressured_flag.exists(), "first record did not hit stdout backpressure"
 
         # Drain the pipe completely, then release the child to print 'last'.
         rflags = fcntl.fcntl(r2, fcntl.F_GETFL)
@@ -2062,12 +2079,84 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
             elif p2.poll() is not None:
                 break
         assert p2.wait(timeout=3.0) == 0, p2.stderr.read().decode(errors="replace")
-        assert b"last" in b"".join(resumed_chunks)
+        resumed = b"".join(resumed_chunks)
+        assert b"first" not in resumed
+        assert b"last" in resumed
     finally:
         release_last.write_text("go", encoding="utf-8")
         os.close(r2)
         if w2 >= 0:
             os.close(w2)
+
+    # Part 3: two concurrent launches sharing a 4 KiB stdout pipe serialize non-blocking mode
+    # toggles so neither restores blocking mode before the other's os.write().
+    report3 = tmp_path / "concurrent.json"
+    driver3 = (
+        "import json, os, sys, threading, time\n"
+        "from pathlib import Path\n"
+        "from phase_loop_runtime import launcher\n"
+        "stdout_fd = sys.stdout.fileno()\n"
+        "orig_write = os.write\n"
+        "t1_in_write = threading.Event()\n"
+        "release_t1 = threading.Event()\n"
+        "seen_nonblocking = []\n"
+        "def spy_write(fd, data):\n"
+        "    if fd == stdout_fd:\n"
+        "        seen_nonblocking.append(not os.get_blocking(fd))\n"
+        "        if not t1_in_write.is_set():\n"
+        "            t1_in_write.set()\n"
+        "            release_t1.wait(timeout=0.05)\n"
+        "    return orig_write(fd, data)\n"
+        "os.write = spy_write\n"
+        "results = {}\n"
+        "def run_one(name, payload):\n"
+        "    t0 = time.monotonic()\n"
+        f"    res = launcher.launch([sys.executable, '-c', f'print({{payload!r}}, flush=True)'], log_path=Path({str(tmp_path)!r}) / f'{{name}}.log', stream_output=True, timeout_seconds=0.3)\n"
+        "    results[name] = (res.returncode, time.monotonic() - t0)\n"
+        "th1 = threading.Thread(target=run_one, args=('t1', 'A' * 4096))\n"
+        "th2 = threading.Thread(target=run_one, args=('t2', 'B' * 4096))\n"
+        "th1.start()\n"
+        "t1_in_write.wait(timeout=2.0)\n"
+        "th2.start()\n"
+        "release_t1.set()\n"
+        "th1.join(timeout=3.0)\n"
+        "th2.join(timeout=3.0)\n"
+        f"Path({str(report3)!r}).write_text(json.dumps({{'results': results, 'all_nonblocking': bool(seen_nonblocking) and all(seen_nonblocking), 'restored_blocking': os.get_blocking(stdout_fd)}}), encoding='utf-8')\n"
+    )
+    r3, w3 = os.pipe()
+    try:
+        fcntl.fcntl(w3, fcntl.F_SETPIPE_SZ, 4096)
+        env = dict(os.environ)
+        env.pop("PYTHONUNBUFFERED", None)
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        p3 = subprocess.Popen([sys.executable, "-c", driver3], stdout=w3, stderr=subprocess.PIPE, env=env)
+        os.close(w3)
+        w3 = -1
+        deadline = time.monotonic() + 3.0
+        while not report3.exists() and time.monotonic() < deadline:
+            assert p3.poll() is None, p3.stderr.read().decode(errors="replace")
+            time.sleep(0.01)
+        assert report3.exists(), "concurrent launch blocked on shared 4 KiB stdout pipe"
+        data3 = json.loads(report3.read_text(encoding="utf-8"))
+        assert data3["results"]["t1"][0] == 0 and data3["results"]["t1"][1] < 1.0
+        assert data3["results"]["t2"][0] == 0 and data3["results"]["t2"][1] < 1.0
+        assert data3["all_nonblocking"] is True
+        assert data3["restored_blocking"] is True
+        rflags = fcntl.fcntl(r3, fcntl.F_GETFL)
+        fcntl.fcntl(r3, fcntl.F_SETFL, rflags | os.O_NONBLOCK)
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            ready, _, _ = select.select([r3], [], [], 0.05)
+            if ready:
+                if not os.read(r3, 65536):
+                    break
+            elif p3.poll() is not None:
+                break
+        assert p3.wait(timeout=2.0) == 0, p3.stderr.read().decode(errors="replace")
+    finally:
+        os.close(r3)
+        if w3 >= 0:
+            os.close(w3)
 
 
 def test_first_record_dequeued_after_leader_exit_uses_bounded_drain(tmp_path, monkeypatch):

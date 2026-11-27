@@ -27,6 +27,7 @@ from typing import Any, Callable, Mapping
 
 _BUILTIN_PRINT = builtins.print
 _STREAM_CHUNK_BYTES = 512
+_LIVE_STDOUT_LOCK = threading.Lock()
 
 from .capability_registry import capability_registry
 from .advisor_board.harness_mapping import agy_model_effort, render_agy_model
@@ -3299,36 +3300,37 @@ def launch(
                 raw = text.encode(encoding, errors=errors)
                 if not raw:
                     return
-                if not _fd_ready_for_write(stdout_fd):
-                    return
-                was_blocking = False
-                changed_blocking = False
-                if hasattr(os, "get_blocking") and hasattr(os, "set_blocking"):
-                    try:
-                        was_blocking = os.get_blocking(stdout_fd)
-                        if was_blocking:
-                            os.set_blocking(stdout_fd, False)
-                            changed_blocking = True
-                    except OSError:
-                        pass
-                try:
-                    offset = 0
-                    while offset < len(raw):
-                        if offset > 0 and not _fd_ready_for_write(stdout_fd):
-                            return
+                with _LIVE_STDOUT_LOCK:
+                    if not _fd_ready_for_write(stdout_fd):
+                        return
+                    was_blocking = False
+                    changed_blocking = False
+                    if hasattr(os, "get_blocking") and hasattr(os, "set_blocking"):
                         try:
-                            written = os.write(stdout_fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
-                        except BlockingIOError:
-                            return
-                        if written <= 0:
-                            return
-                        offset += written
-                finally:
-                    if changed_blocking:
-                        try:
-                            os.set_blocking(stdout_fd, True)
+                            was_blocking = os.get_blocking(stdout_fd)
+                            if was_blocking:
+                                os.set_blocking(stdout_fd, False)
+                                changed_blocking = True
                         except OSError:
                             pass
+                    try:
+                        offset = 0
+                        while offset < len(raw):
+                            if offset > 0 and not _fd_ready_for_write(stdout_fd):
+                                return
+                            try:
+                                written = os.write(stdout_fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
+                            except BlockingIOError:
+                                return
+                            if written <= 0:
+                                return
+                            offset += written
+                    finally:
+                        if changed_blocking:
+                            try:
+                                os.set_blocking(stdout_fd, True)
+                            except OSError:
+                                pass
 
             def _sink_worker() -> None:
                 assert sink_queue is not None
