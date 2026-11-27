@@ -14,6 +14,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Window control launches (`_open_window_launch`) now bind the route's live
+  `QualificationKey` onto each control seat's jail and probe jail via
+  `_bind_route_qualification` and require it to match at launch (`_WindowJailedRun`,
+  `_run_window_process`, `_run_window_leg_process`), so hosts with only v2
+  `QualificationKey` pass records admit window control launches and missing or
+  mismatched keys fail closed before spawn (agent-harness#2111).
 - `test_jevdrill_usage::test_probe_descendant_cleanup_and_deadline` now accepts Linux
   dead states (`X`/`x`) and vanished `/proc/<pid>/stat` entries alongside `Z`, removing
   the reaper-timing flake under hosted CI load (agent-harness#2153).

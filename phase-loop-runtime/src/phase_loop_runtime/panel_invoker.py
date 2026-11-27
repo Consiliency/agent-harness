@@ -13819,9 +13819,93 @@ def _bind_route_qualification(seat: "_JailedSeat", route: object) -> "_JailedSea
     """Carry the route decision's qualification key onto the jails it admitted."""
     key = getattr(getattr(route, "decision", None), "qualification_key", None)
     if key is not None:
-        seat.jail = replace(seat.jail, qualification_key=key)
-        seat.probe_jail = replace(seat.probe_jail, qualification_key=key)
+        if isinstance(seat.jail, _seat_jail.SeatJail):
+            seat.jail = replace(seat.jail, qualification_key=key)
+        else:
+            setattr(seat.jail, "qualification_key", key)
+        if isinstance(seat.probe_jail, _seat_jail.SeatJail):
+            seat.probe_jail = replace(seat.probe_jail, qualification_key=key)
+        else:
+            setattr(seat.probe_jail, "qualification_key", key)
     return seat
+
+
+def _window_route_qualification_key(
+    leg: str, seat: "_JailedSeat",
+) -> "_seat_route_contract.QualificationKey":
+    """Build the route's live QualificationKey for a window control launch from the leg's
+    registered profile, active variant, shipped allowlist digest and the dependency
+    projection bound onto ``seat.jail``."""
+    from .seat_profiles import profile_for
+    from .seat_qualification_key import key_for_launch
+    from .seat_route import _allowlist_digest_for_launch
+
+    profile = profile_for(leg)
+    if profile is None:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"), f"no jail profile registered for {leg}")
+    variant = None
+    if profile.variant is not None:
+        variant, code = profile.variant(os.environ)
+        if code is not None:
+            raise _seat_jail.SeatSandboxRefused(code)
+    allowlist_digest = _allowlist_digest_for_launch(profile)
+    projection = getattr(seat.jail, "dependency", None)
+    if projection is None:
+        dep_digest = getattr(seat.jail, "dependency_projection_digest", "")
+        if dep_digest:
+            projection = SimpleNamespace(projection_digest=dep_digest)
+    try:
+        return key_for_launch(
+            profile, variant=variant, allowlist_digest=allowlist_digest,
+            projection=projection,
+        )
+    except ValueError as exc:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("jail_unqualified"), str(exc)) from exc
+
+
+def _require_window_qualification_key(
+    seat: "_JailedSeat",
+    expected_key: object | None = None,
+) -> "_seat_route_contract.QualificationKey":
+    """Require a window control seat's jail and probe jail to carry a matching route
+    QualificationKey (and match ``expected_key`` when supplied), refusing before launch
+    rather than falling back to a bare profile-digest pass lookup."""
+    jail = getattr(seat, "jail", None)
+    probe = getattr(seat, "probe_jail", None)
+    key = getattr(jail, "qualification_key", None)
+    probe_key = getattr(probe, "qualification_key", None)
+    if not isinstance(key, _seat_route_contract.QualificationKey):
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("jail_unqualified"),
+            "window control jail has no route qualification key",
+        )
+    if probe_key != key:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "window control probe jail qualification key does not match",
+        )
+    if expected_key is not None and key != expected_key:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "window control jail is not the route's qualified profile",
+        )
+    if (isinstance(jail, _seat_jail.SeatJail)
+            and (key.profile_digest != _seat_jail.actual_profile_digest(jail)
+                 or key.projection_digest != (jail.dependency_projection_digest or None))):
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "window control jail is not the route's qualified profile",
+        )
+    if (isinstance(probe, _seat_jail.SeatJail)
+            and (probe_key.profile_digest != _seat_jail.actual_profile_digest(probe)
+                 or probe_key.projection_digest != (probe.dependency_projection_digest or None))):
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "window control probe jail is not the route's qualified profile",
+        )
+    return key
 
 
 def _prepare_jailed_claude(
@@ -15548,6 +15632,7 @@ class _WindowJailedRun:
 
     seat: _JailedSeat
     quiescence_latch: _ProviderQuiescenceLatch
+    qualification_key: object | None = None
 
     def __call__(
         self, argv: Sequence[str], *, env: Mapping[str, str], use_proxy: bool,
@@ -15574,6 +15659,7 @@ class _WindowJailedRun:
 
         if any(_env_bad(name, value) for name, value in exact.items()):
             return qualification.JailedStep(exit_code=None, timed_out=False, stdout=b"")
+        _require_window_qualification_key(self.seat, self.qualification_key)
         command = ["/usr/bin/python3", "-I", "-S", "-c", _WINDOW_ENV_WRAPPER, *map(str, argv)]
         payload = "\0".join(f"{name}={exact[name]}" for name in sorted(exact)) + "\0"
         kept = 0
@@ -15616,6 +15702,7 @@ class _WindowLaunchSession:
     quiescence_latch: _ProviderQuiescenceLatch
     trace_path: Path | None = None
     cleaned: bool = False
+    qualification_key: object | None = None
 
     def cleanup(self) -> None:
         if not self.cleaned:
@@ -15763,6 +15850,7 @@ def _open_window_launch(spec: WindowLaunchSpec):
     )
     stack = contextlib.ExitStack()
     session = None
+    seat = None
     base = None
     try:
         activate_review_isolation_authorization(
@@ -15841,6 +15929,12 @@ def _open_window_launch(spec: WindowLaunchSpec):
                 _seat_uid.holder_pid_from_prefix(prefix), (artifact, ""), proxy,
                 credential_mode=credential_mode, copy_transform=supplier.copy_transform,
             )
+        # Bind the route's live QualificationKey onto both jails before any launch
+        # (agent-harness#2111), using the same mechanism as _bind_route_qualification.
+        qualification_key = _window_route_qualification_key(spec.leg, seat)
+        seat = _bind_route_qualification(
+            seat, SimpleNamespace(decision=SimpleNamespace(qualification_key=qualification_key)),
+        )
         trace_path = None
         if spec.kind in _WINDOW_CONTROL_KINDS:
             trace_path = base / _WINDOW_TRACE_FILE
@@ -15855,12 +15949,15 @@ def _open_window_launch(spec: WindowLaunchSpec):
             ) if supplier is None else supplier.host_path_map(
                 seat, credential=credential_mode != "none"),
             authorization=authorization, quiescence_latch=latch, trace_path=trace_path,
+            qualification_key=qualification_key,
         )
         yield session
     finally:
         try:
             if session is not None and not session.cleaned:
                 session.cleanup()
+            elif session is None and seat is not None:
+                _cleanup_jailed_seat(seat)
         finally:
             try:
                 stack.close()
@@ -16057,6 +16154,9 @@ def _run_window_process(
     input_text: str | None = None, trace_output: str | None = None,
 ) -> _WindowProcess:
     secrets = _jailed_gemini_secrets(session.seat)
+    _require_window_qualification_key(
+        session.seat, getattr(session, "qualification_key", None),
+    )
     carry = b""
     longest = max((len(secret) for secret in secrets), default=1)
 
@@ -16159,10 +16259,15 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
                     error = "watch_unavailable"
                     watch_handle = None
                 if watch_handle is not None:
-                    run = _WindowJailedRun(session.seat, session.quiescence_latch)
+                    run = _WindowJailedRun(
+                        session.seat, session.quiescence_latch,
+                        qualification_key=getattr(session, "qualification_key", None),
+                    )
                     first_launch_ns = time.monotonic_ns()
                     try:
                         sentinel = bool(watch_handle.prove_sentinel(run))
+                    except _seat_jail.SeatSandboxRefused:
+                        raise
                     except Exception:  # an unavailable sentinel is an incomplete watch
                         sentinel = False
                     if not sentinel:
@@ -16354,7 +16459,10 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
             if spec.kind in _WINDOW_RUNTIME_KINDS:
                 supplier.seed_runtime_plants(layout, session.paths)
             watch_handle = supplier.arm_watch(layout, session.paths, kind=spec.kind)
-            run = _WindowJailedRun(session.seat, session.quiescence_latch)
+            run = _WindowJailedRun(
+                session.seat, session.quiescence_latch,
+                qualification_key=getattr(session, "qualification_key", None),
+            )
             values["first_jailed_launch_ns"] = time.monotonic_ns()
             if not watch_handle.prove_sentinel(run):
                 error = "watch_unavailable"
@@ -16460,6 +16568,9 @@ def _run_window_leg_process(
     session: _WindowLaunchSession, command: Sequence[str], secrets: tuple[bytes, ...], *,
     timeout_s: float, input_text: str | None = None,
 ) -> _WindowProcess:
+    _require_window_qualification_key(
+        session.seat, getattr(session, "qualification_key", None),
+    )
     carry = b""
     longest = max((len(secret) for secret in secrets), default=1)
 
