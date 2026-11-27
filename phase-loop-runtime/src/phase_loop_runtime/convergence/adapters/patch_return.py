@@ -623,15 +623,29 @@ def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: s
                    deadline: float | None = None,
                    signal_guard: object = None,
                    launcher_commands: tuple[tuple[str, ...], ...] = PRODUCTION_LAUNCHER_COMMANDS) -> CancelOutcome:
-    if not 0 < wait_seconds <= CANCEL_WAIT_SECONDS:
+    if type(wait_seconds) not in (int, float):
         raise ValueError("cancel_wait_invalid")
-    if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+    try:
+        wait_f = float(wait_seconds)
+    except OverflowError:
+        raise ValueError("cancel_wait_invalid") from None
+    if not (math.isfinite(wait_f) and 0 < wait_f <= CANCEL_WAIT_SECONDS):
         raise ValueError("cancel_wait_invalid")
+    deadline_f: float | None = None
+    if deadline is not None:
+        if type(deadline) not in (int, float):
+            raise ValueError("cancel_wait_invalid")
+        try:
+            deadline_f = float(deadline)
+        except OverflowError:
+            raise ValueError("cancel_wait_invalid") from None
+        if not math.isfinite(deadline_f):
+            raise ValueError("cancel_wait_invalid")
     if (run_id is None) == (attempt_id is None):
         raise ValueError("cancel_target_invalid")
-    poll_deadline = time.monotonic() + wait_seconds
-    if deadline is not None:
-        poll_deadline = min(poll_deadline, float(deadline))
+    poll_deadline = time.monotonic() + wait_f
+    if deadline_f is not None:
+        poll_deadline = min(poll_deadline, deadline_f)
     if time.monotonic() >= poll_deadline:
         return "cancel_pending"
     root = journal.open_journal_root(state_root / "journal", create=False)
@@ -687,6 +701,8 @@ def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: s
         lock_type, _, _, _, owner = struct.unpack("hhqqi", lock)
         if lock_type == fcntl.F_UNLCK or owner != pid:
             return "owner_unverified"
+        if time.monotonic() >= poll_deadline:
+            return "cancel_pending"
         def _send_sigterm() -> None:
             signal.pidfd_send_signal(pidfd, signal.SIGTERM)
         if signal_guard is not None:

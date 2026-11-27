@@ -4620,32 +4620,42 @@ class PlacementLifecycle:
                 if cap_to_fence and (fence_at is None or now >= fence_at):
                     return "cancel_pending"
                 cancel_deadline = min(bound.end, now + CANCEL_WAIT_S)
-                wait = min(CANCEL_WAIT_S, cancel_deadline - now)
+                guard_bound = _Deadline(cancel_deadline)
+                wait = min(CANCEL_WAIT_S, guard_bound.left())
                 if wait <= 0:
                     return "cancel_pending"
 
                 def _signal_guard(send_sigterm: Callable[[], None]) -> str | None:
                     try:
                         with self.launch_operation_lock(
-                            reservation_id, generation, timeout_s=bound.left(),
+                            reservation_id, generation, timeout_s=guard_bound.left(),
                         ) as held:
                             if not held:
                                 return "cancel_pending"
-                            with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
-                                if not lock.held or self._owned_claim(key) != claim:
+                            current_row = self._disposition(key)
+                            if not current_row["start_intent"]:
+                                return "owner_unverified"
+                            current_cap = (
+                                not current_row["fenced"]
+                                and current_row.get("confirmed_count") is not None
+                            )
+                            current_fence = (
+                                self._renewal_fence_at(key, current_row)
+                                if current_cap else None
+                            )
+                            lock_timeout = guard_bound.left()
+                            if current_cap:
+                                if current_fence is None:
+                                    return "cancel_pending"
+                                lock_timeout = min(lock_timeout, current_fence - _monotonic())
+                            if lock_timeout <= 0:
+                                return "cancel_pending"
+                            with self.launch_lock(reservation_id, timeout_s=lock_timeout) as lock:
+                                if not lock.held:
+                                    return "cancel_pending"
+                                if self._owned_claim(key) != claim:
                                     return "owner_unverified"
-                                current_row = self._disposition(key)
-                                if not current_row["start_intent"]:
-                                    return "owner_unverified"
-                                current_cap = (
-                                    not current_row["fenced"]
-                                    and current_row.get("confirmed_count") is not None
-                                )
-                                current_fence = (
-                                    self._renewal_fence_at(key, current_row)
-                                    if current_cap else None
-                                )
-                            if bound.expired():
+                            if guard_bound.expired():
                                 return "cancel_pending"
                             if current_cap and (current_fence is None or _monotonic() >= current_fence):
                                 return "cancel_pending"

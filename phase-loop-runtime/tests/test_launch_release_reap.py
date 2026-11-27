@@ -1291,7 +1291,36 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
     assert lock_during_poll and all(held is False for held in lock_during_poll)
     assert sum(sleeps) == pytest.approx(1.0)
 
-    # Case 3: fence_launch runs concurrently during verification (proving the lock is free);
+    # Case 3: verification exceeds WORKER cancel_deadline (CANCEL_WAIT_S=10 s) while caller
+    # deadline and renewal fence are still open -> no SIGTERM delivered past WORKER deadline.
+    for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
+        lst.clear()
+    clock.now = heartbeat + 1.0  # plenty of room before fence_at (heartbeat + 2T/3)
+    verification_delay = sp.CANCEL_WAIT_S + 1.0
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 60.0) == "cancel_pending"
+    assert signals_sent == []
+    assert sleeps == []
+
+    # Case 4: inside signal_guard under launch_operation_lock, launch_lock timeout is capped
+    # at the remaining renewal fence window rather than the outer caller deadline.
+    for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
+        lst.clear()
+    clock.now = fence_at - 0.5
+    verification_delay = 0.0
+    orig_launch_lock = life.launch_lock
+    observed_guard_lock_timeouts = []
+
+    def spy_launch_lock(reservation_id, *, timeout_s, **kwargs):
+        if life._holds_operation(rid, generation):
+            observed_guard_lock_timeouts.append(timeout_s)
+        return orig_launch_lock(reservation_id, timeout_s=timeout_s, **kwargs)
+
+    monkeypatch.setattr(life, "launch_lock", spy_launch_lock)
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20.5) == "cancel_pending"
+    assert observed_guard_lock_timeouts == [pytest.approx(0.5)]
+    monkeypatch.setattr(life, "launch_lock", orig_launch_lock)
+
+    # Case 5: fence_launch runs concurrently during verification (proving the lock is free);
     # once fenced, signal_guard sees fenced=True and delivers SIGTERM even past fence_at.
     for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
         lst.clear()
@@ -1302,6 +1331,12 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
     assert signals_sent == [signal.SIGTERM]
     assert lock_during_signal == [True]
     assert lock_during_poll and all(held is False for held in lock_during_poll)
+
+    # Oversized integer deadline/wait raises ValueError("cancel_wait_invalid"), not OverflowError.
+    with pytest.raises(ValueError, match="cancel_wait_invalid"):
+        patch_return.cancel_attempt(state_root=worker_root, attempt_id=run_id, deadline=10**400)
+    with pytest.raises(ValueError, match="cancel_wait_invalid"):
+        patch_return.cancel_attempt(state_root=worker_root, attempt_id=run_id, wait_seconds=10**400)
 
 
 def test_generation_renewal_retries_within_confirmation_window(env, prepared, monkeypatch):
