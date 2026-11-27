@@ -401,7 +401,9 @@ def test_interrupt_during_post_exit_drain_cleans_up_descendant_before_reap(tmp_p
     orig_descendant_cleanup = launcher._cleanup_descendant_process_group
     cleanup_calls = []
 
-    def spy_descendant_cleanup(process_pid, process_group_id, *, reason, pipes_closed, include_leader=False):
+    def spy_descendant_cleanup(
+        process_pid, process_group_id, *, reason, pipes_closed, include_leader=False, leader_exited=None,
+    ):
         cleanup_calls.append((reason, process_pid, process_group_id))
         return orig_descendant_cleanup(
             process_pid,
@@ -409,6 +411,7 @@ def test_interrupt_during_post_exit_drain_cleans_up_descendant_before_reap(tmp_p
             reason=reason,
             pipes_closed=pipes_closed,
             include_leader=include_leader,
+            leader_exited=leader_exited,
         )
 
     monkeypatch.setattr(launcher, "_cleanup_descendant_process_group", spy_descendant_cleanup)
@@ -577,9 +580,9 @@ def test_interrupt_during_post_exit_sigterm_grace_escalates_to_sigkill(tmp_path,
 
 
 def test_post_exit_and_interrupt_cleanup_work_without_os_waitid(tmp_path, monkeypatch):
-    """Platforms without os.waitid (such as macOS Python 3.12) must still terminate
-    pipe-holding descendants on post-exit drain timeout and on KeyboardInterrupt."""
-    monkeypatch.setattr(launcher, "_has_waitid_nowait", lambda: False)
+    """When os.waitid is absent (e.g., simulated macOS Python 3.12), non-reaping inspection
+    must keep the leader unreaped through BOTH post-exit drain timeout AND Ctrl-C."""
+    monkeypatch.delattr(launcher.os, "waitid", raising=False)
     marker = tmp_path / "no_waitid_grandchild.pid"
     script = (
         "import subprocess, sys\n"
@@ -604,6 +607,163 @@ def test_post_exit_and_interrupt_cleanup_work_without_os_waitid(tmp_path, monkey
         assert not _proc_alive(grandchild_pid)
     finally:
         _kill_pid_best_effort(marker)
+
+    # Now verify Ctrl-C after exit when os.waitid is absent still signals the pinned group.
+    marker2 = tmp_path / "no_waitid_interrupt_grandchild.pid"
+    script2 = (
+        "import subprocess, sys\n"
+        "proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(marker2)!r}, 'w').write(str(proc.pid))\n"
+        "print('leader-done', flush=True)\n"
+    )
+    exited_seen = threading.Event()
+    orig_exited = launcher._child_exited_no_reap
+
+    def track_exited(proc):
+        ex, un = orig_exited(proc)
+        if ex:
+            exited_seen.set()
+        return ex, un
+
+    fired = False
+
+    class InterruptInDrain(queue.Queue):
+        def get(self, block=True, timeout=None):
+            nonlocal fired
+            if exited_seen.is_set() and not fired:
+                fired = True
+                raise KeyboardInterrupt
+            return super().get(block, timeout)
+
+    monkeypatch.setattr(launcher, "_child_exited_no_reap", track_exited)
+    monkeypatch.setattr(launcher, "Queue", InterruptInDrain)
+    try:
+        result2 = launcher.launch(
+            _child(script2),
+            log_path=tmp_path / "run2" / "output.log",
+            timeout_seconds=1.5,
+        )
+        assert fired is True
+        assert result2.interrupted is True
+        assert result2.cleanup_evidence is not None
+        assert "SIGTERM" in result2.cleanup_evidence["signals_sent"]
+        grandchild_pid2 = int(marker2.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid2) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid2)
+    finally:
+        _kill_pid_best_effort(marker2)
+
+
+def test_timeout_cleanup_escalates_sigkill_for_sigterm_ignoring_descendant(tmp_path):
+    """Timeout cleanup must not stop as soon as the leader exits on SIGTERM while a
+    SIGTERM-ignoring grandchild remains alive."""
+    marker = tmp_path / "timeout_sigign_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.5,
+        )
+        assert result.timed_out is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_interrupt_without_proc_liveness_escalates_sigkill_when_leader_closes_pipes(tmp_path, monkeypatch):
+    """When /proc liveness is unavailable (non-Linux fallback), a live leader that catches
+    SIGTERM, closes stdout/stderr, and keeps running must still escalate to SIGKILL."""
+    monkeypatch.setattr(launcher, "_live_pgid_members_exist", lambda *a, **k: None)
+    script = (
+        "import os, signal, time\n"
+        "def trap(*_):\n"
+        "    for fd in (1, 2):\n"
+        "        try: os.close(fd)\n"
+        "        except OSError: pass\n"
+        "signal.signal(signal.SIGTERM, trap)\n"
+        "print('armed', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    fired = False
+
+    class InterruptAfterArmed(queue.Queue):
+        def get(self, block=True, timeout=None):
+            nonlocal fired
+            val = super().get(block, timeout)
+            if val == "armed\n" and not fired:
+                fired = True
+                raise KeyboardInterrupt
+            return val
+
+    monkeypatch.setattr(launcher, "Queue", InterruptAfterArmed)
+    started = time.monotonic()
+    result = launcher.launch(
+        _child(script),
+        log_path=tmp_path / "run" / "output.log",
+        timeout_seconds=3.0,
+    )
+    assert fired is True
+    assert time.monotonic() - started < 3.0
+    assert result.interrupted is True
+    assert result.cleanup_evidence is not None
+    assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+    assert result.cleanup_evidence["result"] == "killed"
+
+
+def test_second_interrupt_during_interrupt_drain_still_reaps_leader(tmp_path, monkeypatch):
+    """A second KeyboardInterrupt during the interrupt handler's drain must still run
+    finalization to reap the leader and stop reader threads."""
+    script = "import time\nprint('started', flush=True)\ntime.sleep(30)\n"
+    interrupts = 0
+
+    class DoubleInterruptQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            nonlocal interrupts
+            if interrupts == 0:
+                val = super().get(block, timeout)
+                if val == "started\n":
+                    interrupts = 1
+                    raise KeyboardInterrupt
+                return val
+            if interrupts == 1:
+                interrupts = 2
+                raise KeyboardInterrupt
+            return super().get(block, timeout)
+
+    monkeypatch.setattr(launcher, "Queue", DoubleInterruptQueue)
+    result = launcher.launch(
+        _child(script),
+        log_path=tmp_path / "run" / "output.log",
+        timeout_seconds=2.0,
+    )
+    assert interrupts == 2
+    assert result.interrupted is True
+    assert result.returncode is not None
 
 
 def test_interrupt_during_post_sigkill_liveness_probe_still_reaps_leader(tmp_path, monkeypatch):

@@ -3303,131 +3303,136 @@ def launch(
             cleanup_evidence: dict[str, Any] | None = None
             last_heartbeat_summary: dict[str, Any] | None = None
             reader_eof = False
-            while True:
-                try:
-                    wait_s = 0.05 if _codex_usage_observer is not None else 1.0
-                    if action != "review" and timeout_seconds is not None:
-                        remaining_launch = started_monotonic + timeout_seconds - time.monotonic()
-                        wait_s = min(wait_s, 0.05, max(0.005, remaining_launch))
+            def cleanup_own_group_or_process(reason: str) -> dict[str, Any]:
+                nonlocal leader_unreaped, cleaned_up_group
+                own_pgrp = False
+                if process_group_id is not None and hasattr(os, "killpg"):
                     try:
-                        line = line_queue.get(timeout=wait_s)
-                        if line is None and _codex_usage_observer is None:
-                            reader_eof = True
-                    except Empty:
-                        line = None
-                    if line:
-                        consume(line)
-                    now = time.monotonic()
-                    if heartbeat_path is not None and now - last_heartbeat >= heartbeat_interval_seconds:
-                        heartbeat = run_heartbeat_summary(
-                            log_path=log_path,
-                            heartbeat_path=heartbeat_path,
-                            pid=process.pid,
-                            started_monotonic=started_monotonic,
-                            started_at=started_at,
-                            heartbeat_interval_seconds=heartbeat_interval_seconds,
-                            quiet_warning_seconds=quiet_warning_seconds,
-                            quiet_blocker_seconds=quiet_blocker_seconds,
-                            command=command,
-                            returncode=getattr(process, "returncode", None),
-                            process_group_id=process_group_id,
-                        )
-                        last_heartbeat_summary = heartbeat
-                        write_run_heartbeat(heartbeat_path, heartbeat)
-                        if stream_output and heartbeat.get("quiet_level") != "active":
-                            print(
-                                "heartbeat:",
-                                f"pid={heartbeat.get('pid')}",
-                                f"elapsed={heartbeat.get('elapsed_seconds')}s",
-                                f"quiet={heartbeat.get('seconds_since_log_update')}s",
-                                f"level={heartbeat.get('quiet_level')}",
-                                flush=True,
+                        own_pgrp = process_group_id != os.getpgrp()
+                    except OSError:
+                        own_pgrp = False
+                if own_pgrp and getattr(process, "returncode", None) is None:
+                    evidence = _cleanup_descendant_process_group(
+                        process.pid,
+                        process_group_id,
+                        reason=reason,
+                        pipes_closed=pipes_all_eof,
+                        include_leader=True,
+                        leader_exited=lambda: _child_exited_no_reap(process)[0],
+                    )
+                    leader_unreaped = False
+                    cleaned_up_group = True
+                    if evidence is not None:
+                        if evidence.get("interrupted"):
+                            nonlocal interrupted
+                            interrupted = True
+                        return evidence
+                leader_unreaped = False
+                cleaned_up_group = True
+                return _cleanup_process_group(process, process_group_id, reason=reason)
+
+            try:
+                while True:
+                    try:
+                        wait_s = 0.05 if _codex_usage_observer is not None else 1.0
+                        if action != "review" and timeout_seconds is not None:
+                            remaining_launch = started_monotonic + timeout_seconds - time.monotonic()
+                            wait_s = min(wait_s, 0.05, max(0.005, remaining_launch))
+                        try:
+                            line = line_queue.get(timeout=wait_s)
+                            if line is None and _codex_usage_observer is None:
+                                reader_eof = True
+                        except Empty:
+                            line = None
+                        if line:
+                            consume(line)
+                        now = time.monotonic()
+                        if heartbeat_path is not None and now - last_heartbeat >= heartbeat_interval_seconds:
+                            heartbeat = run_heartbeat_summary(
+                                log_path=log_path,
+                                heartbeat_path=heartbeat_path,
+                                pid=process.pid,
+                                started_monotonic=started_monotonic,
+                                started_at=started_at,
+                                heartbeat_interval_seconds=heartbeat_interval_seconds,
+                                quiet_warning_seconds=quiet_warning_seconds,
+                                quiet_blocker_seconds=quiet_blocker_seconds,
+                                command=command,
+                                returncode=getattr(process, "returncode", None),
+                                process_group_id=process_group_id,
                             )
-                        last_heartbeat = now
-                        if action != "review" and heartbeat.get("stalled_suspect") and not _child_exited_no_reap(process)[0]:
-                            stalled = True
+                            last_heartbeat_summary = heartbeat
+                            write_run_heartbeat(heartbeat_path, heartbeat)
+                            if stream_output and heartbeat.get("quiet_level") != "active":
+                                print(
+                                    "heartbeat:",
+                                    f"pid={heartbeat.get('pid')}",
+                                    f"elapsed={heartbeat.get('elapsed_seconds')}s",
+                                    f"quiet={heartbeat.get('seconds_since_log_update')}s",
+                                    f"level={heartbeat.get('quiet_level')}",
+                                    flush=True,
+                                )
+                            last_heartbeat = now
+                            if action != "review" and heartbeat.get("stalled_suspect") and not _child_exited_no_reap(process)[0]:
+                                stalled = True
+                                salvage = _salvage_snapshot(
+                                    command=command,
+                                    cwd=cwd,
+                                    log_path=log_path,
+                                    heartbeat=heartbeat,
+                                    process=process,
+                                    process_group_id=process_group_id,
+                                    reason="stalled",
+                                )
+                                cleanup_evidence = cleanup_own_group_or_process("stalled")
+                                cleanup_evidence["salvage_snapshot"] = salvage
+                        if action != "review" and timeout_seconds is not None and now - started_monotonic >= timeout_seconds and not _child_exited_no_reap(process)[0]:
+                            timed_out = True
                             salvage = _salvage_snapshot(
                                 command=command,
                                 cwd=cwd,
                                 log_path=log_path,
-                                heartbeat=heartbeat,
+                                heartbeat=last_heartbeat_summary,
                                 process=process,
                                 process_group_id=process_group_id,
-                                reason="stalled",
+                                reason="timeout",
                             )
-                            cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="stalled")
+                            cleanup_evidence = cleanup_own_group_or_process("timeout")
                             cleanup_evidence["salvage_snapshot"] = salvage
-                            cleaned_up_group = True
-                    if action != "review" and timeout_seconds is not None and now - started_monotonic >= timeout_seconds and not _child_exited_no_reap(process)[0]:
-                        timed_out = True
-                        salvage = _salvage_snapshot(
-                            command=command,
-                            cwd=cwd,
-                            log_path=log_path,
-                            heartbeat=last_heartbeat_summary,
-                            process=process,
-                            process_group_id=process_group_id,
-                            reason="timeout",
-                        )
-                        cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
-                        cleanup_evidence["salvage_snapshot"] = salvage
-                        cleaned_up_group = True
-                    exited_now, unreaped_now = _child_exited_no_reap(process)
-                    if exited_now:
-                        leader_unreaped = unreaped_now
-                        if _codex_usage_observer is not None:
-                            drain()
-                            drain_incomplete = streams_done != {"stdout", "stderr"}
+                        exited_now, unreaped_now = _child_exited_no_reap(process)
+                        if exited_now:
+                            leader_unreaped = unreaped_now
+                            if _codex_usage_observer is not None:
+                                drain()
+                                drain_incomplete = streams_done != {"stdout", "stderr"}
+                                break
+                            # The child has exited, but its last lines may still be in the
+                            # pipe or the reader. Collect until the reader's EOF sentinel,
+                            # bounded by the launch's own deadline (and at most 1 s): the
+                            # budget is checked before each dequeue (agent-harness#2129).
+                            drain_plain()
+                            drain_incomplete = not reader_eof
                             break
-                        # The child has exited, but its last lines may still be in the
-                        # pipe or the reader. Collect until the reader's EOF sentinel,
-                        # bounded by the launch's own deadline (and at most 1 s): the
-                        # budget is checked before each dequeue (agent-harness#2129).
-                        drain_plain()
-                        drain_incomplete = not reader_eof
-                        break
-                except KeyboardInterrupt:
-                    interrupted = True
-                    # Signal the child's own process group BEFORE reaping the leader so
-                    # there is no TOCTOU window where poll() reaps a newly exited leader
-                    # and skips signaling surviving descendants (agent-harness#2129).
-                    own_pgrp = False
-                    if process_group_id is not None and hasattr(os, "killpg"):
+                    except KeyboardInterrupt:
+                        interrupted = True
+                        cleanup_evidence = cleanup_own_group_or_process("interrupt")
                         try:
-                            own_pgrp = process_group_id != os.getpgrp()
-                        except OSError:
-                            own_pgrp = False
-                    if own_pgrp and getattr(process, "returncode", None) is None:
-                        cleanup_evidence = _cleanup_descendant_process_group(
-                            process.pid,
-                            process_group_id,
-                            reason="interrupt",
-                            pipes_closed=pipes_all_eof,
-                            include_leader=True,
-                        )
-                        leader_unreaped = False
-                        cleaned_up_group = True
-                    else:
-                        leader_unreaped = False
-                        cleaned_up_group = True
-                        cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
-                    if _codex_usage_observer is not None:
-                        drain()
-                        drain_incomplete = streams_done != {"stdout", "stderr"}
-                    else:
-                        drain_plain()
-                        drain_incomplete = not reader_eof
-                    break
-            try:
-                can_cleanup_descendants = (
-                    (leader_unreaped and getattr(process, "returncode", None) is None)
-                    or (
-                        not _has_waitid_nowait()
-                        and not cleaned_up_group
-                        and process_group_id == process.pid
-                    )
-                )
-                if drain_incomplete and not pipe_writers_all_closed() and can_cleanup_descendants:
+                            if _codex_usage_observer is not None:
+                                drain()
+                                drain_incomplete = streams_done != {"stdout", "stderr"}
+                            else:
+                                drain_plain()
+                                drain_incomplete = not reader_eof
+                        except KeyboardInterrupt:
+                            drain_incomplete = True
+                        break
+                if (
+                    drain_incomplete
+                    and not pipe_writers_all_closed()
+                    and not cleaned_up_group
+                    and leader_unreaped
+                    and getattr(process, "returncode", None) is None
+                ):
                     descendant_cleanup = _cleanup_descendant_process_group(
                         process.pid, process_group_id, reason="post_exit_pipe_open",
                         pipes_closed=pipes_all_eof,
@@ -4713,26 +4718,69 @@ def _codex_usage_version(executable, env, cwd, timeout):
             process.wait(timeout=1)
 
 
-def _has_waitid_nowait() -> bool:
-    return hasattr(os, "waitid") and hasattr(os, "WNOWAIT")
+def _read_proc_stat_fields(path: Path) -> list[str] | None:
+    try:
+        stat_text = path.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return None
+    rparen = stat_text.rfind(")")
+    if rparen < 0:
+        return None
+    fields = stat_text[rparen + 2:].split()
+    return fields if len(fields) >= 3 else None
+
+
+def _waitid_nowait_darwin(pid: int) -> bool | None:
+    """Non-reaping ``waitid(P_PID, pid, &siginfo, WEXITED|WNOHANG|WNOWAIT)`` via libc
+    for macOS Python 3.12 where ``os.waitid`` is not exposed in stdlib."""
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None)
+        waitid = libc.waitid
+    except (OSError, AttributeError):
+        return None
+    waitid.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int]
+    waitid.restype = ctypes.c_int
+    siginfo = ctypes.create_string_buffer(256)
+    # Darwin sys/wait.h: P_PID=1, WNOHANG=0x01, WEXITED=0x04, WNOWAIT=0x20.
+    if waitid(1, pid, siginfo, 0x01 | 0x04 | 0x20) != 0:
+        return None
+    si_signo = ctypes.c_int.from_buffer(siginfo).value
+    return si_signo != 0
+
+
+def _waitid_nowait(pid: int) -> bool | None:
+    """Return True if child ``pid`` has exited without reaping it, False if still live,
+    or None if non-reaping inspection is unavailable."""
+    if hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
+        try:
+            info = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except (ChildProcessError, OSError):
+            return None
+        return info is not None
+    if sys.platform == "darwin":
+        return _waitid_nowait_darwin(pid)
+    if sys.platform.startswith("linux"):
+        fields = _read_proc_stat_fields(Path("/proc") / str(pid) / "stat")
+        if fields is not None:
+            return fields[0] in {"Z", "X", "x"}
+    return None
 
 
 def _child_exited_no_reap(process: Any) -> tuple[bool, bool]:
-    """Return ``(exited, leader_unreaped)`` without reaping on platforms with ``waitid`` +
-    ``WNOWAIT`` so the child's PID/PGID stays pinned through descendant signaling."""
+    """Return ``(exited, leader_unreaped)`` without reaping whenever non-reaping
+    inspection is available, keeping the child's PID/PGID pinned through cleanup."""
     if getattr(process, "returncode", None) is not None:
         return True, False
     poll_fn = getattr(type(process), "poll", None)
     if (
         getattr(poll_fn, "__module__", None) == "subprocess"
-        and _has_waitid_nowait()
         and isinstance(getattr(process, "pid", None), int)
     ):
-        try:
-            info = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-        except (ChildProcessError, OSError):
-            return process.poll() is not None, False
-        return (True, True) if info is not None else (False, False)
+        waited = _waitid_nowait(process.pid)
+        if waited is not None:
+            return waited, waited
     return process.poll() is not None, False
 
 
@@ -4779,24 +4827,13 @@ def _live_pgid_members_exist(pgid: int, *, leader_pid: int | None) -> bool | Non
     except OSError:
         return None
 
-    def read_stat_fields(path: Path) -> list[str] | None:
-        try:
-            stat_text = path.read_text(encoding="ascii", errors="replace")
-        except OSError:
-            return None
-        rparen = stat_text.rfind(")")
-        if rparen < 0:
-            return None
-        fields = stat_text[rparen + 2:].split()
-        return fields if len(fields) >= 3 else None
-
     for entry in entries:
         if not entry.name.isdigit():
             continue
         pid = int(entry.name)
         if leader_pid is not None and pid == leader_pid:
             continue
-        fields = read_stat_fields(proc_root / entry.name / "stat")
+        fields = _read_proc_stat_fields(proc_root / entry.name / "stat")
         if fields is None:
             continue
         state = fields[0]
@@ -4818,7 +4855,7 @@ def _live_pgid_members_exist(pgid: int, *, leader_pid: int | None) -> bool | Non
         for task in task_entries:
             if not task.name.isdigit():
                 continue
-            task_fields = read_stat_fields(task_dir / task.name / "stat")
+            task_fields = _read_proc_stat_fields(task_dir / task.name / "stat")
             if task_fields is not None and task_fields[0] not in {"Z", "X", "x"}:
                 return True
     return False
@@ -5080,12 +5117,13 @@ def _cleanup_descendant_process_group(
     reason: str,
     pipes_closed: Callable[[], bool],
     include_leader: bool = False,
+    leader_exited: Callable[[], bool] | None = None,
 ) -> dict[str, Any] | None:
     """Terminate surviving members in a child's own process group (agent-harness#2129).
-    Caller should keep the leader unreaped until signaling finishes so the PGID cannot be
-    recycled. Tracks non-zombie PGID tasks via ``/proc`` (falling back to ``pipes_closed``
-    off Linux) so neither unreaped zombies nor a SIGTERM-ignoring descendant that closes
-    its pipes can fool termination detection."""
+    Caller keeps the leader unreaped until signaling finishes so the PGID cannot be
+    recycled. Tracks non-zombie PGID tasks via ``/proc`` (falling back to leader exit +
+    ``pipes_closed`` off Linux) so neither unreaped zombies nor a SIGTERM-ignoring
+    process that closes its pipes can fool termination detection."""
     if process_group_id is None or not hasattr(os, "killpg"):
         return None
     try:
@@ -5110,6 +5148,8 @@ def _cleanup_descendant_process_group(
         )
         if live is not None:
             return live or not pipes_closed()
+        if include_leader and leader_exited is not None and not leader_exited():
+            return True
         return not pipes_closed()
 
     try:
@@ -5124,6 +5164,7 @@ def _cleanup_descendant_process_group(
         while time.monotonic() < deadline:
             if not has_live_descendants():
                 evidence["result"] = "terminated"
+                evidence["process_alive_after_cleanup"] = False
                 return evidence
             time.sleep(0.01)
     except KeyboardInterrupt:
@@ -5133,20 +5174,24 @@ def _cleanup_descendant_process_group(
         evidence["signals_sent"].append("SIGKILL")
     except ProcessLookupError:
         evidence["result"] = "terminated"
+        evidence["process_alive_after_cleanup"] = False
         return evidence
     except OSError:
         evidence["result"] = "cleanup_failed"
+        evidence["process_alive_after_cleanup"] = True
         return evidence
     kill_deadline = time.monotonic() + 0.25
     while time.monotonic() < kill_deadline:
         try:
             if not has_live_descendants():
                 evidence["result"] = "killed"
+                evidence["process_alive_after_cleanup"] = False
                 return evidence
             time.sleep(0.01)
         except KeyboardInterrupt:
             evidence["interrupted"] = True
     evidence["result"] = "cleanup_failed"
+    evidence["process_alive_after_cleanup"] = True
     return evidence
 
 
