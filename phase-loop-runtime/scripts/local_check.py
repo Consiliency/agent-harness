@@ -39,7 +39,7 @@ RUFF_PIN = "ruff==0.15.5"  # .github/workflows/test.yml `lint (pyflakes)` job
 PKG = "phase-loop-runtime"
 TEAM_HOST_MARKER = Path("/etc/consiliency/team-host")
 DEFAULT_MAX_WORKERS = 2
-SHARED_HOST_MAX_WORKERS = 2
+SHARED_HOST_MAX_WORKERS = 0
 SHARED_HOST_ENV = "LOCAL_CHECK_SHARED_HOST"
 WORKERS_ENV = "LOCAL_CHECK_WORKERS"
 OVERRIDE_ENV = "LOCAL_CHECK_ALLOW_SHARED_HOST_OVERRIDE"
@@ -208,12 +208,14 @@ def clean_env(python: str) -> dict[str, str]:
 
 
 def xdist_args(has_xdist: bool, workers: int) -> list[str]:
-    """Return bounded pytest-xdist arguments for a pytest invocation (agent-harness#1826)."""
-    if not has_xdist:
-        return []
-    if workers == 0:
-        return ["-n", "0"]
-    return ["-n", str(workers), "--dist", "loadfile", "--max-worker-restart=0"]
+    """Return bounded pytest worker arguments for a pytest invocation (agent-harness#1826).
+
+    Serial runs omit ``-n`` (matching ``phase-loop-runtime/AGENTS.md``) and pass
+    ``-o addopts=`` so repository or ini defaults cannot silently inject ``-n``.
+    """
+    if not has_xdist or workers == 0:
+        return ["-o", "addopts="]
+    return ["-o", "addopts=", "-n", str(workers), "--dist", "loadfile", "--max-worker-restart=0"]
 
 
 def copied_tree_run(
@@ -336,11 +338,12 @@ def resolve_workers(
     else:
         raw = None
     if raw is None:
-        workers = (
-            min(DEFAULT_MAX_WORKERS, override[0])
-            if shared_host and override is not None
-            else DEFAULT_MAX_WORKERS
-        )
+        if shared_host and override is None:
+            workers = SHARED_HOST_MAX_WORKERS
+        elif shared_host and override is not None:
+            workers = min(DEFAULT_MAX_WORKERS, override[0])
+        else:
+            workers = DEFAULT_MAX_WORKERS
     else:
         token = raw.strip()
         try:
@@ -359,10 +362,11 @@ def resolve_workers(
         if workers > cap:
             if override is None:
                 raise ValueError(
-                    f"requested {workers} pytest worker(s) exceeds the shared-host cap of "
-                    f"{SHARED_HOST_MAX_WORKERS}; reduce --workers/{WORKERS_ENV}, use hosted CI "
-                    "or Gate A, or pass --allow-shared-host-override with --cpu-limit and "
-                    "--memory-limit-gib"
+                    f"requested {workers} pytest worker(s) on a shared host without an owner "
+                    "override; shared-host runs default to serial execution (0, without -n) "
+                    "per phase-loop-runtime/AGENTS.md. Omit --workers (or pass --workers 0), "
+                    "use hosted CI or Gate A, or pass --allow-shared-host-override with "
+                    "--cpu-limit and --memory-limit-gib"
                 )
             raise ValueError(
                 f"requested {workers} pytest worker(s) exceeds the override --cpu-limit of {cap}"
@@ -493,9 +497,9 @@ def main(argv: list[str] | None = None) -> int:
     worker_summary = (
         f"{workers} (xdist, --dist loadfile)"
         if has_xdist and workers > 0
-        else "0 (serial, -n 0)"
+        else "0 (serial, without -n)"
         if has_xdist
-        else "1 (serial; pytest-xdist absent)"
+        else "0 (serial; pytest-xdist absent)"
     )
     if shared_host:
         if override is not None:
@@ -505,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(
-                f"  host   : shared ({shared_reason}); --full refused, worker cap={SHARED_HOST_MAX_WORKERS}"
+                f"  host   : shared ({shared_reason}); --full refused, serial only (without -n)"
             )
     print(f"  workers: {worker_summary}")
     print(f"  lint : {' '.join(lint_cmd) if lint_cmd else 'UNAVAILABLE (install uv for uvx; CI pins ' + RUFF_PIN + ')'}")

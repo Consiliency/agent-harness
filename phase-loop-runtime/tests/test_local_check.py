@@ -285,12 +285,22 @@ def test_workers_zero_runs_serial_and_auto_is_refused(lc, monkeypatch, capsys):
     recorded = _stub_main_env(
         lc, monkeypatch, selected=["tests/test_x.py"], shared=(True, "team-host"), has_xdist=True
     )
-    assert lc.main(["--workers", "0"]) == 0
+    # On a shared host without override, omitting --workers defaults to serial without -n.
+    assert lc.main([]) == 0
     out = capsys.readouterr().out
-    assert "workers: 0 (serial, -n 0)" in out
+    assert "workers: 0 (serial, without -n)" in out
     pytest_cmds = [cmd for cmd in recorded if "-m" in cmd and "pytest" in cmd]
     assert len(pytest_cmds) == 1
-    assert ["-n", "0"] == pytest_cmds[0][pytest_cmds[0].index("-n") : pytest_cmds[0].index("-n") + 2]
+    assert "-n" not in pytest_cmds[0]
+    assert ["-o", "addopts="] == pytest_cmds[0][pytest_cmds[0].index("-o") : pytest_cmds[0].index("-o") + 2]
+
+    recorded.clear()
+    assert lc.main(["--workers", "0"]) == 0
+    out = capsys.readouterr().out
+    assert "workers: 0 (serial, without -n)" in out
+    pytest_cmds = [cmd for cmd in recorded if "-m" in cmd and "pytest" in cmd]
+    assert len(pytest_cmds) == 1
+    assert "-n" not in pytest_cmds[0]
 
     recorded.clear()
     assert lc.main(["--workers", "auto"]) == 2
@@ -358,21 +368,34 @@ def test_copied_tree_and_host_env_enforce_worker_cap_and_strip_pytest_addopts(
 
     monkeypatch.setattr(lc.subprocess, "run", run)
 
+    # On a shared host without override, both main and copied-tree runs stay serial without -n
+    # and strip inherited PYTEST_ADDOPTS="-n auto".
     assert lc.main(["--host-env", "--workers", "0"]) == 0
     pytest_runs = [(cmd, env) for cmd, env in captured if "-m" in cmd and "pytest" in cmd]
     assert len(pytest_runs) == 2
     for cmd, env in pytest_runs:
-        assert ["-n", "0"] == cmd[cmd.index("-n") : cmd.index("-n") + 2]
+        assert "-n" not in cmd
+        assert ["-o", "addopts="] == cmd[cmd.index("-o") : cmd.index("-o") + 2]
         assert "auto" not in cmd
         assert env is not None and "PYTEST_ADDOPTS" not in env
 
+    # With an explicit owner override, bounded parallel workers apply to both launches too.
     captured.clear()
-    assert lc.main(["--host-env", "--workers", "2"]) == 0
+    assert lc.main([
+        "--host-env",
+        "--workers",
+        "2",
+        "--allow-shared-host-override",
+        "--cpu-limit",
+        "2",
+        "--memory-limit-gib",
+        "6",
+    ]) == 0
     pytest_runs = [(cmd, env) for cmd, env in captured if "-m" in cmd and "pytest" in cmd]
     assert len(pytest_runs) == 2
     for cmd, env in pytest_runs:
-        assert ["-n", "2", "--dist", "loadfile", "--max-worker-restart=0"] == cmd[
-            cmd.index("-n") : cmd.index("-n") + 5
+        assert ["-o", "addopts=", "-n", "2", "--dist", "loadfile", "--max-worker-restart=0"] == cmd[
+            cmd.index("-o") : cmd.index("-o") + 7
         ]
         assert env is not None and "PYTEST_ADDOPTS" not in env
 
@@ -384,12 +407,13 @@ def test_copied_tree_and_host_env_enforce_worker_cap_and_strip_pytest_addopts(
     real_argv0, _, _ = lc.copied_tree_run(
         tmp_path / "real", real_pkg, "/py", ["tests/test_legible_evidence.py"], has_xdist=True, workers=0
     )
-    assert ["-n", "0"] == real_argv0[real_argv0.index("-n") : real_argv0.index("-n") + 2]
+    assert "-n" not in real_argv0
+    assert ["-o", "addopts="] == real_argv0[real_argv0.index("-o") : real_argv0.index("-o") + 2]
     real_argv2, _, _ = lc.copied_tree_run(
         tmp_path / "real", real_pkg, "/py", ["tests/test_legible_evidence.py"], has_xdist=True, workers=2
     )
-    assert ["-n", "2", "--dist", "loadfile", "--max-worker-restart=0"] == real_argv2[
-        real_argv2.index("-n") : real_argv2.index("-n") + 5
+    assert ["-o", "addopts=", "-n", "2", "--dist", "loadfile", "--max-worker-restart=0"] == real_argv2[
+        real_argv2.index("-o") : real_argv2.index("-o") + 7
     ]
 
 
@@ -428,10 +452,11 @@ def test_shared_host_caps_workers_unless_owner_override_with_limits(lc, monkeypa
     )
     monkeypatch.setattr(lc, "copied_tree_run", lambda *a, **k: (["copied"], tmp_path, {}))
 
-    # Without override, >2 workers is refused.
-    assert lc.main(["--workers", "4"]) == 2
-    assert "shared-host cap of 2" in capsys.readouterr().err
-    assert recorded == []
+    # Without override, any positive parallel worker request (including 1 or 2) is refused on a shared host.
+    for requested in ("1", "2", "4"):
+        assert lc.main(["--workers", requested]) == 2
+        assert "without an owner override" in capsys.readouterr().err
+        assert recorded == []
 
     # Override without both CPU and memory limits is refused.
     assert lc.main(["--full", "--allow-shared-host-override"]) == 2
