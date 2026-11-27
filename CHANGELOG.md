@@ -14,6 +14,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Classify structured error fields inside failed `agy` NDJSON `event="result"` records
+  (when `status != "SUCCESS"` and `response` is empty/absent) into `provider_error_class`
+  on both nonzero native exits and exit-0 `final_result_invalid` failures without
+  scanning `response`/`step_update` prose or retaining raw text (agent-harness#2215).
 - Keep a phase `blocked` with its `runner_verification_failed` blocker when runner-owned
   verification fails closed, instead of letting a child's `complete` closeout overwrite
   the phase status to `complete` (agent-harness#2135).
@@ -23,6 +27,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Raise the `test.yml` `clean-room (standalone-from-wheel, Gate A)` job timeout from
   150 to 210 minutes (matching `publish-pypi.yml` from agent-harness#2191) after slow
   hosted runners hit the 150-minute cap at 88% with no test failures (agent-harness#766).
+- Patch `sandbox_placement._sleep` instead of process-wide `time.sleep` in
+  `test_file_lock_checks_budget_after_retry_sleep` so background threads in
+  single-process Gate A runs cannot advance the test's fake clock before `flock`
+  (agent-harness#2207).
 - Bound `SandboxPlacementLifecycle.cancel_launch_owner` WORKER-cancel waits against the
   unfenced `h + 2T/3` renewal fence and refuse `mark_start_intent` on local generations
   once `_renewal_current` is false (agent-harness#2159).

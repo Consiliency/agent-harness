@@ -1151,7 +1151,7 @@ def test_file_lock_checks_budget_after_retry_sleep(tmp_path, monkeypatch):
         now[0] = 1.0
 
     monkeypatch.setattr(fcntl, "flock", flock)
-    monkeypatch.setattr(sp.time, "sleep", sleep)
+    monkeypatch.setattr(sp, "_sleep", sleep)
     lock = sp._FileLock(tmp_path / "budget.lock", blocking=True, deadline=sp._Deadline.after(1.0))
     with lock as held:
         assert not held
