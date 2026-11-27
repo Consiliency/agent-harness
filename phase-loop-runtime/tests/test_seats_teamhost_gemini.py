@@ -884,3 +884,224 @@ def test_agy_qualification_status_cli_and_doctor_schema_accept_refusal_reasons(
             }
         ]
         jsonschema.validate(candidate, schema)
+
+
+def test_verdict_refusal_reasons_hardening_r2(tmp_path, monkeypatch):
+    """Regression coverage for config/store/help/host/capability/LKG/constructor edge cases."""
+    import errno
+    from phase_loop_runtime import agy_hold, agy_integrity
+
+    image = b"#!/bin/sh\necho candidate\n"
+    path = _subject(tmp_path, "agy", image)
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {})
+    cfg_root = tmp_path / "cfg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_root))
+    cfg_file = cfg_root / "agent-harness" / "advisor-boards.toml"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # P1 (config): malformed advisor-boards.toml -> admission_error (not self_qualification_disabled)
+    cfg_file.write_text("[agy\nbroken = true\n", encoding="utf-8")
+    assert q.admission_verdict(env, path, execute=False) == q.AgyVerdict(
+        "refuses", "agy_image_unqualified", "admission_error"
+    )
+    assert q.admission_verdict(env, path, execute=True) == q.AgyVerdict(
+        "refuses", "agy_image_unqualified", "admission_error"
+    )
+
+    # Explicit opt-out -> self_qualification_disabled
+    cfg_file.write_text("[agy]\nself_qualification = false\n", encoding="utf-8")
+    assert q.admission_verdict(env, path, execute=False) == q.AgyVerdict(
+        "refuses", "agy_image_unqualified", "self_qualification_disabled"
+    )
+    assert q.admission_verdict(env, path, execute=True) == q.AgyVerdict(
+        "refuses", "agy_image_unqualified", "self_qualification_disabled"
+    )
+
+    # P2 (hold config): malformed [agy].hold -> admission_error in both modes
+    cfg_file.write_text('[agy]\nself_qualification = true\nhold = "yes"\n', encoding="utf-8")
+    assert q.admission_verdict(env, path, execute=False) == q.AgyVerdict(
+        "refuses", "agy_image_unqualified", "admission_error"
+    )
+    assert q.admission_verdict(env, path, execute=True) == q.AgyVerdict(
+        "refuses", "agy_image_unqualified", "admission_error"
+    )
+    cfg_file.unlink()
+
+    # P1 (store): bad-mode provenance entry (status == ok) and missing key with populated store
+    store = _seed(image)
+    prov_files = list(store.host_dir.glob("provenance-*.json"))
+    assert len(prov_files) == 1
+    prov_files[0].chmod(0o644)
+    try:
+        assert store.status() == "ok"
+        assert q.admission_verdict(env, path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+        assert q.admission_verdict(env, path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+    finally:
+        prov_files[0].chmod(0o600)
+
+    # Bad-mode qualified entry -> execute mode reports store_unsafe
+    qual_files = list(store.host_dir.glob("qualified-*.json"))
+    assert len(qual_files) == 1
+    qual_files[0].chmod(0o644)
+    try:
+        with monkeypatch.context() as ctx:
+            ctx.setattr(q, "measure_help", lambda *_a, **_kw: HELP)
+            assert q.admission_verdict(env, path, execute=True) == q.AgyVerdict(
+                "refuses", "agy_image_unqualified", "store_unsafe"
+            )
+    finally:
+        qual_files[0].chmod(0o600)
+
+    # Missing key with provenance still present (status == absent) -> store_unsafe in both modes
+    key_path = store.host_dir / "key"
+    saved_key = key_path.read_bytes()
+    key_path.unlink()
+    try:
+        assert store.status() == "absent"
+        assert q.admission_verdict(env, path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+        assert q.admission_verdict(env, path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+    finally:
+        key_path.write_bytes(saved_key)
+        key_path.chmod(0o600)
+
+    # P1 (help measurement local EIO via owned_profile -> ValueError(_CAPABILITY)):
+    # must report admission_error (not self_qualification_disabled) while preserving hold routing
+    cred = tmp_path / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    cred.parent.mkdir(parents=True, exist_ok=True)
+    cred.write_text("token", encoding="utf-8")
+    real_sealed_tree_fd = gh._sealed_tree_fd
+
+    def _fail_settings_memfd(*, data, executable, label):
+        if label == "agy-settings":
+            raise OSError(errno.EIO, "synthetic EIO on agy-settings")
+        return real_sealed_tree_fd(data=data, executable=executable, label=label)
+
+    hold_reasons_seen: list[str] = []
+    with monkeypatch.context() as ctx:
+        q._HELP_MEMO.clear()
+        ctx.setattr(gh, "_sealed_tree_fd", _fail_settings_memfd)
+        ctx.setattr(
+            q, "admit_held",
+            lambda _env, *, reason, **_kw: hold_reasons_seen.append(reason) or None,
+        )
+        assert q.admission_verdict(env, path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+    assert hold_reasons_seen == ["self_qualification_disabled"]
+
+    # P2 (host transient failure): lookup _host() raises once then succeeds -> still host_unknown;
+    # and lookup succeeds then _hold_or_refuse succeeds -> admit_held IS reached (no extra _host() call)
+    unqualified_path = _subject(tmp_path, "agy-unqualified", b"#!/bin/sh\necho other\n")
+    with monkeypatch.context() as ctx:
+        calls = iter([ValueError("transient host fail"), HOST])
+
+        def _flaky_host():
+            item = next(calls)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        ctx.setattr(q, "_host", _flaky_host)
+        ctx.setattr(agy_hold, "hold_enabled", lambda: False)
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "host_unknown"
+        )
+
+    with monkeypatch.context() as ctx:
+        host_calls = []
+        held_reached = []
+
+        def _counted_host():
+            host_calls.append(1)
+            if len(host_calls) <= 3:
+                return HOST
+            raise ValueError("unexpected extra host call")
+
+        ctx.setattr(q, "_host", _counted_host)
+        ctx.setattr(
+            q, "admit_held",
+            lambda _env, **_kw: held_reached.append(True) or None,
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "no_qualification_record"
+        )
+        assert held_reached == [True]
+        assert len(host_calls) == 3
+
+    with monkeypatch.context() as ctx:
+        host_calls = []
+        held_reached = []
+
+        def _hold_host_fail():
+            host_calls.append(1)
+            if len(host_calls) <= 2:
+                return HOST
+            raise ValueError("transient host failure at hold check")
+
+        ctx.setattr(q, "_host", _hold_host_fail)
+        ctx.setattr(
+            q, "admit_held",
+            lambda _env, **_kw: held_reached.append(True) or None,
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "host_unknown"
+        )
+        assert held_reached == []
+
+    # P2 (pidfd / local capability failure): both doctor and execute report admission_error
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            gh, "_local_capabilities",
+            lambda: (_ for _ in ()).throw(ValueError(gh._CAPABILITY)),
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    # P2 (LKG help EIO and LKG provider OSError)
+    with monkeypatch.context() as ctx:
+        lkg_bytes = image
+        ctx.setattr(
+            q, "_LAST_KNOWN_GOOD_PROVIDER",
+            lambda: gh.VerifiedImage.from_bytes(lkg_bytes, path),
+        )
+        ctx.setattr(
+            q, "measure_help",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError(errno.EIO, "lkg help EIO")),
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            q, "_LAST_KNOWN_GOOD_PROVIDER",
+            lambda: (_ for _ in ()).throw(OSError(errno.EIO, "lkg provider EIO")),
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    # P3 (AgyImageUnqualified preserves RuntimeError constructor contract)
+    empty = agy_integrity.AgyImageUnqualified()
+    assert empty.args == ()
+    assert str(empty) == ""
+    assert empty.reason is None
+    multi = agy_integrity.AgyImageUnqualified("a", "b", reason="store_unsafe")
+    assert multi.args == ("a", "b")
+    assert multi.reason == "store_unsafe"

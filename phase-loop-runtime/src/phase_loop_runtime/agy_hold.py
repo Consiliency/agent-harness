@@ -129,6 +129,26 @@ def hold_deny() -> frozenset[str] | None:
         return None
 
 
+_DEFAULT_HOLD_ENABLED = hold_enabled
+_DEFAULT_HOLD_DENY = hold_deny
+
+
+def _hold_config_error() -> bool:
+    """Whether reading ``[agy] hold`` or ``[agy] hold_deny`` fails."""
+    from .advisor_board.config import load_agy_hold, load_agy_hold_deny
+    if hold_enabled is _DEFAULT_HOLD_ENABLED:
+        try:
+            load_agy_hold()
+        except Exception:  # noqa: BLE001
+            return True
+    if hold_deny is _DEFAULT_HOLD_DENY:
+        try:
+            load_agy_hold_deny()
+        except Exception:  # noqa: BLE001
+            return True
+    return False
+
+
 def retain(image, store, *, cache_version: "CacheVersion | None" = None) -> None:
     """Keep an admitted image in the harness cache, ``held/<sha256>`` (AGYFRESH §2.8).
 

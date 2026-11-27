@@ -18,8 +18,8 @@ _PROVIDER_SEARCH_PATH = os.environ.get("PATH", os.defpath)
 
 
 class AgyImageUnqualified(RuntimeError):
-    def __init__(self, message: str = "agy_image_unqualified", *, reason: str | None = None):
-        super().__init__(message)
+    def __init__(self, *args: object, reason: str | None = None):
+        super().__init__(*args)
         self.reason = reason
 
 

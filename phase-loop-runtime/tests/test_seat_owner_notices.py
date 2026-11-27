@@ -31,7 +31,7 @@ def test_the_owner_code_list_is_every_code_the_owner_raises():
     raised = set()
     for source in ("panel_invoker.py", "launcher.py", "agy_integrity.py"):
         raised |= set(re.findall(
-            r'(?:SeatIdentityUnverified|EgressUnavailable|AgyImageUnqualified)\("([a-z_]+)"\)',
+            r'(?:SeatIdentityUnverified|EgressUnavailable|AgyImageUnqualified)\("([a-z_]+)"(?:\s*,|\))',
             (package / source).read_text(encoding="utf-8")))
     assert raised <= set(OWNER_CODES), sorted(raised - set(OWNER_CODES))
 
