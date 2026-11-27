@@ -273,6 +273,8 @@ def test_default_spawn_via_provider_translates_real_seat_scope_teardown_failure(
 def test_invoke_board_outer_seat_scope_teardown_refusal_surfaces_typed_detail_and_one_notice(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
     monkeypatch.setattr(
         caps,
         "_release_parent",
@@ -306,6 +308,12 @@ def test_invoke_board_outer_seat_scope_teardown_refusal_surfaces_typed_detail_an
     assert leg.detail == caps.CODE
     assert [notice.code for notice in leg.seat_notices] == [caps.CODE]
     assert [notice.code for notice in pi.refused_seat_notices(result.legs)] == [caps.CODE]
+    metadata = leg._leg_exec_metadata
+    record_path = state / "agent-harness" / "seat-records" / f"leg-{metadata['attempt_id']}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["schema"] == "leg_exec.v1"
+    assert record["outcome"] == "leg_execution_unobserved"
+    assert record["refusal"] == caps.CODE
 
 
 def test_default_spawn_outer_handler_surfaces_seat_scope_caps_unavailable_for_gemini(

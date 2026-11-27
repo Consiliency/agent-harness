@@ -18268,7 +18268,13 @@ def _retain_panel_leg(result):
     if "record_digest" in metadata:
         return result
     from .president_adapter import write_private_record
-    record = leg_exec_record(result.leg, None, [], scan_secrets=None)
+    record = leg_exec_record(
+        result.leg,
+        None,
+        [],
+        scan_secrets=None,
+        refusal=getattr(result, "_leg_exec_refusal", None),
+    )
     record["outcome"] = "leg_execution_unobserved"
     if "seat_memory" in seat_memory:
         record["seat_memory"] = seat_memory["seat_memory"]
@@ -23056,7 +23062,8 @@ def invoke_board(
                     raise
                 raise primary
             except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
-                detail = _resolve_leg_detail(_exception_failure(exc), leg_log_root, str(seat.seat_key))
+                failure = _exception_failure(exc)
+                detail = _resolve_leg_detail(failure, leg_log_root, str(seat.seat_key))
                 result = PanelLegResult(
                     leg=leg,
                     status="DEGRADED",
@@ -23068,6 +23075,7 @@ def invoke_board(
                     attach_seat_notices(result, (detail,))
                 if getattr(exc, "_leg_exec_metadata", None) is not None:
                     object.__setattr__(result, "_leg_exec_metadata", exc._leg_exec_metadata)
+                object.__setattr__(result, "_leg_exec_refusal", _exec_refusal(exc, failure))
                 return (
                     _finalize_research_result(result, research_seat)
                     if research_seat is not None
