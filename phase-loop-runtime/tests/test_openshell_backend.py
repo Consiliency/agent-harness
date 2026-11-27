@@ -198,7 +198,7 @@ def pipeline(bundle, tmp_path, monkeypatch):
 
     thread = threading.Thread(target=serve)
     thread.start()
-    assert ready.wait(2)
+    assert ready.wait(10)
     stage, worker = ModelStage(tmp_path / 'stage'), ModelWorker(proto)
     endpoint = ModelEndpoint(proto, bundle, stage, tmp_path)
     args = dict(loop=loop, workspace="model", owner_id=journal.owner_id(), bundle=bundle,
@@ -207,7 +207,7 @@ def pipeline(bundle, tmp_path, monkeypatch):
                 message_cap=10, quarantine=tmp_path / "quarantine")
     async def channel():
         return StockExecChannel(endpoint, proto, journal.owner_id())
-    exec_channel = asyncio.run_coroutine_threadsafe(channel(), loop).result(3)
+    exec_channel = asyncio.run_coroutine_threadsafe(channel(), loop).result(10)
     backend = ob.OpenShellBackend(endpoint, exec_channel, **args, model_only=True)
     endpoint.backend = backend
     root = sandbox_policy.parse_location("openshell://model.invalid/workspace")
@@ -247,6 +247,14 @@ def pipeline(bundle, tmp_path, monkeypatch):
                 lease.abandon()
 
 
+def _placement_diag(decision, endpoint) -> str:
+    """Format placement decision reason, rung trail, and RPC stage for failure diagnostics (agent-harness#1977)."""
+    return (
+        f"outcome={decision.outcome!r} code={decision.code!r} "
+        f"trail={decision.trail!r} notices={decision.notices!r} calls={endpoint.calls!r}"
+    )
+
+
 def run(placement, cancelled=None):
     return sp.run_placed(placement, on_progress=None, cancelled=cancelled or threading.Event())
 
@@ -254,7 +262,7 @@ def run(placement, cancelled=None):
 def test_driver_model_edit_test_quarantine_cleanup(pipeline, repository):
     backend, endpoint, stage, worker, place, leases, *_ = pipeline
     decision = place()
-    assert decision.outcome == "placed"
+    assert decision.outcome == "placed", _placement_diag(decision, endpoint)
     lease = leases[0]
     assert backend._session.lease is lease and lease.held
     result = run(decision.placement)
@@ -294,7 +302,8 @@ def test_production_and_gate_closed(pipeline):
 def test_generation_mismatch_no_execute(pipeline):
     backend, endpoint, stage, _, place, leases, *_ = pipeline
     stage.mismatch = True
-    assert place().outcome == 'not_run'
+    decision = place()
+    assert decision.outcome == 'not_run', _placement_diag(decision, endpoint)
     assert 'exec' not in endpoint.calls
     assert backend._session.lease._entry['sandbox_ref'] == backend._session.reference
     assert not backend._committed
@@ -326,7 +335,8 @@ def test_stage_receipt_must_be_exact_binding(pipeline, receipt_kind):
         return receipt
 
     stage.commit = commit
-    assert place().outcome == 'not_run'
+    decision = place()
+    assert decision.outcome == 'not_run', _placement_diag(decision, endpoint)
     assert not backend._committed and 'exec' not in endpoint.calls
     assert backend._session.lease._entry['sandbox_ref'] == backend._session.reference
 
@@ -353,13 +363,13 @@ def test_stage_binding_fields_must_be_plain_strings(pipeline, field):
     stage.commit = commit
     decision = place()
     if field is not None:
-        assert decision.outcome == 'not_run'
+        assert decision.outcome == 'not_run', _placement_diag(decision, endpoint)
         assert not backend._committed and 'exec' not in endpoint.calls
         assert backend._session.lease.fenced
         assert backend._session.lease._entry['sandbox_ref'] == backend._session.reference
         return
 
-    assert decision.outcome == 'placed'
+    assert decision.outcome == 'placed', _placement_diag(decision, endpoint)
     result = run(decision.placement)
     assert result.exit_status == 0
     assert type(result.sandbox_ref) is str and result.sandbox_ref == backend._session.reference
@@ -394,7 +404,7 @@ def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure, wrapped, 
 
     monkeypatch.setattr(backend, 'wait', observe_wait)
     decision = place(deadline=60)
-    assert decision.outcome == 'placed', decision
+    assert decision.outcome == 'placed', _placement_diag(decision, endpoint)
     assert not decision.placement._launch_failed, decision
     with pytest.raises(sp.PlacementUnavailable, match='lost_after_launch'):
         run(decision.placement)
@@ -434,7 +444,7 @@ def test_delayed_output_beyond_dispatch_bound(pipeline, monkeypatch):
     monkeypatch.setattr(sp, 'ANSWER_BOUND_S', bound)
     endpoint.delay = 2 * bound
     decision = place(deadline=15)
-    assert decision.outcome == 'placed', decision.trail
+    assert decision.outcome == 'placed', _placement_diag(decision, endpoint)
     assert not decision.placement._launch_failed
     assert run(decision.placement).exit_status == 0
     assert time.monotonic() - decision.placement._launched_at > bound
@@ -679,7 +689,7 @@ def test_unavailable_phase_split_no_overflow(pipeline, phase, monkeypatch):
         decision = place(roots=[sandbox_policy.parse_location('openshell://fake.invalid/work'),
                                 sandbox_policy.parse_location('overflow://fake.invalid/work')])
         assert ('overflow' in lookups) is (phase == 'reserve')
-        assert decision.outcome == 'not_run'
+        assert decision.outcome == 'not_run', _placement_diag(decision, endpoint)
         assert 'exec' not in endpoint.calls
         if phase == 'reserve':
             assert 'create' not in endpoint.calls
@@ -757,7 +767,7 @@ def test_sent_reserve_timeout_never_overflows_even_without_reply_metadata(pipeli
     monkeypatch.setattr(sp, 'backend_for_scheme', lookup)
     decision = place(roots=[sandbox_policy.parse_location('openshell://fake.invalid/work'),
                             sandbox_policy.parse_location('overflow://fake.invalid/work')])
-    assert decision.outcome == 'not_run' and 'overflow' not in lookups
+    assert decision.outcome == 'not_run' and 'overflow' not in lookups, _placement_diag(decision, endpoint)
     assert endpoint.calls.count('reserve') == 1 and 'create' not in endpoint.calls
 
 
@@ -774,7 +784,7 @@ def test_certain_nonreserve_unavailable_is_uncertain_and_never_overflows(pipelin
                             sandbox_policy.parse_location('overflow://fake.invalid/work')])
     error = backend._placement_error(ob.CoordinatorError('unavailable', 'recovering', uncertain=False), phase)
     assert error.code == sp._TIMEOUT and error.uncertain is True
-    assert decision.outcome == 'not_run' and 'overflow' not in lookups
+    assert decision.outcome == 'not_run' and 'overflow' not in lookups, _placement_diag(decision, endpoint)
     assert endpoint.calls[-2:] == ['kill', 'list']
 
 

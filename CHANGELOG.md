@@ -34,6 +34,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   compatibility matrix and isolated `base_env` so `test_panel_invoker.py` fails fast
   on any regression instead of resolving host provider binaries or running live `agy`
   qualification (agent-harness#2054).
+- Surface full placement decision diagnostics (`outcome`, `code`, `trail`, `notices`, and
+  `endpoint.calls` RPC stage) on `test_openshell_backend.py` placement assertions and widen
+  the `pipeline` fixture event-loop startup bounds (alongside `ANSWER_BOUND_S` / deadline
+  hardening in agent-harness#2221) so any future `not_run` failure reports its exact rung
+  and stage (agent-harness#1977).
 - Give `test_openshell_backend.py`'s `pipeline` fixture and
   `test_untrusted_or_lost_result_refused_no_replay` load-proof `ANSWER_BOUND_S` and
   placement deadline headroom (and assert `not decision.placement._launch_failed`) so
