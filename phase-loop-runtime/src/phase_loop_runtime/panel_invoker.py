@@ -22824,11 +22824,16 @@ def invoke_board(
                 object.__setattr__(result, "_codex_run", codex_run)
             if claude_code_version is not None:
                 object.__setattr__(result, "_claude_code_version", claude_code_version)
-            if (orig_exec_metadata is not None
+            if (result.leg == "claude"
+                    and claude_code_version is not None
+                    and orig_exec_metadata is not None
                     and getattr(result, "_leg_exec_metadata", None) is None
-                    and not monitor.write_failed):
-                # Preserve the original execution-record binding across cancellation replacement
-                # so `_retain_panel_leg` does not emit a duplicate unobserved record.
+                    and operation_cancel.is_set()
+                    and not monitor.write_failed
+                    and monitor.record.get("terminal_reason") != "monitoring_write_failed"):
+                # Preserve the original execution-record binding across Claude cancellation
+                # replacement while keeping existing retention behavior for monitoring failures
+                # and all other seats.
                 object.__setattr__(result, "_leg_exec_metadata", orig_exec_metadata)
             if seat_memory:
                 object.__setattr__(result, "_seat_memory_metadata", seat_memory)
