@@ -3263,11 +3263,25 @@ def launch(
                 if (not timed_out and not stalled and not interrupted
                         and action != "review" and timeout_seconds is not None):
                     bound = min(bound, started_monotonic + timeout_seconds)
+                    # When all pipe writers have already closed after a normal exit, give the
+                    # reader thread a brief floor to finish flushing buffered bytes + EOF even
+                    # if exit was observed just after timeout_seconds (e.g., after a slow
+                    # heartbeat write).
+                    if pipe_writers_all_closed():
+                        bound = max(bound, now_ts + 0.1)
                 return bound
 
             def drain():
                 deadline = post_exit_deadline()
                 try:
+                    # Flush any records already queued before enforcing a zero remaining budget.
+                    for _ in range(line_queue.qsize()):
+                        if streams_done == {"stdout", "stderr"}:
+                            break
+                        try:
+                            consume(line_queue.get_nowait())
+                        except Empty:
+                            break
                     while streams_done != {"stdout", "stderr"}:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
@@ -3283,6 +3297,17 @@ def launch(
             def drain_plain():
                 nonlocal reader_eof
                 drain_deadline = post_exit_deadline()
+                for _ in range(line_queue.qsize()):
+                    if reader_eof:
+                        break
+                    try:
+                        line = line_queue.get_nowait()
+                    except Empty:
+                        break
+                    if line is None:
+                        reader_eof = True
+                    else:
+                        consume(line)
                 while not reader_eof:
                     remaining = drain_deadline - time.monotonic()
                     if remaining <= 0:
@@ -3314,11 +3339,20 @@ def launch(
                     except OSError:
                         own_pgrp = False
                 if own_pgrp and getattr(process, "returncode", None) is None:
-                    # Leased launches run under lease_supervisor, which forwards SIGTERM to
-                    # the executor's separate session and waits 1 s before escalating to
-                    # SIGKILL + reaping; preserve that full 2 s window before SIGKILLing
-                    # the supervisor itself.
+                    # Preserve graceful shutdown budgets for live executors:
+                    # - Unleased live executors keep the existing 2.0 s SIGTERM grace before
+                    #   SIGKILL (matching _cleanup_process_group).
+                    # - Leased launches run under lease_supervisor, which forwards SIGTERM,
+                    #   waits 1.0 s before SIGKILLing the executor, then waits up to
+                    #   _DESCENDANT_REAP_GRACE_SECONDS (5.0 s) + _DESCENDANT_KILL_GRACE_SECONDS
+                    #   (1.0 s) to kill and reap session-detached adopted descendants.
                     supervised = _supervisor_lease_fd is not None
+                    term_grace_s = (
+                        LeaseSupervisor._DESCENDANT_REAP_GRACE_SECONDS
+                        + LeaseSupervisor._DESCENDANT_KILL_GRACE_SECONDS
+                        + 2.0
+                        if supervised else 2.0
+                    )
                     evidence = _cleanup_descendant_process_group(
                         process.pid,
                         process_group_id,
@@ -3326,8 +3360,8 @@ def launch(
                         pipes_closed=pipes_all_eof,
                         include_leader=True,
                         leader_exited=lambda: _waitid_nowait(process.pid) is True,
-                        term_grace_s=2.0 if supervised else 0.25,
-                        kill_grace_s=2.0 if supervised else 0.25,
+                        term_grace_s=term_grace_s,
+                        kill_grace_s=2.0,
                         preserve_grace_on_interrupt=supervised,
                     )
                     leader_unreaped = False
@@ -3498,17 +3532,7 @@ def launch(
                         break
                     except KeyboardInterrupt:
                         interrupted = True
-                        if not cleaned_up_group and getattr(process, "returncode", None) is None:
-                            if exited_now and leader_unreaped:
-                                _cleanup_descendant_process_group(
-                                    process.pid,
-                                    process_group_id,
-                                    reason="interrupt",
-                                    pipes_closed=pipes_all_eof,
-                                )
-                                cleaned_up_group = True
-                            elif not exited_now:
-                                cleanup_own_group_or_process("interrupt")
+                        loop_completed = False
                 reader_stop.set()
                 for reader in readers:
                     try:

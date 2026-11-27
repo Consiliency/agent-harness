@@ -1296,3 +1296,166 @@ def test_interrupt_during_post_exit_broken_pipe_unwind_still_cleans_up_and_reaps
         assert not _proc_alive(grandchild_pid)
     finally:
         _kill_pid_best_effort(marker)
+
+
+def test_double_interrupt_during_post_exit_broken_pipe_unwind_preserves_error_and_reaps(tmp_path, monkeypatch):
+    """Two consecutive KeyboardInterrupts during exception unwind must keep retrying inside
+    the protected loop, preserve the original BrokenPipeError, clean up descendants, and reap."""
+    marker = tmp_path / "double_unwind_interrupt_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('first-line', flush=True)\n"
+        "print('post-exit-line', flush=True)\n"
+    )
+    orig_print = print
+    orig_cleanup = launcher._cleanup_descendant_process_group
+    broken_raised = False
+    interrupt_count = 0
+
+    def broken_on_second(*args, **kwargs):
+        nonlocal broken_raised
+        if args and "post-exit-line" in str(args[0]):
+            broken_raised = True
+            raise BrokenPipeError("stdout closed during post-exit drain")
+        return orig_print(*args, **kwargs)
+
+    def interrupt_twice_in_unwind(*args, **kwargs):
+        nonlocal interrupt_count
+        if broken_raised and interrupt_count < 2:
+            interrupt_count += 1
+            raise KeyboardInterrupt
+        return orig_cleanup(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", broken_on_second)
+    monkeypatch.setattr(launcher, "_cleanup_descendant_process_group", interrupt_twice_in_unwind)
+    try:
+        with pytest.raises(BrokenPipeError):
+            launcher.launch(
+                _child(script),
+                log_path=tmp_path / "run" / "output.log",
+                stream_output=True,
+                timeout_seconds=10.0,
+            )
+        assert broken_raised is True
+        assert interrupt_count == 2
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_unleased_timeout_gives_live_executor_grace_to_flush_checkpoint(tmp_path):
+    """Unleased timeout cleanup must preserve the 2 s SIGTERM grace for a live executor
+    so a handler needing ~450 ms to flush a checkpoint finishes cleanly instead of -9."""
+    checkpoint = tmp_path / "checkpoint.txt"
+    script = (
+        "import signal, sys, time\n"
+        "def on_term(*_):\n"
+        "    time.sleep(0.45)\n"
+        f"    open({str(checkpoint)!r}, 'w').write('flushed')\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, on_term)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    result = launcher.launch(
+        _child(script),
+        log_path=tmp_path / "run" / "output.log",
+        timeout_seconds=0.35,
+    )
+    assert result.timed_out is True
+    assert result.returncode == 0
+    assert checkpoint.read_text() == "flushed"
+    assert result.cleanup_evidence is not None
+    assert result.cleanup_evidence["signals_sent"] == ["SIGTERM"]
+    assert result.cleanup_evidence["result"] == "terminated"
+
+
+def test_leased_timeout_kills_session_detached_worker_via_supervisor(tmp_path):
+    """A leased launch timeout must preserve the lease_supervisor's full adopted-descendant
+    reap/kill grace window so a start_new_session=True worker is killed and reaped."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux lease_supervisor test")
+    import fcntl
+    import os
+    from types import SimpleNamespace
+
+    marker = tmp_path / "detached_worker.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "worker = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'],\n"
+        "    start_new_session=True,\n"
+        ")\n"
+        "open(marker, 'w').write(str(worker.pid))\n"
+        "print('worker-ready', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    fd = os.open(tmp_path / "lease", os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    authority = SimpleNamespace(fileno=lambda: fd, generation="synthetic", identity=None)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.35,
+            lease_authority=authority,
+        )
+        assert result.timed_out is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM"]
+        assert result.cleanup_evidence["result"] == "terminated"
+        worker_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(worker_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(worker_pid)
+    finally:
+        os.close(fd)
+        _kill_pid_best_effort(marker)
+
+
+def test_normal_exit_past_deadline_still_drains_closed_pipe_and_queued_output(tmp_path, monkeypatch):
+    """If a child prints multiple lines and exits normally with closed pipes just as
+    timeout_seconds elapses (e.g., during a delayed heartbeat write), post-exit drain must
+    keep all queued/buffered lines and report drain_incomplete=False."""
+    orig_write_hb = launcher.write_run_heartbeat
+    delayed = False
+
+    def slow_heartbeat(path, summary):
+        nonlocal delayed
+        if not delayed:
+            delayed = True
+            time.sleep(0.35)
+        return orig_write_hb(path, summary)
+
+    monkeypatch.setattr(launcher, "write_run_heartbeat", slow_heartbeat)
+    script = (
+        "print('line-one', flush=True)\n"
+        "print('line-two', flush=True)\n"
+    )
+    result = launcher.launch(
+        _child(script),
+        log_path=tmp_path / "run" / "output.log",
+        heartbeat_interval_seconds=0.0,
+        timeout_seconds=0.2,
+    )
+    assert result.returncode == 0
+    assert result.timed_out is False
+    assert result.drain_incomplete is False
+    assert result.output.splitlines() == ["line-one", "line-two"]
