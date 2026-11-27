@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import hashlib
 import json
+import os
+import shutil
 import pytest
 
 from test_seat_resource_caps import isolated as isolated, memory_host as memory_host
@@ -25,6 +27,125 @@ from phase_loop_runtime.panel_invoker import (
     invoke_panel_request,
     panel_leg_timeout_seconds,
 )
+
+
+def _host_path_dirs(env_path: str | None = None) -> frozenset[str]:
+    """Normalized absolute directories present on the host's real PATH / os.defpath."""
+    raw = os.environ.get("PATH", "") if env_path is None else env_path
+    dirs: set[str] = set()
+    for source in (raw, os.defpath):
+        for entry in source.split(os.pathsep):
+            if not entry:
+                continue
+            dirs.add(os.path.abspath(entry))
+            dirs.add(os.path.realpath(entry))
+    return frozenset(dirs)
+
+
+def _provider_executable_names() -> frozenset[str]:
+    from phase_loop_runtime import panel_invoker as pi, seat_subject
+
+    with seat_subject._PROVIDER_LOCK:
+        registered = tuple(seat_subject._PROVIDER_EXECUTABLES.values())
+    return frozenset(
+        name.lower() for name in (*pi._PROVIDER_BASENAMES, *registered)
+    )
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_path_provider_resolution(monkeypatch):
+    """Fail fast if any test in test_panel_invoker resolves a provider CLI from real PATH.
+
+    Catches unstubbed preflight/resolution regressions (agent-harness#2054) both on
+    developer hosts where provider CLIs are installed and on hosted CI where they are
+    absent, while still permitting isolated fake binaries in temporary directories.
+    """
+    host_dirs = _host_path_dirs()
+    provider_names = _provider_executable_names()
+    real_which = shutil.which
+
+    def _guarded_which(cmd, mode=os.F_OK | os.X_OK, path=None):
+        text = os.fsdecode(cmd)
+        basename = Path(text).name.lower()
+        if basename in provider_names:
+            dirname = os.path.dirname(text)
+            if dirname:
+                parent_candidates = {os.path.abspath(dirname), os.path.realpath(dirname)}
+                if parent_candidates & host_dirs:
+                    pytest.fail(
+                        f"provider executable {text!r} resolved from real PATH during "
+                        "test_panel_invoker (agent-harness#2054)"
+                    )
+            else:
+                if path is None:
+                    pytest.fail(
+                        f"provider executable {text!r} searched on real PATH during "
+                        "test_panel_invoker (agent-harness#2054)"
+                    )
+                search_entries = os.fsdecode(path).split(os.pathsep)
+                for entry in search_entries:
+                    if not entry:
+                        continue
+                    if os.path.abspath(entry) in host_dirs or os.path.realpath(entry) in host_dirs:
+                        pytest.fail(
+                            f"provider executable {text!r} searched in real PATH directory "
+                            f"{entry!r} during test_panel_invoker (agent-harness#2054)"
+                        )
+        found = real_which(cmd, mode=mode, path=path)
+        if basename in provider_names and found is not None:
+            found_text = os.fsdecode(found)
+            found_parents = {
+                os.path.abspath(os.path.dirname(found_text)),
+                os.path.realpath(os.path.dirname(found_text)),
+                os.path.dirname(os.path.realpath(found_text)),
+            }
+            if found_parents & host_dirs:
+                pytest.fail(
+                    f"provider executable {text!r} resolved to real PATH binary {found!r} "
+                    "during test_panel_invoker (agent-harness#2054)"
+                )
+        return found
+
+    monkeypatch.setattr(shutil, "which", _guarded_which)
+
+
+def _hermetic_base_env(root: Path) -> dict[str, str]:
+    """Isolated environment whose PATH contains only an empty test directory."""
+    empty_bin = root / "empty-bin"
+    empty_bin.mkdir(exist_ok=True)
+    return {"PATH": str(empty_bin)}
+
+
+def _hermetic_matrix():
+    """Compatibility matrix with an injected probe that never consults ambient PATH."""
+    from phase_loop_runtime.advisor_board.matrix import default_matrix
+
+    return default_matrix(env={}, probe=lambda _cli: True)
+
+
+def test_real_path_provider_resolution_guard_trips_and_allows_isolated_bin(tmp_path):
+    """agent-harness#2054: guard fails on real-PATH provider lookups even if binary is absent."""
+    from phase_loop_runtime import panel_invoker as pi, seat_subject
+
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy")
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=os.environ.get("PATH", os.defpath))
+    host_dir = next(d for d in os.defpath.split(os.pathsep) if d)
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which(str(Path(host_dir) / "agy"))
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        seat_subject.resolve_seat_subject("gemini", {"PATH": os.environ.get("PATH", os.defpath)})
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        pi.board_preflight_requalify(DEFAULT_BOARD)
+    fake_bin = tmp_path / "isolated-bin"
+    fake_bin.mkdir()
+    fake_agy = fake_bin / "agy"
+    fake_agy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_agy.chmod(0o700)
+    assert shutil.which("agy", path=str(fake_bin)) == str(fake_agy)
+    # Non-provider executables remain resolvable as usual.
+    assert shutil.which("sh") is not None
 
 
 def _install_firstseat_supplier_double(monkeypatch):
@@ -401,9 +522,13 @@ def test_seats_firstseat_exec_record_dependency_probe(monkeypatch):
 
 
 @pytest.mark.parametrize("missing", [None, "claude", "gemini", "grok", "codex", "all"])
-def test_seats_firstseat_exec_record_composed_board(tmp_path, missing):
-    from phase_loop_runtime import panel_invoker as pi
+def test_seats_firstseat_exec_record_composed_board(tmp_path, monkeypatch, missing):
+    from phase_loop_runtime import agy_qualification, panel_invoker as pi
     from phase_loop_runtime.advisor_board.composition import compose_review_board_report
+    monkeypatch.setattr(pi, "board_preflight_requalify", lambda *a, **kw: None)
+    monkeypatch.setattr(pi, "_publish_seat_modes", lambda *a, **kw: ())
+    monkeypatch.setattr(agy_qualification, "requalify_once",
+        lambda *a, **kw: pytest.fail("live Agy qualification in composed-board test"))
     composition = compose_review_board_report(is_available=lambda v: missing != "all" and v != missing,
                                                auth_ok=lambda v: True)
     outcome = composition.policy_outcome("plan")
@@ -415,11 +540,13 @@ def test_seats_firstseat_exec_record_composed_board(tmp_path, missing):
         assert outcome.status == "policy_refused" and outcome.fix
         with pytest.raises(pi.PresidentPolicyError):
             invoke_sanctioned_review_transport(composition.board, "fixture", spawn=spawn,
+                base_env=_hermetic_base_env(tmp_path), matrix=_hermetic_matrix(),
                 landing_tier="plan", president_invoke=deferring_president)
         assert not launched
     else:
         assert outcome.status == "admitted"
         result = invoke_sanctioned_review_transport(composition.board, "fixture", spawn=spawn,
+            base_env=_hermetic_base_env(tmp_path), matrix=_hermetic_matrix(),
             landing_tier="plan", president_invoke=deferring_president, max_concurrency=1)
         assert set(launched) == {"claude", "gemini", "codex", "grok"}
         assert result.legs
@@ -432,6 +559,7 @@ def test_seats_firstseat_exec_record_board_returns(tmp_path, monkeypatch, failur
     # Live Agy qualification would run inside the guard's authorization window
     # (agent-harness#2142); the records under test never depend on it.
     monkeypatch.setattr(panel_invoker, "board_preflight_requalify", lambda *a, **kw: None)
+    monkeypatch.setattr(panel_invoker, "_publish_seat_modes", lambda *a, **kw: ())
     monkeypatch.setattr(agy_qualification, "requalify_once",
         lambda *a, **kw: pytest.fail("live Agy qualification in record test"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
@@ -441,6 +569,7 @@ def test_seats_firstseat_exec_record_board_returns(tmp_path, monkeypatch, failur
             raise ValueError("fixture text omitted from records")
         return "OK", "AGREE"
     result = invoke_sanctioned_review_transport(composed.board, "fixture", spawn=spawn,
+        base_env=_hermetic_base_env(tmp_path), matrix=_hermetic_matrix(),
         landing_tier="plan", president_invoke=deferring_president, max_concurrency=1)
     records = list((tmp_path / "state").rglob("leg-*.json"))
     assert len(records) == len(result.legs) == 4
@@ -2145,7 +2274,11 @@ class PanelInvokerTest(unittest.TestCase):
             seen[leg] = artifact
             return ("ok", "AGREE")
 
-        with TemporaryDirectory() as td:
+        with (
+            TemporaryDirectory() as td,
+            patch("phase_loop_runtime.panel_invoker.board_preflight_requalify", return_value=None),
+            patch("phase_loop_runtime.panel_invoker._publish_seat_modes", return_value=()),
+        ):
             bundle = Path(td) / "bundle.md"
             bundle.write_text("FROM_BOARD_REF", encoding="utf-8")
             ref = Path(td) / "private.txt"
@@ -2156,6 +2289,8 @@ class PanelInvokerTest(unittest.TestCase):
                 artifact_ref=str(bundle),
                 context_refs=[str(ref)],
                 spawn=spawn,
+                base_env=_hermetic_base_env(Path(td)),
+                matrix=_hermetic_matrix(),
                 landing_tier="production_code",
                 president_invoke=deferring_president,
             )
@@ -2170,11 +2305,18 @@ class PanelInvokerTest(unittest.TestCase):
             seen_timeouts[leg] = kwargs.get("timeout_s")
             return ("OK", "AGREE")
 
-        with patch("phase_loop_runtime.panel_invoker._default_spawn_via_provider", side_effect=spawn):
+        with (
+            TemporaryDirectory() as td,
+            patch("phase_loop_runtime.panel_invoker.board_preflight_requalify", return_value=None),
+            patch("phase_loop_runtime.panel_invoker._publish_seat_modes", return_value=()),
+            patch("phase_loop_runtime.panel_invoker._default_spawn_via_provider", side_effect=spawn),
+        ):
             invoke_sanctioned_review_transport(
                 DEFAULT_BOARD,
                 "ARTIFACT",
                 timeouts_by_leg={"gemini": 137},
+                base_env=_hermetic_base_env(Path(td)),
+                matrix=_hermetic_matrix(),
                 max_concurrency=1,
                 landing_tier="production_code",
                 president_invoke=deferring_president,
@@ -2309,6 +2451,7 @@ def test_seat_memory_survives_board_verdict_paths(
     monitored = outcome in {"cancelled", "monitor_failed", "body_oserror"}
     result = invoke_sanctioned_board_control(
         board, "fixture prompt", spawn=spawn, stream_dir=records,
+        matrix=_hermetic_matrix(),
         cancel_event=cancel, max_concurrency=1, **({"monitoring_policy": "heartbeat_only"}
                                                  if monitored else {}),
     )
