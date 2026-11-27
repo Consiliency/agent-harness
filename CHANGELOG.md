@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- Jailed Claude TUI legs now read the selected Claude Code version from verified
+  managed `package.json` metadata without executing the binary, recording it (or
+  `unknown`) in content-free leg diagnostics and board records (agent-harness#2170).
+
 ### Fixed
 
 - `test_jevdrill_usage::test_probe_descendant_cleanup_and_deadline` now accepts Linux

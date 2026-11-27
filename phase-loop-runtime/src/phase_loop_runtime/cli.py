@@ -2735,6 +2735,9 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                     # notice, provider terminal state); absent under the bounded policy.
                     **({"review_monitoring": dict(leg.review_monitoring)}
                        if leg.review_monitoring is not None else {}),
+                    # agent-harness#2170: content-free Claude Code package version for jailed seats.
+                    **({"claude_code_version": leg.claude_code_version}
+                       if leg.claude_code_version is not None else {}),
                 }
                 for leg in result.legs
             ],
@@ -2775,7 +2778,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                                if key not in ("notices", "seat_modes", "composition",
                                               "refused_seats")}
             capture_payload["legs"] = [
-                {key: value for key, value in leg.items() if key != "notices"}
+                {key: value for key, value in leg.items()
+                 if key not in ("notices", "claude_code_version")}
                 for leg in payload["legs"]
             ]
             try:
