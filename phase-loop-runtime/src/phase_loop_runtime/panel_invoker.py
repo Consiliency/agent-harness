@@ -58,6 +58,7 @@ if TYPE_CHECKING:
         WindowLaunchResult,
     )
 
+from . import seat_resource_caps as _seat_resource_caps
 from .seat_resource_caps import _LaunchClass, _reap_dead_seats
 
 try:
@@ -3707,6 +3708,8 @@ def _typed_refusal_code(exc: BaseException) -> str | None:
     kind = type(exc)
     if kind is _seat_jail.SeatSandboxRefused:
         code = exc.code
+    elif kind is _seat_resource_caps.CapsUnavailable:
+        code = _seat_resource_caps.CODE
     elif kind is ExecutableDependencyError:
         fields = (exc.code, exc.detail)
         typed = all(type(value) is str for value in fields)
@@ -18265,7 +18268,13 @@ def _retain_panel_leg(result):
     if "record_digest" in metadata:
         return result
     from .president_adapter import write_private_record
-    record = leg_exec_record(result.leg, None, [], scan_secrets=None)
+    record = leg_exec_record(
+        result.leg,
+        None,
+        [],
+        scan_secrets=None,
+        refusal=getattr(result, "_leg_exec_refusal", None),
+    )
     record["outcome"] = "leg_execution_unobserved"
     if "seat_memory" in seat_memory:
         record["seat_memory"] = seat_memory["seat_memory"]
@@ -21256,6 +21265,7 @@ def _default_spawn_via_provider(
     # into a promotion BLOCK for every routine timeout, while the real diagnostic is lost.
     _diagnostic: list[str | None] = [None]
     _broker_evidence: list[Mapping[str, object] | None] = [None]
+    _seat_notices_out: list[tuple[str, ...]] = [()]
     _placement_evidence: list[Mapping[str, object] | None] = [None]
     _exec_metadata: list[dict | None] = [None]
     _quiescence_error: list[ProviderProcessGroupQuiescenceError | None] = [None]
@@ -21292,11 +21302,19 @@ def _default_spawn_via_provider(
             raise
         except Exception as exc:
             _exec_metadata[0] = getattr(exc, "_leg_exec_metadata", None)
+            if _caused_refusal_code(exc) == _seat_resource_caps.CODE:
+                # agent-harness#1908: translate _seat_scope / resource-caps refusals (direct or
+                # transparently broker-wrapped) into the closed diagnostic code here so
+                # HomebrewAgentRuntimeProvider never puts private cause text into review text.
+                _diagnostic[0] = _seat_resource_caps.CODE
+                _seat_notices_out[0] = (_seat_resource_caps.CODE,)
+                return "DEGRADED", ""
             raise
         finally:
             if seat_token is not None:
                 _SEAT_SESSION_SEAT.reset(seat_token)
         _placement_evidence[0] = getattr(spawned, "sandbox_placement_evidence", None)
+        _seat_notices_out[0] = tuple(getattr(spawned, "seat_notices", ()))
         _exec_metadata[0] = getattr(spawned, "leg_exec_metadata", None)
         if isinstance(spawned, tuple) and len(spawned) == 3:
             status_, text_, _diagnostic[0] = spawned
@@ -21332,6 +21350,7 @@ def _default_spawn_via_provider(
     # Re-attach the diagnostic the seam could not carry, so the operator still learns WHY
     # a leg failed — and it stays in `detail`, never `text`.
     result = _BrokeredSpawnResult(status, text, _diagnostic[0], evidence=_broker_evidence[0],
+                                 seat_notices=_seat_notices_out[0],
                                  placement=_placement_evidence[0])
     result.leg_exec_metadata = _exec_metadata[0]
     return result
@@ -23043,15 +23062,20 @@ def invoke_board(
                     raise
                 raise primary
             except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
+                failure = _exception_failure(exc)
+                detail = _resolve_leg_detail(failure, leg_log_root, str(seat.seat_key))
                 result = PanelLegResult(
                     leg=leg,
                     status="DEGRADED",
                     text="",
-                    detail=_resolve_leg_detail(_exception_failure(exc), leg_log_root, str(seat.seat_key)),
+                    detail=detail,
                     seat_key=seat.seat_key,
                 )
+                if isinstance(detail, str) and detail in _seat_jail.NOTICE_CODES:
+                    attach_seat_notices(result, (detail,))
                 if getattr(exc, "_leg_exec_metadata", None) is not None:
                     object.__setattr__(result, "_leg_exec_metadata", exc._leg_exec_metadata)
+                object.__setattr__(result, "_leg_exec_refusal", _exec_refusal(exc, failure))
                 return (
                     _finalize_research_result(result, research_seat)
                     if research_seat is not None
