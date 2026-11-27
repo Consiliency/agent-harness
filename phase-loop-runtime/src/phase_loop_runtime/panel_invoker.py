@@ -13871,9 +13871,10 @@ def _prepare_jailed_claude(
     _validate_jail_dependency("claude", dependency)
     executable = (Path(dependency.subject_source) if dependency is not None
                   else None if subject is None else subject.subject_path)
+    subject_version = getattr(subject, "provider_version", None) if subject is not None else None
     claude_code_version = (
-        _seat_subject.normalize_claude_code_version(subject.provider_version)
-        if subject is not None and subject.provider_version is not None
+        _seat_subject.normalize_claude_code_version(subject_version)
+        if subject_version is not None
         else _seat_subject.claude_code_version_for_subject(executable, managed=True)
     )
     observation = _EXEC_OBSERVATION.get()
@@ -13914,14 +13915,15 @@ def _prepare_jailed_claude(
             token = (credential.token if credential_mode == "live"
                      else None if credential_mode == "none"
                      else copy_transform(credential.token))
-            jail = replace(
-                _build_jail_with_owned_inputs(
-                    "claude", seat_dir, executable, tree=tree,
-                    artifact=artifact.encode("utf-8"), instructions=instructions.encode("utf-8"),
-                    token=token, seat_ids=(seat_id, seat_id), dependency=dependency,
-                ),
-                claude_code_version=claude_code_version,
+            jail = _build_jail_with_owned_inputs(
+                "claude", seat_dir, executable, tree=tree,
+                artifact=artifact.encode("utf-8"), instructions=instructions.encode("utf-8"),
+                token=token, seat_ids=(seat_id, seat_id), dependency=dependency,
             )
+            if isinstance(jail, _seat_jail.SeatJail):
+                jail = replace(jail, claude_code_version=claude_code_version)
+            else:
+                setattr(jail, "claude_code_version", claude_code_version)
             try:
                 if _seat_jail.CLAUDE_PRESEED:
                     home = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
@@ -13938,14 +13940,15 @@ def _prepare_jailed_claude(
                 # bundle memfds and the token pipe are single-use.
                 probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
                 (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
-                probe = replace(
-                    _build_jail_with_owned_inputs(
-                        "claude", probe_dir, executable, artifact=b"", instructions=b"",
-                        token=b"probe", seat_ids=(seat_id, seat_id),
-                        dependency=dependency,
-                    ),
-                    claude_code_version=claude_code_version,
+                probe = _build_jail_with_owned_inputs(
+                    "claude", probe_dir, executable, artifact=b"", instructions=b"",
+                    token=b"probe", seat_ids=(seat_id, seat_id),
+                    dependency=dependency,
                 )
+                if isinstance(probe, _seat_jail.SeatJail):
+                    probe = replace(probe, claude_code_version=claude_code_version)
+                else:
+                    setattr(probe, "claude_code_version", claude_code_version)
                 if dependency is not None and (
                     jail.dependency_projection_digest != dependency.projection_digest
                     or probe.dependency_projection_digest != dependency.projection_digest
