@@ -1708,11 +1708,17 @@ def test_fresh_window_launch_jails_rewrites_token_fd_in_process_owner(tmp_path):
         seat_jail.close_jail_fds(template)
 
 
+@pytest.mark.parametrize("teardown_fault,expected_note", [
+    ("seat_cleanup", "RuntimeError"),
+    ("proxy_shutdown", "TimeoutExpired"),
+])
 def test_open_window_launch_preserves_qualification_refusal_when_teardown_fails(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, teardown_fault, expected_note,
 ):
-    """If seat teardown raises while unwinding a qualification refusal in _open_window_launch,
-    the primary SeatSandboxRefused is preserved instead of being masked by a teardown error."""
+    """If seat teardown or exit-stack proxy shutdown raises while unwinding a qualification
+    refusal in _open_window_launch, the primary SeatSandboxRefused is preserved instead of
+    being masked by a teardown error."""
+    import subprocess
     from phase_loop_runtime import panel_invoker as pi, seat_jail
 
     _install_firstseat_supplier_double(monkeypatch)
@@ -1739,10 +1745,16 @@ def test_open_window_launch_preserves_qualification_refusal_when_teardown_fails(
     monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda u, g: 1)
     monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lambda n: contextmanager(lambda: (yield 2))())
     monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
-    monkeypatch.setattr(
-        pi._seat_egress_proxy, "start_private_gemini_proxy",
-        lambda **k: contextmanager(lambda: (yield SimpleNamespace(socket="sock", allowlist_sha256="6" * 64)))(),
-    )
+
+    @contextmanager
+    def failing_proxy(**_kwargs):
+        try:
+            yield SimpleNamespace(socket="sock", allowlist_sha256="6" * 64)
+        finally:
+            if teardown_fault == "proxy_shutdown":
+                raise subprocess.TimeoutExpired(cmd=["proxy"], timeout=1.0)
+
+    monkeypatch.setattr(pi._seat_egress_proxy, "start_private_gemini_proxy", failing_proxy)
     monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
                         lambda **k: contextmanager(lambda: (yield ("nsenter", "-t", "71")))())
     seat_obj = SimpleNamespace(
@@ -1751,9 +1763,13 @@ def test_open_window_launch_preserves_qualification_refusal_when_teardown_fails(
         notices=[],
     )
     monkeypatch.setattr(pi, "_prepare_jailed_gemini", lambda *a, **k: seat_obj)
-    # Trigger a real teardown failure inside _cleanup_jailed_seat (which suppresses it into
-    # primary.__notes__ only when primary is passed through).
-    monkeypatch.setattr(seat_jail, "close_jail_fds", lambda _j: (_ for _ in ()).throw(RuntimeError("stage_refused")))
+    if teardown_fault == "seat_cleanup":
+        monkeypatch.setattr(
+            seat_jail, "close_jail_fds",
+            lambda _j: (_ for _ in ()).throw(RuntimeError("stage_refused")),
+        )
+    else:
+        monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat, *, primary=None: None)
     monkeypatch.setattr(seat_jail, "host_identity", lambda: None)
 
     spec = pi.WindowLaunchSpec(
@@ -1768,7 +1784,7 @@ def test_open_window_launch_preserves_qualification_refusal_when_teardown_fails(
         with pi._open_window_launch(spec):
             pass
     assert exc.value.code == "seat_sandbox_refused:jail_unqualified"
-    assert any("RuntimeError" in note for note in getattr(exc.value, "__notes__", ()))
+    assert any(expected_note in note for note in getattr(exc.value, "__notes__", ()))
 
 
 def test_seats_firstseat_exec_record_window_board_frame_is_opt_in():

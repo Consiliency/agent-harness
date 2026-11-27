@@ -16062,21 +16062,34 @@ def _open_window_launch(spec: WindowLaunchSpec):
         primary = exc
         raise
     finally:
-        try:
-            if session is not None and not session.cleaned:
-                session.cleanup(primary=primary)
-            elif session is None and seat is not None:
-                if primary is None:
-                    _cleanup_jailed_seat(seat)
-                else:
-                    _cleanup_jailed_seat(seat, primary=primary)
-        finally:
+        teardown_errors: list[BaseException] = []
+
+        def _finish_step(fn: Callable[[], object]) -> None:
             try:
-                stack.close()
-            finally:
-                close_review_isolation_authorization(authorization)
-                if base is not None:
-                    _review_stage.remove_review_stage(base)
+                fn()
+            except BaseException as exc:
+                if primary is not None:
+                    primary.add_note(f"window launch teardown also failed: {type(exc).__name__}")
+                else:
+                    teardown_errors.append(exc)
+
+        if session is not None and not session.cleaned:
+            _finish_step(lambda: session.cleanup(primary=primary))
+        elif session is None and seat is not None:
+            _finish_step(
+                (lambda: _cleanup_jailed_seat(seat))
+                if primary is None
+                else (lambda: _cleanup_jailed_seat(seat, primary=primary))
+            )
+        _finish_step(stack.close)
+        _finish_step(lambda: close_review_isolation_authorization(authorization))
+        if base is not None:
+            _finish_step(lambda: _review_stage.remove_review_stage(base))
+        if teardown_errors:
+            first, *additional = teardown_errors
+            for extra in additional:
+                first.add_note(f"additional window launch teardown failure: {type(extra).__name__}")
+            raise first
 
 
 def _window_control_command(kind: str, model: str) -> list[str]:
