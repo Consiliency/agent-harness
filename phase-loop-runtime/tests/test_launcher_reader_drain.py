@@ -135,3 +135,86 @@ def test_unencodable_stdin_still_fails(tmp_path):
     with pytest.raises(UnicodeEncodeError):
         launcher.launch(_child("pass\n"), stdin_text="prompt \udc80",
                         log_path=tmp_path / "run" / "output.log")
+
+
+def _proc_alive(pid: int) -> bool:
+    import os
+    from pathlib import Path
+
+    stat_path = Path("/proc") / str(pid) / "stat"
+    if stat_path.exists():
+        try:
+            tail = stat_path.read_text().rpartition(")")[2].split()
+            if tail and tail[0] in {"Z", "X", "x"}:
+                return False
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def test_grandchild_holding_stdout_open_past_child_exit_is_bounded_and_cleaned(tmp_path):
+    marker = tmp_path / "grandchild.pid"
+    script = (
+        "import subprocess, sys\n"
+        "from pathlib import Path\n"
+        f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"Path({str(marker)!r}).write_text(str(p.pid), encoding='utf-8')\n"
+        "print('child-done', flush=True)\n"
+    )
+    started = time.monotonic()
+    result = launcher.launch(
+        _child(script),
+        log_path=tmp_path / "run" / "output.log",
+        timeout_seconds=0.5,
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < 3.0
+    assert result.returncode == 0
+    assert "child-done" in result.output
+    assert result.drain_incomplete is True
+    assert result.event_metadata()["drain_incomplete"] is True
+    assert result.cleanup_evidence is not None
+    assert result.cleanup_evidence["reason"] == "post_exit_pipe_open"
+    assert result.cleanup_evidence["result"] in {"terminated", "killed"}
+    grandchild_pid = int(marker.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 1.0
+    while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not _proc_alive(grandchild_pid)
+
+
+def test_grandchild_holding_stdout_open_marks_usage_unknown_and_cleans_group(tmp_path, monkeypatch):
+    from test_jevdrill_usage import captures, synthetic_spec
+
+    if not captures():
+        pytest.skip("usage capture requires Linux")
+    marker = tmp_path / "grandchild-usage.pid"
+    tail = (
+        "import subprocess\n"
+        f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"Path({str(marker)!r}).write_text(str(p.pid), encoding='utf-8')\n"
+    )
+    spec = synthetic_spec(tmp_path, monkeypatch, tail=tail)
+    started = time.monotonic()
+    result = launcher.launch_with_spec(
+        spec.__class__(**{**spec.__dict__, "launch_timeout_seconds": 0.6}),
+        codex_usage_capture=True,
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < 3.0
+    assert result.returncode == 0
+    assert result.drain_incomplete is True
+    assert result.jevdrill_usage is None
+    assert result.cleanup_evidence is not None
+    assert result.cleanup_evidence["reason"] == "post_exit_pipe_open"
+    grandchild_pid = int(marker.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 1.0
+    while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not _proc_alive(grandchild_pid)

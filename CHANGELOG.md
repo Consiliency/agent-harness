@@ -8,6 +8,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Bound the launcher's post-exit stdout/stderr drain by the launch deadline, mark
+  incomplete drains (`drain_incomplete=True`, usage `UNKNOWN`), stop the reader thread
+  without deadlocking on pipe close, and terminate surviving descendants in the child's
+  process group when a grandchild holds stdout open past child exit (agent-harness#2129).
 - Raise the `test.yml` `clean-room (standalone-from-wheel, Gate A)` job timeout from
   150 to 210 minutes (matching `publish-pypi.yml` from agent-harness#2191) after slow
   hosted runners hit the 150-minute cap at 88% with no test failures (agent-harness#766).

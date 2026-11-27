@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import contextlib
 import json
@@ -333,6 +334,7 @@ class LaunchResult:
     timed_out: bool = False
     interrupted: bool = False
     stalled: bool = False
+    drain_incomplete: bool = False
     claude_route: str | None = None
     claude_route_result: dict[str, Any] | None = None
     # CR round-5/6/7/8 finding C: route-level provenance warnings (e.g. the channel route's
@@ -417,6 +419,8 @@ class LaunchResult:
             data["interrupted"] = self.interrupted
         if self.stalled:
             data["stalled"] = self.stalled
+        if self.drain_incomplete:
+            data["drain_incomplete"] = self.drain_incomplete
         if self.claude_route is not None:
             data["claude_route"] = self.claude_route
         if self.claude_route_warnings:
@@ -3199,7 +3203,12 @@ def launch(
             streams_done = set()
             readers = []
             if _codex_usage_observer is None:
-                readers.append(threading.Thread(target=_read_lines, args=(process.stdout, line_queue), daemon=True))
+                reader_args = (
+                    (process.stdout, line_queue, reader_stop)
+                    if _read_lines is _DEFAULT_READ_LINES
+                    else (process.stdout, line_queue)
+                )
+                readers.append(threading.Thread(target=_read_lines, args=reader_args, daemon=True))
             else:
                 for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
                     readers.append(threading.Thread(target=_read_usage_lines,
@@ -3229,11 +3238,19 @@ def launch(
                     log.flush()
                     if stream_output:
                         print(rendered, end="", flush=True)
+            def post_exit_deadline() -> float:
+                now_ts = time.monotonic()
+                bound = now_ts + 1.0
+                if (not timed_out and not stalled and not interrupted
+                        and action != "review" and timeout_seconds is not None):
+                    bound = max(now_ts + 0.05, min(bound, started_monotonic + timeout_seconds))
+                return bound
+
             def drain():
-                deadline = time.monotonic() + 1.0
+                deadline = post_exit_deadline()
                 while streams_done != {"stdout", "stderr"} and time.monotonic() < deadline:
                     try:
-                        consume(line_queue.get(timeout=min(0.05, max(0.001, deadline-time.monotonic()))))
+                        consume(line_queue.get(timeout=min(0.05, max(0.001, deadline - time.monotonic()))))
                     except Empty:
                         pass
                 if streams_done != {"stdout", "stderr"}:
@@ -3242,6 +3259,7 @@ def launch(
             timed_out = False
             interrupted = False
             stalled = False
+            drain_incomplete = False
             cleanup_evidence: dict[str, Any] | None = None
             last_heartbeat_summary: dict[str, Any] | None = None
             reader_eof = False
@@ -3311,13 +3329,13 @@ def launch(
                     if process.poll() is not None:
                         if _codex_usage_observer is not None:
                             drain()
+                            drain_incomplete = streams_done != {"stdout", "stderr"}
                             break
                         # The child has exited, but its last lines may still be in the
                         # pipe or the reader. Collect until the reader's EOF sentinel,
-                        # within one second as drain() does: the budget is checked
-                        # before each dequeue. A sink write in flight and the cleanup
-                        # after this loop are outside the bound.
-                        drain_deadline = time.monotonic() + 1.0
+                        # bounded by the launch's own deadline (and at most 1 s): the
+                        # budget is checked before each dequeue (agent-harness#2129).
+                        drain_deadline = post_exit_deadline()
                         while not reader_eof:
                             remaining = drain_deadline - time.monotonic()
                             if remaining <= 0:
@@ -3330,23 +3348,35 @@ def launch(
                                 reader_eof = True
                             else:
                                 consume(line)
+                        drain_incomplete = not reader_eof
                         break
                 except KeyboardInterrupt:
                     interrupted = True
                     cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
                     if _codex_usage_observer is not None:
                         drain()
+                        drain_incomplete = streams_done != {"stdout", "stderr"}
                     break
             returncode = process.wait()
+            if drain_incomplete:
+                descendant_cleanup = _cleanup_descendant_process_group(
+                    process.pid, process_group_id, reason="post_exit_pipe_open",
+                )
+                if descendant_cleanup is not None:
+                    if cleanup_evidence is None:
+                        cleanup_evidence = descendant_cleanup
+                    else:
+                        cleanup_evidence["post_exit_descendant_cleanup"] = descendant_cleanup
             reader_stop.set()
             for reader in readers:
                 reader.join(timeout=1)
-            try:
-                process.stdout.close()
-                if _codex_usage_observer is not None and process.stderr is not None:
-                    process.stderr.close()
-            except OSError:
-                pass
+            if not any(reader.is_alive() for reader in readers):
+                try:
+                    process.stdout.close()
+                    if _codex_usage_observer is not None and process.stderr is not None:
+                        process.stderr.close()
+                except OSError:
+                    pass
             if not executor_released and returncode != 0 and not (timed_out or interrupted or stalled):
                 # The supervisor died before releasing the executor, so the
                 # executor never ran (see lease_supervisor's handshake); that is a
@@ -3387,6 +3417,7 @@ def launch(
             timed_out=timed_out,
             interrupted=interrupted,
             stalled=stalled,
+            drain_incomplete=drain_incomplete,
             cleanup_evidence=cleanup_evidence,
         )
         return _with_changed_paths(result, change_snapshot, cwd)
@@ -4312,6 +4343,7 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         timed_out=result.timed_out,
         interrupted=result.interrupted,
         stalled=result.stalled,
+        drain_incomplete=result.drain_incomplete,
         claude_route=spec.claude_route,
         claude_route_warnings=spec.claude_route_warnings,
         claude_route_result=result.claude_route_result,
@@ -4635,12 +4667,58 @@ def _read_usage_lines(pipe, line_queue, name, stop):
         line_queue.put((name, "error", None))
 
 
-def _read_lines(stdout, line_queue: Queue[str | None]) -> None:
+def _read_lines(stdout, line_queue: Queue[str | None], stop: threading.Event | None = None) -> None:
+    if stop is not None and sys.platform != "win32" and hasattr(stdout, "fileno"):
+        encoding = getattr(stdout, "encoding", None) or "utf-8"
+        decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
+        pending = ""
+        eof_reached = False
+        try:
+            fd = stdout.fileno()
+            os.set_blocking(fd, False)
+            while not stop.is_set():
+                if not select.select([fd], [], [], 0.05)[0]:
+                    continue
+                try:
+                    raw = os.read(fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not raw:
+                    eof_reached = True
+                    break
+                pending += decoder.decode(raw)
+                pending = pending.replace("\r\n", "\n")
+                # Preserve a lone trailing CR so a CR/LF split across chunks stays one newline.
+                trailing_cr = pending.endswith("\r")
+                body = pending[:-1] if trailing_cr else pending
+                body = body.replace("\r", "\n")
+                parts = body.split("\n")
+                for line in parts[:-1]:
+                    line_queue.put(line + "\n")
+                pending = parts[-1] + ("\r" if trailing_cr else "")
+            if eof_reached:
+                pending += decoder.decode(b"", final=True)
+                pending = pending.replace("\r\n", "\n").replace("\r", "\n")
+                if pending:
+                    parts = pending.split("\n")
+                    for line in parts[:-1]:
+                        line_queue.put(line + "\n")
+                    if parts[-1]:
+                        line_queue.put(parts[-1])
+        except (OSError, ValueError):
+            eof_reached = True
+        finally:
+            if eof_reached:
+                line_queue.put(None)
+        return
     try:
         for line in stdout:
             line_queue.put(line)
     finally:
         line_queue.put(None)
+
+
+_DEFAULT_READ_LINES = _read_lines
 
 
 def _utc_now() -> str:
@@ -4763,7 +4841,65 @@ def _cleanup_process_group(process: subprocess.Popen, process_group_id: int | No
     return evidence
 
 
-def _opencode_agent(action: str) -> str:
+def _cleanup_descendant_process_group(
+    process_pid: int, process_group_id: int | None, *, reason: str,
+) -> dict[str, Any] | None:
+    """Terminate surviving descendants in a child's own process group after child exit
+    (agent-harness#2129). Never signals the caller's own process group."""
+    if process_group_id is None or not hasattr(os, "killpg"):
+        return None
+    try:
+        if process_group_id == os.getpgrp():
+            return None
+    except OSError:
+        return None
+    evidence: dict[str, Any] = {
+        "reason": reason,
+        "requested_at": _utc_now(),
+        "process_pid": process_pid,
+        "process_group_id": process_group_id,
+        "cleanup_scope": "process_group",
+        "signals_sent": [],
+        "drain_incomplete": True,
+    }
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return None
+    except OSError:
+        return None
+    evidence["signals_sent"].append("SIGTERM")
+    deadline = time.monotonic() + 0.25
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            evidence["result"] = "terminated"
+            return evidence
+        except OSError:
+            break
+        time.sleep(0.01)
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+        evidence["signals_sent"].append("SIGKILL")
+    except ProcessLookupError:
+        evidence["result"] = "terminated"
+        return evidence
+    except OSError:
+        evidence["result"] = "cleanup_failed"
+        return evidence
+    kill_deadline = time.monotonic() + 0.25
+    while time.monotonic() < kill_deadline:
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            evidence["result"] = "killed"
+            return evidence
+        except OSError:
+            break
+        time.sleep(0.01)
+    evidence["result"] = "cleanup_failed"
+    return evidence
     if action in {"roadmap", "plan", "review"}:
         return "build"
     return "build"
