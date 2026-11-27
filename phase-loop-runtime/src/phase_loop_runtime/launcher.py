@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import codecs
 import hashlib
 import contextlib
@@ -10,6 +11,7 @@ import select
 import signal
 import shlex
 import shutil
+import stat
 import string
 import subprocess
 import sys
@@ -22,6 +24,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue, SimpleQueue
 from typing import Any, Callable, Mapping
+
+_BUILTIN_PRINT = builtins.print
+_STREAM_CHUNK_BYTES = 512
 
 from .capability_registry import capability_registry
 from .advisor_board.harness_mapping import agy_model_effort, render_agy_model
@@ -3254,6 +3259,46 @@ def launch(
                     return pipe_eof.is_set() or _pipe_writers_closed(process.stdout)
                 return reader_eof or _pipe_writers_closed(process.stdout)
 
+            def _stream_stdout_fd() -> int | None:
+                if print is not _BUILTIN_PRINT:
+                    return None
+                try:
+                    fd = sys.stdout.fileno()
+                    mode = os.fstat(fd).st_mode
+                except (AttributeError, OSError, ValueError):
+                    return None
+                if stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode):
+                    return fd
+                return None
+
+            def _stream_bounded_to_fd(fd: int, text: str, deadline: float) -> bool:
+                nonlocal sink_stalled
+                encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+                errors = getattr(sys.stdout, "errors", None) or "replace"
+                raw = text.encode(encoding, errors=errors)
+                if not raw:
+                    return True
+                flushed = False
+                offset = 0
+                while offset < len(raw):
+                    wait_left = deadline - time.monotonic()
+                    if wait_left <= 0:
+                        sink_stalled = True
+                        return False
+                    _, writable, _ = select.select([], [fd], [], wait_left)
+                    if not writable:
+                        sink_stalled = True
+                        return False
+                    if not flushed:
+                        sys.stdout.flush()
+                        flushed = True
+                    written = os.write(fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
+                    if written <= 0:
+                        sink_stalled = True
+                        return False
+                    offset += written
+                return True
+
             def _sink_worker() -> None:
                 assert sink_queue is not None
                 try:
@@ -3261,11 +3306,11 @@ def launch(
                         item = sink_queue.get()
                         if item is None:
                             return
-                        text, done, err_box = item
+                        text, call_print, done, err_box = item
                         try:
                             log.write(text)
                             log.flush()
-                            if stream_output:
+                            if call_print:
                                 print(text, end="", flush=True)
                         except BaseException as exc:
                             err_box.append(exc)
@@ -3284,13 +3329,29 @@ def launch(
                     log.write(text)
                     log.flush()
                     if stream_output:
-                        print(text, end="", flush=True)
+                        stdout_fd = (
+                            _stream_stdout_fd()
+                            if action != "review" and timeout_seconds is not None
+                            else None
+                        )
+                        if stdout_fd is not None:
+                            if not sink_stalled:
+                                _stream_bounded_to_fd(
+                                    stdout_fd, text, started_monotonic + timeout_seconds,
+                                )
+                        else:
+                            print(text, end="", flush=True)
                     return True
                 if sink_stalled:
                     return False
                 wait_left = deadline - time.monotonic()
                 if wait_left <= 0:
                     return False
+                # Never run stock print() against a real OS pipe/socket/tty on a daemon
+                # thread (which would hold sys.stdout's BufferedWriter lock across a full
+                # pipe write and abort subsequent writes or interpreter shutdown).
+                stdout_fd = _stream_stdout_fd() if stream_output else None
+                call_print_in_worker = stream_output and print is not _BUILTIN_PRINT
                 if sink_thread is None:
                     sink_queue = SimpleQueue()
                     sink_thread = threading.Thread(target=_sink_worker, daemon=True)
@@ -3298,8 +3359,8 @@ def launch(
                 assert sink_queue is not None
                 done = threading.Event()
                 err_box: list[BaseException] = []
-                sink_queue.put((text, done, err_box))
                 try:
+                    sink_queue.put((text, call_print_in_worker, done, err_box))
                     finished = done.wait(timeout=wait_left)
                 except BaseException:
                     if not done.is_set():
@@ -3310,6 +3371,12 @@ def launch(
                     return False
                 if err_box:
                     raise err_box[0]
+                if stream_output and not call_print_in_worker:
+                    if stdout_fd is not None:
+                        return _stream_bounded_to_fd(stdout_fd, text, deadline)
+                    if deadline - time.monotonic() <= 0:
+                        return False
+                    print(text, end="", flush=True)
                 return True
 
             def consume(record, *, deadline: float | None = None) -> bool:
@@ -3453,6 +3520,29 @@ def launch(
                         except Empty:
                             line = None
                         if line:
+                            exited_now, unreaped_now = _child_exited_no_reap(process)
+                            if exited_now:
+                                leader_unreaped = unreaped_now
+                                writers_closed_before_drain = pipe_writers_all_closed()
+                                drain_deadline = post_exit_deadline()
+                                consumed_ok = consume(line, deadline=drain_deadline)
+                                if _codex_usage_observer is not None:
+                                    if consumed_ok:
+                                        drain(deadline_override=drain_deadline)
+                                    else:
+                                        _codex_usage_observer.invalidate("incomplete_drain")
+                                    drain_incomplete = (
+                                        streams_done != {"stdout", "stderr"}
+                                        or sink_stalled
+                                        or not consumed_ok
+                                    )
+                                    break
+                                if consumed_ok:
+                                    drain_plain(deadline_override=drain_deadline)
+                                drain_incomplete = (
+                                    (not reader_eof) or sink_stalled or not consumed_ok
+                                )
+                                break
                             consume(line)
                         now = time.monotonic()
                         if heartbeat_path is not None and now - last_heartbeat >= heartbeat_interval_seconds:

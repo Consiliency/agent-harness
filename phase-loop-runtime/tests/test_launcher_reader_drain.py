@@ -1702,3 +1702,192 @@ def test_writer_closing_at_drain_boundary_still_collects_final_partial_line(tmp_
     finally:
         close_trigger.write_text("close", encoding="utf-8")
         _kill_pid_best_effort(ready_flag)
+
+
+def test_real_full_stdout_pipe_bounds_drain_and_exits_cleanly_without_abort(tmp_path):
+    """On a real full OS stdout pipe, post-exit streaming must stop at the drain deadline
+    without leaving a background thread holding sys.stdout's BufferedWriter lock, so the
+    caller can continue writing once drained and interpreter shutdown exits 0 cleanly."""
+    import fcntl
+    import json
+    import os
+    import select
+    import subprocess
+
+    report_path = tmp_path / "report.json"
+    driver = (
+        "import json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "from phase_loop_runtime import launcher\n"
+        f"log_path = Path({str(tmp_path / 'run' / 'output.log')!r})\n"
+        f"report_path = Path({str(report_path)!r})\n"
+        "child_cmd = [sys.executable, '-c', \"print('x' * 4096, flush=True)\"]\n"
+        "started = time.monotonic()\n"
+        "res = launcher.launch(child_cmd, log_path=log_path, stream_output=True, timeout_seconds=0.25)\n"
+        "elapsed = time.monotonic() - started\n"
+        "report_path.write_text(json.dumps({\n"
+        "    'returncode': res.returncode,\n"
+        "    'drain_incomplete': res.drain_incomplete,\n"
+        "    'elapsed': elapsed,\n"
+        "}), encoding='utf-8')\n"
+        "print('summary-after-launch', flush=True)\n"
+    )
+    read_fd, write_fd = os.pipe()
+    try:
+        # Fill the pipe buffer completely so any blocking write to stdout would stall.
+        flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
+        fcntl.fcntl(write_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        filled = 0
+        try:
+            while True:
+                filled += os.write(write_fd, b"Z" * 4096)
+        except BlockingIOError:
+            pass
+        assert filled > 0
+        fcntl.fcntl(write_fd, fcntl.F_SETFL, flags)
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", driver],
+            stdout=write_fd,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        os.close(write_fd)
+        write_fd = -1
+
+        # Wait until launch() finishes and writes its report while stdout pipe is STILL FULL.
+        deadline = time.monotonic() + 3.0
+        while not report_path.exists() and time.monotonic() < deadline:
+            assert proc.poll() is None, proc.stderr.read().decode(errors="replace")
+            time.sleep(0.02)
+        assert report_path.exists(), "launch() remained blocked on the full stdout pipe"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["returncode"] == 0
+        assert report["drain_incomplete"] is True
+        assert report["elapsed"] < 1.2
+
+        # Now drain the pipe so the driver's post-launch print() and interpreter shutdown finish.
+        chunks = []
+        rflags = fcntl.fcntl(read_fd, fcntl.F_GETFL)
+        fcntl.fcntl(read_fd, fcntl.F_SETFL, rflags | os.O_NONBLOCK)
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end:
+            ready, _, _ = select.select([read_fd], [], [], 0.05)
+            if ready:
+                data = os.read(read_fd, 65536)
+                if not data:
+                    break
+                chunks.append(data)
+            elif proc.poll() is not None:
+                break
+        rc = proc.wait(timeout=3.0)
+        stderr_text = proc.stderr.read().decode(errors="replace")
+        assert rc == 0, f"process exited {rc}: {stderr_text}"
+        assert b"summary-after-launch" in b"".join(chunks)
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+
+
+def test_first_record_dequeued_after_leader_exit_uses_bounded_drain(tmp_path, monkeypatch):
+    """If the leader has already exited when the main loop dequeues a record from line_queue,
+    that record must go through the bounded post-exit drain rather than an unbounded sync write."""
+    orig_print = print
+    release = threading.Event()
+    blocked = threading.Event()
+
+    def slow_first_print(*args, **kwargs):
+        if args and "first-after-exit" in str(args[0]):
+            blocked.set()
+            release.wait(timeout=3.0)
+        return orig_print(*args, **kwargs)
+
+    # Delay the very first line_queue.get just long enough for the fast leader to exit.
+    orig_get = launcher.Queue.get
+    first = True
+
+    def delayed_first_get(self, *args, **kwargs):
+        nonlocal first
+        if first:
+            first = False
+            time.sleep(0.08)
+        return orig_get(self, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", slow_first_print)
+    monkeypatch.setattr(launcher.Queue, "get", delayed_first_get)
+    try:
+        started = time.monotonic()
+        result = launcher.launch(
+            _child("print('first-after-exit', flush=True)\n"),
+            log_path=tmp_path / "run" / "output.log",
+            stream_output=True,
+            timeout_seconds=0.25,
+        )
+        elapsed = time.monotonic() - started
+        assert blocked.is_set()
+        assert result.returncode == 0
+        assert result.drain_incomplete is True
+        assert elapsed < 1.0
+    finally:
+        release.set()
+
+
+def test_interrupt_right_after_sink_submission_preserves_incomplete_drain(tmp_path, monkeypatch):
+    """A KeyboardInterrupt firing immediately after sink_queue.put() must mark sink_stalled
+    so the interrupt drain preserves drain_incomplete=True and teardown does not block."""
+    orig_print = print
+    release = threading.Event()
+    interrupted_once = False
+
+    def blocking_print(*args, **kwargs):
+        if args and "in-flight" in str(args[0]):
+            release.wait(timeout=3.0)
+        return orig_print(*args, **kwargs)
+
+    base_simple_queue = launcher.SimpleQueue
+
+    class InterruptingSimpleQueue:
+        def __init__(self):
+            self._inner = base_simple_queue()
+
+        def get(self, *args, **kwargs):
+            return self._inner.get(*args, **kwargs)
+
+        def put(self, item, *args, **kwargs):
+            nonlocal interrupted_once
+            self._inner.put(item, *args, **kwargs)
+            if not interrupted_once and isinstance(item, tuple) and "in-flight" in str(item[0]):
+                interrupted_once = True
+                raise KeyboardInterrupt
+
+    orig_get = launcher.Queue.get
+    first = True
+
+    def delayed_first_get(self, *args, **kwargs):
+        nonlocal first
+        if first:
+            first = False
+            time.sleep(0.08)
+        return orig_get(self, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", blocking_print)
+    monkeypatch.setattr(launcher, "SimpleQueue", InterruptingSimpleQueue)
+    monkeypatch.setattr(launcher.Queue, "get", delayed_first_get)
+    try:
+        started = time.monotonic()
+        result = launcher.launch(
+            _child("print('in-flight', flush=True)\n"),
+            log_path=tmp_path / "run" / "output.log",
+            stream_output=True,
+            timeout_seconds=5.0,
+        )
+        elapsed = time.monotonic() - started
+        assert interrupted_once is True
+        assert result.interrupted is True
+        assert result.drain_incomplete is True
+        assert elapsed < 0.8
+    finally:
+        release.set()
