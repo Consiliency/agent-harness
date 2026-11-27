@@ -766,6 +766,128 @@ def test_second_interrupt_during_interrupt_drain_still_reaps_leader(tmp_path, mo
     assert result.returncode is not None
 
 
+def test_consume_write_error_terminates_running_child_before_waiting(tmp_path, monkeypatch):
+    """If consume() raises (e.g., BrokenPipeError on streaming stdout), finalization must
+    terminate the running child instead of blocking indefinitely in process.wait()."""
+    script = "import time\nprint('boom', flush=True)\ntime.sleep(30)\n"
+    real_print = __builtins__["print"] if isinstance(__builtins__, dict) else __builtins__.print
+
+    def broken_print(*args, **kwargs):
+        if args and "boom" in str(args[0]):
+            raise BrokenPipeError("broken stdout")
+        return real_print(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", broken_print)
+    started = time.monotonic()
+    with pytest.raises(BrokenPipeError):
+        launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            stream_output=True,
+            timeout_seconds=10.0,
+        )
+    assert time.monotonic() - started < 3.0
+
+
+def test_timeout_without_proc_liveness_kills_sigterm_ignoring_pipe_closing_descendant(tmp_path, monkeypatch):
+    """Off Linux (no /proc liveness), a same-group descendant that ignores SIGTERM and
+    closes its pipes after the leader exits must still be escalated to SIGKILL."""
+    monkeypatch.setattr(launcher, "_live_pgid_members_exist", lambda *a, **k: None)
+    marker = tmp_path / "noproc_timeout_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'def trap(*_):\\n'\n"
+        "    '    for fd in (1, 2):\\n'\n"
+        "    '        try: os.close(fd)\\n'\n"
+        "    '        except OSError: pass\\n'\n"
+        "    'signal.signal(signal.SIGTERM, trap)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.5,
+        )
+        assert result.timed_out is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_detached_pipe_holder_outside_owned_group_does_not_report_cleanup_failed(tmp_path):
+    """On Linux, when a detached writer in another session holds stdout open while the
+    child's own process group is empty, cleanup must NOT falsely set
+    process_alive_after_cleanup=True."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux /proc group isolation test")
+    marker = tmp_path / "detached_writer.pid"
+    script = (
+        "import subprocess, sys\n"
+        "proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)\n"
+        f"open({str(marker)!r}, 'w').write(str(proc.pid))\n"
+        "print('leader-done', flush=True)\n"
+    )
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.5,
+        )
+        assert result.returncode == 0
+        assert result.drain_incomplete is True
+        if result.cleanup_evidence is not None:
+            assert result.cleanup_evidence.get("process_alive_after_cleanup") is False
+            assert result.cleanup_evidence.get("result") != "cleanup_failed"
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_proc_exit_fallback_detects_live_worker_thread_when_main_thread_is_zombie(tmp_path, monkeypatch):
+    """Linux /proc exit fallback (when os.waitid is absent) must report a multithreaded
+    child with a zombie main thread and a live worker thread as still live (False)."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux /proc layout test")
+    fake_proc = tmp_path / "proc"
+    pid_dir = fake_proc / "515151"
+    (pid_dir / "task" / "515151").mkdir(parents=True)
+    (pid_dir / "task" / "515152").mkdir(parents=True)
+    (pid_dir / "stat").write_text("515151 (worker) Z 1 515151 515151 0 -1\n", encoding="ascii")
+    (pid_dir / "task" / "515151" / "stat").write_text("515151 (worker) Z 1 515151 515151 0 -1\n", encoding="ascii")
+    (pid_dir / "task" / "515152" / "stat").write_text("515152 (worker) S 1 515151 515151 0 -1\n", encoding="ascii")
+
+    real_path = launcher.Path
+
+    def patched_path(arg, *rest):
+        if arg == "/proc" and not rest:
+            return fake_proc
+        return real_path(arg, *rest)
+
+    monkeypatch.delattr(launcher.os, "waitid", raising=False)
+    monkeypatch.setattr(launcher, "Path", patched_path)
+    assert launcher._waitid_nowait(515151) is False
+    (pid_dir / "task" / "515152" / "stat").write_text("515152 (worker) Z 1 515151 515151 0 -1\n", encoding="ascii")
+    assert launcher._waitid_nowait(515151) is True
+
+
 def test_interrupt_during_post_sigkill_liveness_probe_still_reaps_leader(tmp_path, monkeypatch):
     """A KeyboardInterrupt raised inside _live_pgid_members_exist() during the post-SIGKILL
     wait loop must not escape or bypass process.wait() reaping."""

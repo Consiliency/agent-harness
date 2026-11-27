@@ -3304,7 +3304,7 @@ def launch(
             last_heartbeat_summary: dict[str, Any] | None = None
             reader_eof = False
             def cleanup_own_group_or_process(reason: str) -> dict[str, Any]:
-                nonlocal leader_unreaped, cleaned_up_group
+                nonlocal leader_unreaped, cleaned_up_group, interrupted
                 own_pgrp = False
                 if process_group_id is not None and hasattr(os, "killpg"):
                     try:
@@ -3318,19 +3318,19 @@ def launch(
                         reason=reason,
                         pipes_closed=pipes_all_eof,
                         include_leader=True,
-                        leader_exited=lambda: _child_exited_no_reap(process)[0],
+                        leader_exited=lambda: _waitid_nowait(process.pid) is True,
                     )
                     leader_unreaped = False
                     cleaned_up_group = True
                     if evidence is not None:
                         if evidence.get("interrupted"):
-                            nonlocal interrupted
                             interrupted = True
                         return evidence
                 leader_unreaped = False
                 cleaned_up_group = True
                 return _cleanup_process_group(process, process_group_id, reason=reason)
 
+            exited_now = False
             try:
                 while True:
                     try:
@@ -3445,12 +3445,23 @@ def launch(
                         else:
                             cleanup_evidence["post_exit_descendant_cleanup"] = descendant_cleanup
             finally:
+                # If an unexpected error (e.g., BrokenPipeError in consume()) or an early
+                # interrupt unwinds while the child is still live, terminate its group
+                # before waiting so finalization never blocks indefinitely.
+                if (
+                    not cleaned_up_group
+                    and getattr(process, "returncode", None) is None
+                    and not (exited_now or _waitid_nowait(process.pid) is True)
+                ):
+                    cleanup_own_group_or_process("interrupt" if interrupted else "error")
                 while True:
                     try:
                         returncode = process.wait()
                         break
                     except KeyboardInterrupt:
                         interrupted = True
+                        if not cleaned_up_group and getattr(process, "returncode", None) is None:
+                            cleanup_own_group_or_process("interrupt")
                 reader_stop.set()
                 for reader in readers:
                     reader.join(timeout=1)
@@ -4750,6 +4761,31 @@ def _waitid_nowait_darwin(pid: int) -> bool | None:
     return si_signo != 0
 
 
+def _proc_pid_is_live(proc_root: Path, pid_str: str) -> bool | None:
+    """Return True if ``pid_str`` has any live (non-zombie/non-dead) main or worker
+    thread under ``proc_root``, False if all threads are dead/zombie, or None if
+    unreadable."""
+    fields = _read_proc_stat_fields(proc_root / pid_str / "stat")
+    if fields is None:
+        return None
+    if fields[0] not in {"Z", "X", "x"}:
+        return True
+    # A multi-threaded process whose main thread called pthread_exit() reports state "Z"
+    # at /proc/<pid>/stat while worker threads stay alive under task/.
+    task_dir = proc_root / pid_str / "task"
+    try:
+        task_entries = list(os.scandir(task_dir))
+    except OSError:
+        return False
+    for task in task_entries:
+        if not task.name.isdigit():
+            continue
+        task_fields = _read_proc_stat_fields(task_dir / task.name / "stat")
+        if task_fields is not None and task_fields[0] not in {"Z", "X", "x"}:
+            return True
+    return False
+
+
 def _waitid_nowait(pid: int) -> bool | None:
     """Return True if child ``pid`` has exited without reaping it, False if still live,
     or None if non-reaping inspection is unavailable."""
@@ -4762,9 +4798,9 @@ def _waitid_nowait(pid: int) -> bool | None:
     if sys.platform == "darwin":
         return _waitid_nowait_darwin(pid)
     if sys.platform.startswith("linux"):
-        fields = _read_proc_stat_fields(Path("/proc") / str(pid) / "stat")
-        if fields is not None:
-            return fields[0] in {"Z", "X", "x"}
+        live = _proc_pid_is_live(Path("/proc"), str(pid))
+        if live is not None:
+            return not live
     return None
 
 
@@ -4843,21 +4879,8 @@ def _live_pgid_members_exist(pgid: int, *, leader_pid: int | None) -> bool | Non
             continue
         if proc_pgid != pgid:
             continue
-        if state not in {"Z", "X", "x"}:
+        if _proc_pid_is_live(proc_root, entry.name) is True:
             return True
-        # A multi-threaded process whose main thread called pthread_exit() reports
-        # state "Z" at /proc/<pid>/stat while worker threads stay alive under task/.
-        task_dir = proc_root / entry.name / "task"
-        try:
-            task_entries = list(os.scandir(task_dir))
-        except OSError:
-            continue
-        for task in task_entries:
-            if not task.name.isdigit():
-                continue
-            task_fields = _read_proc_stat_fields(task_dir / task.name / "stat")
-            if task_fields is not None and task_fields[0] not in {"Z", "X", "x"}:
-                return True
     return False
 
 
@@ -5141,49 +5164,69 @@ def _cleanup_descendant_process_group(
         "drain_incomplete": not include_leader,
     }
 
-    def has_live_descendants() -> bool:
+    def has_live_descendants(*, after_sigkill: bool = False) -> bool:
         live = _live_pgid_members_exist(
             process_group_id,
             leader_pid=None if include_leader else process_pid,
         )
         if live is not None:
-            return live or not pipes_closed()
+            return live
+        # Off Linux (no /proc), pipe EOF alone cannot prove that a SIGTERM-ignoring
+        # same-group descendant is gone. Check killpg(0) for whole-group disappearance;
+        # before SIGKILL, stay conservative so SIGTERM-ignoring descendants always get
+        # escalated to SIGKILL after the brief grace period.
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            pass
+        if not after_sigkill:
+            return True
         if include_leader and leader_exited is not None and not leader_exited():
             return True
         return not pipes_closed()
 
-    try:
-        os.killpg(process_group_id, signal.SIGTERM)
-    except ProcessLookupError:
-        return None
-    except OSError:
+    def send_signal(sig: int) -> str | None:
+        while True:
+            try:
+                os.killpg(process_group_id, sig)
+                return None
+            except KeyboardInterrupt:
+                evidence["interrupted"] = True
+            except ProcessLookupError:
+                return "absent"
+            except OSError:
+                return "error"
+
+    term_err = send_signal(signal.SIGTERM)
+    if term_err is not None:
         return None
     evidence["signals_sent"].append("SIGTERM")
     deadline = time.monotonic() + 0.25
     try:
         while time.monotonic() < deadline:
-            if not has_live_descendants():
+            if not has_live_descendants(after_sigkill=False):
                 evidence["result"] = "terminated"
                 evidence["process_alive_after_cleanup"] = False
                 return evidence
             time.sleep(0.01)
     except KeyboardInterrupt:
         evidence["interrupted"] = True
-    try:
-        os.killpg(process_group_id, signal.SIGKILL)
-        evidence["signals_sent"].append("SIGKILL")
-    except ProcessLookupError:
+    kill_err = send_signal(signal.SIGKILL)
+    if kill_err == "absent":
         evidence["result"] = "terminated"
         evidence["process_alive_after_cleanup"] = False
         return evidence
-    except OSError:
+    if kill_err == "error":
         evidence["result"] = "cleanup_failed"
         evidence["process_alive_after_cleanup"] = True
         return evidence
+    evidence["signals_sent"].append("SIGKILL")
     kill_deadline = time.monotonic() + 0.25
     while time.monotonic() < kill_deadline:
         try:
-            if not has_live_descendants():
+            if not has_live_descendants(after_sigkill=True):
                 evidence["result"] = "killed"
                 evidence["process_alive_after_cleanup"] = False
                 return evidence
