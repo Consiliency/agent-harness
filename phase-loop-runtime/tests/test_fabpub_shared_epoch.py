@@ -1910,15 +1910,39 @@ def test_fabpub_broker_envelope_publish_allocates_through_admit_next(tmp_path, r
 _SEAL_RACE_TIMEOUT_S = 30.0
 
 
+def _capture_thread_snapshot(
+    thread: threading.Thread, *, join_elapsed_s: float | None = None
+) -> dict[str, object]:
+    """Capture one thread's liveness and stack atomically at a single observation point (agent-harness#1976)."""
+    frames = sys._current_frames()
+    ident = thread.ident
+    alive = thread.is_alive()
+    stack: str | None = None
+    if alive:
+        frame = frames.get(ident) if ident is not None else None
+        stack = (
+            "".join(traceback.format_stack(frame)).rstrip()
+            if frame is not None
+            else "<frame unavailable>"
+        )
+    return {
+        "name": thread.name,
+        "ident": ident,
+        "alive": alive,
+        "join_elapsed_s": join_elapsed_s,
+        "stack": stack,
+    }
+
+
 def _format_thread_join_diagnostics(
     threads: dict[str, threading.Thread | None],
     *,
     events: dict[str, threading.Event],
     results: dict[str, object],
     join_elapsed_s: dict[str, float],
+    snapshots: dict[str, dict[str, object]] | None = None,
 ) -> str:
-    """Capture thread stacks and barrier/result state when a bounded race join leaves a thread alive (agent-harness#1976)."""
-    frames = sys._current_frames()
+    """Format thread stacks and barrier/result state when a bounded race join leaves a thread alive (agent-harness#1976)."""
     lines = [
         "terminal-seal race threads remained alive after bounded joins:",
         "  events=" + ", ".join(f"{name}={ev.is_set()}" for name, ev in events.items()),
@@ -1928,21 +1952,23 @@ def _format_thread_join_diagnostics(
         if thread is None:
             lines.append(f"  {label}: not started")
             continue
-        ident = thread.ident
-        alive = thread.is_alive()
-        elapsed = join_elapsed_s.get(label)
-        elapsed_str = f"{elapsed:.3f}s" if elapsed is not None else "n/a"
-        lines.append(
-            f"  {label} (name={thread.name!r}, ident={ident}, "
-            f"alive={alive}, join_elapsed={elapsed_str})"
+        snap = (
+            snapshots[label]
+            if snapshots is not None and label in snapshots
+            else _capture_thread_snapshot(thread, join_elapsed_s=join_elapsed_s.get(label))
         )
-        if alive:
-            frame = frames.get(ident) if ident is not None else None
-            if frame is not None:
-                stack = "".join(traceback.format_stack(frame)).rstrip()
-                lines.append("    stack:\n" + textwrap.indent(stack, "      "))
-            else:
+        elapsed = snap["join_elapsed_s"]
+        elapsed_str = f"{elapsed:.3f}s" if isinstance(elapsed, (int, float)) else "n/a"
+        lines.append(
+            f"  {label} (name={snap['name']!r}, ident={snap['ident']}, "
+            f"alive={snap['alive']}, join_elapsed={elapsed_str})"
+        )
+        if snap["alive"]:
+            stack = snap["stack"]
+            if stack == "<frame unavailable>" or not stack:
                 lines.append("    stack: <frame unavailable>")
+            else:
+                lines.append("    stack:\n" + textwrap.indent(str(stack), "      "))
     return "\n".join(lines)
 
 
@@ -1955,22 +1981,27 @@ def _join_race_threads_or_fail(
     results: dict[str, object],
     pending_exc: BaseException | None,
 ) -> None:
-    """Join started race threads, capturing stacks immediately if any survive.
+    """Join started race threads, capturing each timed-out worker's stack immediately before joining the next.
 
     When ``pending_exc`` is set (for example, a barrier assertion failed) and any
-    started worker remains alive after the bounded join, raise an AssertionError
+    started worker remains alive after its bounded join, raise an AssertionError
     combining both the pending failure and the stack report so the diagnostics
-    are never hidden by the propagating failure (agent-harness#1976).
+    are never hidden by the propagating failure or lost while joining a later
+    worker (agent-harness#1976).
     """
     join_elapsed_s: dict[str, float] = {}
+    snapshots: dict[str, dict[str, object]] = {}
     survivors: list[str] = []
     for label, thread in threads.items():
         if thread is None or label not in started:
             continue
         t0 = time.monotonic()
         thread.join(timeout_s)
-        join_elapsed_s[label] = time.monotonic() - t0
-        if thread.is_alive():
+        elapsed = time.monotonic() - t0
+        join_elapsed_s[label] = elapsed
+        snap = _capture_thread_snapshot(thread, join_elapsed_s=elapsed)
+        snapshots[label] = snap
+        if snap["alive"]:
             survivors.append(label)
     if not survivors:
         return
@@ -1979,6 +2010,7 @@ def _join_race_threads_or_fail(
         events=events,
         results=results,
         join_elapsed_s=join_elapsed_s,
+        snapshots=snapshots,
     )
     if pending_exc is not None:
         raise AssertionError(f"{pending_exc}\n\n{report}") from pending_exc
