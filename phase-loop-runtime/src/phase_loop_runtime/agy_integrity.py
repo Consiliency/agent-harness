@@ -18,7 +18,9 @@ _PROVIDER_SEARCH_PATH = os.environ.get("PATH", os.defpath)
 
 
 class AgyImageUnqualified(RuntimeError):
-    pass
+    def __init__(self, message: str = "agy_image_unqualified", *, reason: str | None = None):
+        super().__init__(message)
+        self.reason = reason
 
 
 def _admitted_for_seat(path, env, evidence=None):
@@ -42,7 +44,10 @@ def _admitted_for_seat(path, env, evidence=None):
     except (OSError, ValueError, RuntimeError) as exc:
         # Opt-out, a failed record, an unsafe store, an unreadable image or a seal failure,
         # with no held image: the subject's refusal.
-        raise AgyImageUnqualified("agy_image_unqualified") from exc
+        reason = getattr(exc, "_verdict_reason", None)
+        if reason not in agy_qualification.VERDICT_REFUSAL_REASONS:
+            reason = "admission_error"
+        raise AgyImageUnqualified("agy_image_unqualified", reason=reason) from exc
     if evidence is not None:
         evidence.update(admission.evidence())
     return admission.image
@@ -64,23 +69,27 @@ def check(path, env=None, *, evidence=None):
         descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_size > agy_provenance.MAX_MEMBER_BYTES:
-            raise AgyImageUnqualified("agy_image_unqualified")
+            raise AgyImageUnqualified("agy_image_unqualified", reason="image_unreadable")
         try:
             image = gemini_heartbeat.VerifiedImage.from_fd(descriptor, path=source)
+        except gemini_heartbeat.ImageOverBound as exc:
+            raise AgyImageUnqualified("agy_image_unqualified", reason="image_unreadable") from exc
         except gemini_heartbeat.AgyCanaryEvidenceError as exc:
             # A memfd seal failure is the typed refusal, as when lookup sealed the bytes.
-            raise AgyImageUnqualified("agy_image_unqualified") from exc
+            raise AgyImageUnqualified("agy_image_unqualified", reason="admission_error") from exc
+        except ValueError as exc:
+            raise AgyImageUnqualified("agy_image_unqualified", reason="admission_error") from exc
         os.close(descriptor)
         descriptor = None
         if image.sha256 not in gemini_heartbeat.QUALIFIED_IMAGES:
-            raise AgyImageUnqualified("agy_image_unqualified")
+            raise AgyImageUnqualified("agy_image_unqualified", reason="no_qualification_record")
         if evidence is not None:
             evidence.update(provider_admission_class="release_qualified",
                             provider_image_sha256=image.sha256)
         admitted, image = image, None
         return admitted
     except (OSError, ValueError) as exc:
-        raise AgyImageUnqualified("agy_image_unqualified") from exc
+        raise AgyImageUnqualified("agy_image_unqualified", reason="image_unreadable") from exc
     finally:
         if image is not None:
             image.close()

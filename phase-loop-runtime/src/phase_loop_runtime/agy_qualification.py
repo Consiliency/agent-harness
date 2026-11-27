@@ -1633,10 +1633,55 @@ def self_qualification_enabled():
         return False
 
 
+#: Closed refusal reasons emitted in ``AgyVerdict.reason`` when ``status == "refuses"``
+#: and ``code == "agy_image_unqualified"`` (agent-harness#2053). Distinguishes transient
+#: or local faults (``image_unreadable``, ``store_unsafe``, ``host_unknown``,
+#: ``admission_error``) from genuinely unqualified states
+#: (``self_qualification_disabled``, ``qualification_failed``, ``no_qualification_record``).
+VERDICT_REFUSAL_REASONS = (
+    "image_unreadable",
+    "store_unsafe",
+    "host_unknown",
+    "self_qualification_disabled",
+    "qualification_failed",
+    "no_qualification_record",
+    "admission_error",
+)
+
+VerdictReason = Literal[
+    "launch_measurement",
+    "provider_absent",
+    "image_unreadable",
+    "store_unsafe",
+    "host_unknown",
+    "self_qualification_disabled",
+    "qualification_failed",
+    "no_qualification_record",
+    "admission_error",
+]
+
+_HOLD_TO_VERDICT_REASON: dict[str, str] = {
+    "subject_unreadable": "image_unreadable",
+    "subject_not_regular": "image_unreadable",
+    "subject_over_bound": "image_unreadable",
+    "self_qualification_disabled": "self_qualification_disabled",
+    "subject_failed": "qualification_failed",
+    "subject_unqualified": "no_qualification_record",
+    "store_unsafe": "store_unsafe",
+}
+
+
+def _with_verdict_reason(exc: BaseException, reason: str) -> BaseException:
+    """Attach a closed ``VERDICT_REFUSAL_REASONS`` tag without altering ``exc``'s message."""
+    if reason in VERDICT_REFUSAL_REASONS:
+        setattr(exc, "_verdict_reason", reason)
+    return exc
+
+
 class AgyVerdict(NamedTuple):
     status: Literal["admits", "refuses", "unknown"]
     code: str | None
-    reason: Literal["launch_measurement", "provider_absent"] | None
+    reason: VerdictReason | None
 
 
 LkgProvider = Callable[[], gh.VerifiedImage | None]
@@ -1718,8 +1763,9 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
 
         try:
             image = agy_integrity.admit_for_seat(Path(path), env)
-        except agy_integrity.AgyImageUnqualified:
-            return AgyVerdict("refuses", "agy_image_unqualified", None)
+        except agy_integrity.AgyImageUnqualified as exc:
+            reason = exc.reason if exc.reason in VERDICT_REFUSAL_REASONS else "admission_error"
+            return AgyVerdict("refuses", "agy_image_unqualified", reason)
         except (OSError, ValueError, RuntimeError) as exc:
             code = getattr(exc, "code", None) or str(exc)
             return AgyVerdict("refuses", code, None)
@@ -1728,29 +1774,35 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
             return AgyVerdict("admits", None, None)
     try:
         data = gh._read_image(path)
+    except (OSError, ValueError, gh.AgyCanaryEvidenceError):
+        return AgyVerdict("refuses", "agy_image_unqualified", "image_unreadable")
+    try:
         gh.VerifiedImage.from_bytes(data, path).close()
     except (OSError, ValueError, gh.AgyCanaryEvidenceError):
-        return AgyVerdict("refuses", "agy_image_unqualified", None)
+        return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
     image_sha256 = sha256(data).hexdigest()
     if image_sha256 in gh.QUALIFIED_IMAGES:
         return AgyVerdict("admits", None, None)
     if not self_qualification_enabled():
-        return AgyVerdict("refuses", "agy_image_unqualified", None)
+        return AgyVerdict("refuses", "agy_image_unqualified", "self_qualification_disabled")
     store = Store()
-    if store.status() != "ok":
-        return AgyVerdict("refuses", "agy_image_unqualified", None)
+    store_state = store.status()
+    if store_state == "unsafe":
+        return AgyVerdict("refuses", "agy_image_unqualified", "store_unsafe")
     try:
         host = _host()
     except ValueError:
-        return AgyVerdict("refuses", "agy_image_unqualified", None)
+        return AgyVerdict("refuses", "agy_image_unqualified", "host_unknown")
+    if store_state != "ok":
+        return AgyVerdict("refuses", "agy_image_unqualified", "no_qualification_record")
     profile_digest = agy_profile_digest()
     if store.get_failed(image_sha256, host, profile_digest) is not None:
-        return AgyVerdict("refuses", "agy_image_unqualified", None)
+        return AgyVerdict("refuses", "agy_image_unqualified", "qualification_failed")
     if store.get_provenance(image_sha256, host, profile_digest) is not None:
         return AgyVerdict("unknown", None, "launch_measurement")
     if _last_known_good_recorded(store, host, profile_digest):
         return AgyVerdict("unknown", None, "launch_measurement")
-    return AgyVerdict("refuses", "agy_image_unqualified", None)
+    return AgyVerdict("refuses", "agy_image_unqualified", "no_qualification_record")
 
 
 def _last_known_good_recorded(store, host, profile_digest):
@@ -2144,9 +2196,17 @@ def _admit_subject(env, path, resolved, *, first_use, cancel_event, heartbeat, s
         raise
     if not first_use:
         missed.close()
-        unsafe = (store or Store()).status() == "unsafe"
-        raise _SubjectNotAdmitted("store_unsafe" if unsafe else "subject_unqualified",
-                                  ValueError(gh._CAPABILITY), digest)
+        if (store or Store()).status() == "unsafe":
+            raise _SubjectNotAdmitted("store_unsafe", ValueError(gh._CAPABILITY), digest)
+        try:
+            _host()
+        except ValueError:
+            raise _SubjectNotAdmitted(
+                "subject_unqualified",
+                _with_verdict_reason(ValueError(gh._CAPABILITY), "host_unknown"),
+                digest,
+            ) from None
+        raise _SubjectNotAdmitted("subject_unqualified", ValueError(gh._CAPABILITY), digest)
     try:
         return _first_use_subject(env, missed, path, cancel_event=cancel_event, heartbeat=heartbeat,
                                   store=store, transport=transport, qualify=qualify)
@@ -2192,6 +2252,10 @@ def _hold_or_refuse(env, refused, resolved, *, store, cancel_event, path=None):
     from . import agy_hold
 
     refusal = refused.refusal
+    if getattr(refusal, "_verdict_reason", None) is None:
+        _with_verdict_reason(
+            refusal, _HOLD_TO_VERDICT_REASON.get(refused.reason, "admission_error")
+        )
     # A managed-release subject is never held, on any route (§2.9, R-F0-1, R-F0-2): nothing
     # is searched or opened. Nor with the hold off, nor on an unsupported platform. The
     # classification is of the captured names (as given, and as resolved once), not of

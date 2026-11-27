@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- Report a closed `reason` vocabulary (`VERDICT_REFUSAL_REASONS`: `image_unreadable`,
+  `store_unsafe`, `host_unknown`, `self_qualification_disabled`, `qualification_failed`,
+  `no_qualification_record`, `admission_error`) on `agy_image_unqualified` verdicts in
+  both `agy_qualification.admission_verdict` (`execute=False` doctor and `execute=True`
+  `agy-qualification status`) and `agy_integrity.AgyImageUnqualified`, while keeping
+  `status`, `code`, admission decisions, QCI, and the agy store key unchanged
+  (agent-harness#2053).
+
 ### Fixed
 
 - Give `test_openshell_backend.py`'s `pipeline` fixture and

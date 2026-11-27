@@ -446,7 +446,7 @@ def test_lookup_only_verdict_agrees_with_the_seat_admission_code(tmp_path, monke
     _seed(image)
     monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {})
     monkeypatch.setattr(q, "self_qualification_enabled", lambda: False)
-    expected = q.AgyVerdict("refuses", "agy_image_unqualified", None)
+    expected = q.AgyVerdict("refuses", "agy_image_unqualified", "self_qualification_disabled")
     assert q.admission_verdict({}, path, execute=False) == expected
     assert q.admission_verdict(env, path, execute=True) == expected
 
@@ -479,7 +479,7 @@ def test_lookup_only_verdict_refuses_when_the_image_cannot_be_sealed(tmp_path, m
     monkeypatch.setattr(gh.VerifiedImage, "from_bytes", unsealed)
     # The seat path streams the image into its memfd (AGYFRESH §1.2).
     monkeypatch.setattr(gh.VerifiedImage, "from_fd", unsealed_stream)
-    expected = q.AgyVerdict("refuses", "agy_image_unqualified", None)
+    expected = q.AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
     assert q.admission_verdict({}, path, execute=False) == expected
     assert q.admission_verdict(env, path, execute=True) == expected
 
@@ -686,3 +686,201 @@ def test_unattributed_mutation_receipt_cites_the_issue_and_invents_no_head(monke
         isinstance(value, str) and len(value) in (40, 64)
         and all(char in "0123456789abcdef" for char in value)
         for value in document.values())
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#2053: closed refusal reasons on agy_image_unqualified verdicts
+# ---------------------------------------------------------------------------
+
+def test_verdict_refusal_reasons_cover_doctor_and_execute_branches(tmp_path, monkeypatch):
+    from phase_loop_runtime import agy_integrity
+
+    image = b"#!/bin/sh\necho candidate\n"
+    path = _subject(tmp_path, "agy", image)
+    env = {"PATH": str(tmp_path)}
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {})
+    monkeypatch.setattr(q, "self_qualification_enabled", lambda: True)
+
+    seen_reasons: set[str] = set()
+
+    def _assert_both(target, expected_reason: str, *, check_seat: bool = True):
+        doctor = q.admission_verdict(env, target, execute=False)
+        executed = q.admission_verdict(env, target, execute=True)
+        expected = q.AgyVerdict("refuses", "agy_image_unqualified", expected_reason)
+        assert doctor == expected
+        assert executed == expected
+        assert doctor.reason in q.VERDICT_REFUSAL_REASONS
+        assert str(tmp_path) not in doctor.reason
+        if check_seat:
+            with pytest.raises(agy_integrity.AgyImageUnqualified) as info:
+                agy_integrity.admit_for_seat(Path(target), env)
+            assert info.value.args == ("agy_image_unqualified",)
+            assert str(info.value) == "agy_image_unqualified"
+            assert info.value.reason == expected_reason
+        seen_reasons.add(expected_reason)
+
+    # 1. no_qualification_record (absent store on fresh host)
+    _assert_both(path, "no_qualification_record")
+
+    # 2. no_qualification_record (ok store, no records for this image)
+    store = q.Store()
+    store.create()
+    _assert_both(path, "no_qualification_record")
+
+    # 3. self_qualification_disabled
+    with monkeypatch.context() as ctx:
+        ctx.setattr(q, "self_qualification_enabled", lambda: False)
+        _assert_both(path, "self_qualification_disabled")
+
+    # 4. qualification_failed (recorded failed entry)
+    store.put_failed(
+        sha256(image).hexdigest(),
+        sha256(HELP).hexdigest(),
+        HOST,
+        q.agy_profile_digest(),
+        "completion",
+        "canary_failed",
+    )
+    _assert_both(path, "qualification_failed")
+    store.remove(("failed",))
+
+    # 5. host_unknown (_host raises ValueError on both ok and absent stores)
+    with monkeypatch.context() as ctx:
+        ctx.setattr(prov, "detect_platform",
+                    lambda **_: (_ for _ in ()).throw(prov.ProvenanceError("unknown arch")))
+        _assert_both(path, "host_unknown")
+        ctx.setenv("XDG_STATE_HOME", str(tmp_path / "absent-state"))
+        _assert_both(path, "host_unknown")
+
+    # 6. store_unsafe (world-writable store directory)
+    store.host_dir.chmod(0o777)
+    try:
+        _assert_both(path, "store_unsafe")
+    finally:
+        store.host_dir.chmod(0o700)
+
+    # 7. image_unreadable (missing path, non-regular directory, over-bound size)
+    _assert_both(tmp_path / "missing-agy", "image_unreadable")
+    _assert_both(tmp_path, "image_unreadable")
+    with monkeypatch.context() as ctx:
+        ctx.setattr(prov, "MAX_MEMBER_BYTES", 4)
+        _assert_both(path, "image_unreadable")
+
+    # 8. admission_error (memfd seal failure, unexpected admit_seat error, untagged refusal)
+    with monkeypatch.context() as ctx:
+        def _seal_err(*_a, **_kw):
+            raise gh.AgyCanaryEvidenceError("seal_failed")
+
+        ctx.setattr(gh.VerifiedImage, "from_bytes", _seal_err)
+        ctx.setattr(gh.VerifiedImage, "from_fd", _seal_err)
+        _assert_both(path, "admission_error")
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            q, "admit_seat",
+            lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("unexpected fault")),
+        )
+        with pytest.raises(agy_integrity.AgyImageUnqualified) as info:
+            agy_integrity.admit_for_seat(path, env)
+        assert info.value.reason == "admission_error"
+        assert q.admission_verdict(env, path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            agy_integrity, "admit_for_seat",
+            lambda *_a, **_kw: (_ for _ in ()).throw(
+                agy_integrity.AgyImageUnqualified("agy_image_unqualified")
+            ),
+        )
+        assert q.admission_verdict(env, path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    assert seen_reasons == set(q.VERDICT_REFUSAL_REASONS)
+
+
+def test_agy_integrity_check_release_only_reports_closed_reasons(tmp_path, monkeypatch):
+    from phase_loop_runtime import agy_integrity
+
+    image = b"#!/bin/sh\necho unqualified\n"
+    path = _subject(tmp_path, "agy", image)
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {})
+
+    with pytest.raises(agy_integrity.AgyImageUnqualified) as info:
+        agy_integrity.check(path)
+    assert str(info.value) == "agy_image_unqualified"
+    assert info.value.reason == "no_qualification_record"
+
+    with pytest.raises(agy_integrity.AgyImageUnqualified) as info:
+        agy_integrity.check(tmp_path / "missing-agy")
+    assert info.value.reason == "image_unreadable"
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            gh.VerifiedImage, "from_fd",
+            lambda *_a, **_kw: (_ for _ in ()).throw(gh.AgyCanaryEvidenceError("seal_failed")),
+        )
+        with pytest.raises(agy_integrity.AgyImageUnqualified) as info:
+            agy_integrity.check(path)
+        assert info.value.reason == "admission_error"
+
+
+def test_agy_qualification_status_cli_and_doctor_schema_accept_refusal_reasons(
+    tmp_path, monkeypatch, capsys
+):
+    from importlib.resources import files
+    import jsonschema
+    from phase_loop_runtime import seat_subject
+
+    image = b"#!/bin/sh\necho candidate\n"
+    path = _subject(tmp_path, "agy", image)
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {})
+    monkeypatch.setattr(q, "self_qualification_enabled", lambda: True)
+    monkeypatch.setattr(q, "hold_status", lambda *_a, **_kw: {"enabled": False})
+    monkeypatch.setattr(
+        panel_invoker, "_broker_subscription_env", lambda: {"PATH": str(tmp_path)}
+    )
+    monkeypatch.setattr(
+        seat_subject,
+        "resolve_seat_subject",
+        lambda leg, _env: seat_subject.SeatSubject(leg, "standalone", path, None, None),
+    )
+
+    assert q.cli_main(SimpleNamespace(action="status")) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verdict"] == {
+        "code": "agy_image_unqualified",
+        "reason": "no_qualification_record",
+        "status": "refuses",
+    }
+
+    store = q.Store()
+    store.create()
+    store.host_dir.chmod(0o777)
+    try:
+        assert q.cli_main(SimpleNamespace(action="status")) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["verdict"] == {
+            "code": "agy_image_unqualified",
+            "reason": "store_unsafe",
+            "status": "refuses",
+        }
+    finally:
+        store.host_dir.chmod(0o700)
+
+    package = files("phase_loop_runtime") / "schemas"
+    schema = json.loads((package / "phase-loop-doctor.v1.schema.json").read_text())
+    golden = json.loads((package / "phase-loop-doctor.v1.golden.json").read_text())
+    for reason in q.VERDICT_REFUSAL_REASONS:
+        candidate = dict(golden)
+        candidate["seat_cli_qualification"] = [
+            {
+                "leg": "gemini",
+                "status": "refuses",
+                "code": "agy_image_unqualified",
+                "reason": reason,
+            }
+        ]
+        jsonschema.validate(candidate, schema)
