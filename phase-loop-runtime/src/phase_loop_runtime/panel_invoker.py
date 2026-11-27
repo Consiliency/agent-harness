@@ -21294,18 +21294,15 @@ def _default_spawn_via_provider(
                 else exc
             )
             raise
-        except _seat_resource_caps.CapsUnavailable as exc:
-            _exec_metadata[0] = getattr(exc, "_leg_exec_metadata", None)
-            if type(exc) is not _seat_resource_caps.CapsUnavailable:
-                raise
-            # agent-harness#1908: translate _seat_scope CapsUnavailable into the closed
-            # diagnostic code here so HomebrewAgentRuntimeProvider never puts the private
-            # exception message into review text.
-            _diagnostic[0] = _seat_resource_caps.CODE
-            _seat_notices_out[0] = (_seat_resource_caps.CODE,)
-            return "DEGRADED", ""
         except Exception as exc:
             _exec_metadata[0] = getattr(exc, "_leg_exec_metadata", None)
+            if _caused_refusal_code(exc) == _seat_resource_caps.CODE:
+                # agent-harness#1908: translate _seat_scope / resource-caps refusals (direct or
+                # transparently broker-wrapped) into the closed diagnostic code here so
+                # HomebrewAgentRuntimeProvider never puts private cause text into review text.
+                _diagnostic[0] = _seat_resource_caps.CODE
+                _seat_notices_out[0] = (_seat_resource_caps.CODE,)
+                return "DEGRADED", ""
             raise
         finally:
             if seat_token is not None:

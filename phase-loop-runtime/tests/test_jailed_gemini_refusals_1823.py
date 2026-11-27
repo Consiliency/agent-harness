@@ -556,15 +556,17 @@ class _Broker:
 
 
 def _jailed_gemini_spawn(monkeypatch, tmp_path, *, prepare, execute=None, chained=True,
-                         window_board=None):
+                         window_board=None, jailed=True):
     """Drive `_default_spawn`'s brokered jailed-Gemini branch with ``prepare`` (and
     ``execute``) in place of the seat functions; returns the spawn result and its record."""
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
     authorization = SimpleNamespace(staged_tree_sha256="c" * 64)
 
-    def mkdtemp(*, prefix, dir):
-        path = Path(dir) / f"{prefix}{len(list(Path(dir).iterdir()))}"
+    def mkdtemp(suffix=None, prefix=None, dir=None):
+        base_dir = Path(dir) if dir is not None else tmp_path / "tmp"
+        base_dir.mkdir(exist_ok=True)
+        path = base_dir / f"{prefix or 'tmp'}{len(list(base_dir.iterdir()))}{suffix or ''}"
         path.mkdir()
         return str(path)
 
@@ -598,7 +600,7 @@ def _jailed_gemini_spawn(monkeypatch, tmp_path, *, prepare, execute=None, chaine
     monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: scratch)
     monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda path: tmp_path)
     monkeypatch.setattr(pi, "_has_injected_review_execution_seam", lambda *, leg=None: False)
-    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (_Route(True), [], None))
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (_Route(jailed), [], None))
     monkeypatch.setattr(pi._sandbox_policy, "effective_floor_bytes", lambda path: 1)
     monkeypatch.setattr(pi._sandbox_retention, "reap_until_free", lambda *a, **k: None)
     monkeypatch.setattr(pi, "_refuse_unless_executed_remotely", lambda *a, **k: None)
