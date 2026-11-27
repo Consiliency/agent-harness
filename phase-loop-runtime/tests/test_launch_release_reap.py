@@ -1301,26 +1301,60 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
     assert signals_sent == []
     assert sleeps == []
 
-    # Case 4: inside signal_guard under launch_operation_lock, launch_lock timeout is capped
-    # at the remaining renewal fence window rather than the outer caller deadline.
+    # Case 4: inside signal_guard under launch_operation_lock, launch_lock receives the
+    # absolute renewal-fence deadline so a scheduling pause cannot extend past fence_at.
     for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
         lst.clear()
     clock.now = fence_at - 0.5
     verification_delay = 0.0
     orig_launch_lock = life.launch_lock
-    observed_guard_lock_timeouts = []
+    observed_guard_locks = []
 
-    def spy_launch_lock(reservation_id, *, timeout_s, **kwargs):
+    def spy_launch_lock(reservation_id, *, timeout_s, deadline=None, **kwargs):
         if life._holds_operation(rid, generation):
-            observed_guard_lock_timeouts.append(timeout_s)
-        return orig_launch_lock(reservation_id, timeout_s=timeout_s, **kwargs)
+            observed_guard_locks.append((timeout_s, deadline))
+            # Simulate a 0.75 s scheduling pause before _FileLock builds its deadline.
+            clock.now += 0.75
+        return orig_launch_lock(reservation_id, timeout_s=timeout_s, deadline=deadline, **kwargs)
 
     monkeypatch.setattr(life, "launch_lock", spy_launch_lock)
     assert life.cancel_launch_owner(*key, deadline=clock.now + 20.5) == "cancel_pending"
-    assert observed_guard_lock_timeouts == [pytest.approx(0.5)]
+    assert observed_guard_locks == [(pytest.approx(0.5), pytest.approx(fence_at))]
+    assert signals_sent == []
     monkeypatch.setattr(life, "launch_lock", orig_launch_lock)
 
-    # Case 5: fence_launch runs concurrently during verification (proving the lock is free);
+    # Case 5: legacy 2-arg launch_cancel adapter also caps its reservation-lock deadline
+    # against fence_at before waiting on launch_lock under launch_operation_lock.
+    legacy_locks = []
+    clock.now = fence_at - 0.5
+
+    def spy_legacy_lock(reservation_id, *, timeout_s, deadline=None, **kwargs):
+        if life._holds_operation(rid, generation):
+            legacy_locks.append((timeout_s, deadline))
+        return orig_launch_lock(reservation_id, timeout_s=timeout_s, deadline=deadline, **kwargs)
+
+    monkeypatch.setattr(life, "launch_lock", spy_legacy_lock)
+    monkeypatch.setattr(life, "launch_cancel", lambda claim, wait_s: "cancelled")
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20.5) == "cancelled"
+    assert legacy_locks == [(pytest.approx(0.5), pytest.approx(fence_at))]
+    monkeypatch.setattr(life, "launch_lock", orig_launch_lock)
+    monkeypatch.setattr(life, "launch_cancel", sp._landed_launch_cancel)
+
+    # Case 6: direct cancel_attempt enforces poll_deadline inside _send_sigterm even if
+    # a custom signal_guard advances the clock past deadline before calling send_sigterm.
+    signals_sent.clear()
+    clock.now = fence_at - 5.0
+    def late_guard(send_sigterm):
+        clock.now += 2.0
+        send_sigterm()
+        return None
+    assert patch_return.cancel_attempt(
+        state_root=worker_root, attempt_id=run_id, wait_seconds=1.0,
+        deadline=clock.now + 1.0, signal_guard=late_guard,
+    ) == "cancel_pending"
+    assert signals_sent == []
+
+    # Case 7: fence_launch runs concurrently during verification (proving the lock is free);
     # once fenced, signal_guard sees fenced=True and delivers SIGTERM even past fence_at.
     for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
         lst.clear()

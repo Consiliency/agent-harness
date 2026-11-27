@@ -4643,14 +4643,17 @@ class PlacementLifecycle:
                                 self._renewal_fence_at(key, current_row)
                                 if current_cap else None
                             )
-                            lock_timeout = guard_bound.left()
+                            lock_deadline = guard_bound.end
                             if current_cap:
                                 if current_fence is None:
                                     return "cancel_pending"
-                                lock_timeout = min(lock_timeout, current_fence - _monotonic())
+                                lock_deadline = min(lock_deadline, current_fence)
+                            lock_timeout = lock_deadline - _monotonic()
                             if lock_timeout <= 0:
                                 return "cancel_pending"
-                            with self.launch_lock(reservation_id, timeout_s=lock_timeout) as lock:
+                            with self.launch_lock(
+                                reservation_id, timeout_s=lock_timeout, deadline=lock_deadline,
+                            ) as lock:
                                 if not lock.held:
                                     return "cancel_pending"
                                 if self._owned_claim(key) != claim:
@@ -4677,19 +4680,44 @@ class PlacementLifecycle:
                 with operation as held:
                     if not held:
                         return "cancel_pending"
-                    with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
-                        if not lock.held or self._owned_claim(key) != claim:
-                            return "owner_unverified"
-                        # WORKER addresses a reusable attempt ID. Durable start intent
-                        # rules out rollback for the generation authorizing this call.
+                    if started:
+                        # Serialized under launch_operation_lock: cap the reservation-lock
+                        # wait against the unfenced renewal fence before waiting on launch_lock.
                         row = self._disposition(key)
-                        worker_allowed = started and row["start_intent"]
+                        worker_allowed = bool(row["start_intent"])
                         cap_to_fence = (
                             worker_allowed
                             and not row["fenced"]
                             and row.get("confirmed_count") is not None
                         )
                         fence_at = self._renewal_fence_at(key, row) if cap_to_fence else None
+                        lock_deadline = bound.end
+                        if cap_to_fence:
+                            if fence_at is None:
+                                return "cancel_pending"
+                            lock_deadline = min(lock_deadline, fence_at)
+                        lock_timeout = lock_deadline - _monotonic()
+                        if lock_timeout <= 0:
+                            return "cancel_pending"
+                        lock_cm = self.launch_lock(
+                            reservation_id, timeout_s=lock_timeout, deadline=lock_deadline,
+                        )
+                    else:
+                        row = None
+                        worker_allowed = False
+                        cap_to_fence = False
+                        fence_at = None
+                        lock_cm = self.launch_lock(reservation_id, timeout_s=bound.left())
+                    with lock_cm as lock:
+                        if not lock.held:
+                            return "cancel_pending" if started else "owner_unverified"
+                        if self._owned_claim(key) != claim:
+                            return "owner_unverified"
+                        if not started:
+                            # WORKER addresses a reusable attempt ID. Durable start intent
+                            # rules out rollback for the generation authorizing this call.
+                            row = self._disposition(key)
+                            worker_allowed = False
                     if bound.expired():
                         return "cancel_pending"
                     if not worker_allowed:
@@ -4908,10 +4936,13 @@ class PlacementLifecycle:
         return [str(item.get("outcome")) for item in record.get("outcomes") or []]  # type: ignore[union-attr]
 
     def launch_lock(self, reservation_id: str, *, timeout_s: float,
-                    cancelled: threading.Event | None = None) -> "ReservationLock":
-        """The reservation's journal lock, waited on for at most ``timeout_s``. Use as a
-        context manager and check ``held``."""
-        return ReservationLock(self, reservation_id, _Deadline.after(timeout_s), cancelled)
+                    cancelled: threading.Event | None = None,
+                    deadline: float | None = None) -> "ReservationLock":
+        """The reservation's journal lock, waited on for at most ``timeout_s`` (or until
+        absolute monotonic ``deadline`` when supplied). Use as a context manager and check
+        ``held``."""
+        lock_bound = _Deadline(deadline) if deadline is not None else _Deadline.after(timeout_s)
+        return ReservationLock(self, reservation_id, lock_bound, cancelled)
 
     def _launch_window(self, reservation_id: str, echo: Mapping[str, object] | None
                        ) -> tuple[str | None, dict[str, object] | None]:

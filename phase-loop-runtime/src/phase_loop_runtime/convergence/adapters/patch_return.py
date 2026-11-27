@@ -703,7 +703,12 @@ def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: s
             return "owner_unverified"
         if time.monotonic() >= poll_deadline:
             return "cancel_pending"
+        expired_before_signal = False
         def _send_sigterm() -> None:
+            nonlocal expired_before_signal
+            if time.monotonic() >= poll_deadline:
+                expired_before_signal = True
+                return
             signal.pidfd_send_signal(pidfd, signal.SIGTERM)
         if signal_guard is not None:
             guarded = signal_guard(_send_sigterm)
@@ -711,6 +716,8 @@ def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: s
                 return guarded
         else:
             _send_sigterm()
+        if expired_before_signal:
+            return "cancel_pending"
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return "owner_unverified"
     finally:
