@@ -3191,6 +3191,21 @@ def launch(
             if exec_status_read is not None:
                 executor_released = _read_supervisor_status(process, exec_status_read, command)
             process_group_id = _process_group_id(process.pid)
+            if (
+                process_group_id is None
+                and popen_kwargs.get("start_new_session")
+                and isinstance(getattr(process, "pid", None), int)
+                and hasattr(os, "getpgrp")
+            ):
+                # On macOS, getpgid() can return ESRCH for a fast-exiting unreaped leader
+                # spawned with start_new_session=True; its owned PGID is process.pid.
+                poll_fn = getattr(type(process), "poll", None)
+                if getattr(poll_fn, "__module__", None) == "subprocess":
+                    try:
+                        if process.pid != os.getpgrp():
+                            process_group_id = process.pid
+                    except OSError:
+                        pass
             assert process.stdout is not None
             if _codex_usage_observer is None and hasattr(process.stdout, "reconfigure"):
                 # Output only: an undecodable byte must not kill the line reader and drop
@@ -3263,25 +3278,16 @@ def launch(
                 if (not timed_out and not stalled and not interrupted
                         and action != "review" and timeout_seconds is not None):
                     bound = min(bound, started_monotonic + timeout_seconds)
-                    # When all pipe writers have already closed after a normal exit, give the
-                    # reader thread a brief floor to finish flushing buffered bytes + EOF even
-                    # if exit was observed just after timeout_seconds (e.g., after a slow
-                    # heartbeat write).
-                    if pipe_writers_all_closed():
+                    # When all pipe writers have already closed or records are already queued
+                    # after a normal exit, give a strictly bounded 0.1 s flush floor so queued
+                    # output is kept without ever overrunning the clock on slow stream writes.
+                    if pipe_writers_all_closed() or line_queue.qsize() > 0:
                         bound = max(bound, now_ts + 0.1)
                 return bound
 
-            def drain():
-                deadline = post_exit_deadline()
+            def drain(*, deadline_override: float | None = None):
+                deadline = post_exit_deadline() if deadline_override is None else deadline_override
                 try:
-                    # Flush any records already queued before enforcing a zero remaining budget.
-                    for _ in range(line_queue.qsize()):
-                        if streams_done == {"stdout", "stderr"}:
-                            break
-                        try:
-                            consume(line_queue.get_nowait())
-                        except Empty:
-                            break
                     while streams_done != {"stdout", "stderr"}:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
@@ -3294,20 +3300,11 @@ def launch(
                     if streams_done != {"stdout", "stderr"}:
                         _codex_usage_observer.invalidate("incomplete_drain")
 
-            def drain_plain():
+            def drain_plain(*, deadline_override: float | None = None):
                 nonlocal reader_eof
-                drain_deadline = post_exit_deadline()
-                for _ in range(line_queue.qsize()):
-                    if reader_eof:
-                        break
-                    try:
-                        line = line_queue.get_nowait()
-                    except Empty:
-                        break
-                    if line is None:
-                        reader_eof = True
-                    else:
-                        consume(line)
+                drain_deadline = (
+                    post_exit_deadline() if deadline_override is None else deadline_override
+                )
                 while not reader_eof:
                     remaining = drain_deadline - time.monotonic()
                     if remaining <= 0:
@@ -3491,6 +3488,17 @@ def launch(
                             cleanup_evidence = descendant_cleanup
                         else:
                             cleanup_evidence["post_exit_descendant_cleanup"] = descendant_cleanup
+                        # Closing the inherited pipe writer lets the reader enqueue any final
+                        # partial/unterminated line; collect it within a brief bounded window
+                        # while keeping drain_incomplete=True to record descendant cleanup.
+                        final_deadline = time.monotonic() + 0.1
+                        try:
+                            if _codex_usage_observer is not None:
+                                drain(deadline_override=final_deadline)
+                            else:
+                                drain_plain(deadline_override=final_deadline)
+                        except KeyboardInterrupt:
+                            interrupted = True
                 loop_completed = True
             finally:
                 # If an unexpected error (e.g., BrokenPipeError in consume()) or an early

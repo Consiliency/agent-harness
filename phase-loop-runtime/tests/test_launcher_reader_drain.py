@@ -1459,3 +1459,112 @@ def test_normal_exit_past_deadline_still_drains_closed_pipe_and_queued_output(tm
     assert result.timed_out is False
     assert result.drain_incomplete is False
     assert result.output.splitlines() == ["line-one", "line-two"]
+
+
+def test_slow_queued_drain_respects_bounded_flush_deadline(tmp_path, monkeypatch):
+    """Queued records must still respect the bounded drain deadline when stream writes are
+    slow, rather than draining an entire queue snapshot past timeout_seconds."""
+    orig_print = print
+
+    def slow_print(*args, **kwargs):
+        time.sleep(0.01)
+        return orig_print(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", slow_print)
+    script = (
+        "for i in range(220):\n"
+        "    print(f'line-{i}', flush=True)\n"
+    )
+    started = time.monotonic()
+    result = launcher.launch(
+        _child(script),
+        log_path=tmp_path / "run" / "output.log",
+        stream_output=True,
+        timeout_seconds=0.3,
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0
+    assert elapsed < 1.2
+    assert result.drain_incomplete is True
+
+
+def test_fast_exiting_leader_when_getpgid_returns_esrch_still_cleans_up_group(tmp_path, monkeypatch):
+    """If getpgid() fails with ESRCH (as on macOS for a fast-exiting unreaped leader
+    spawned with start_new_session=True), the launcher must record process.pid as the owned
+    PGID and still clean up surviving same-group descendants."""
+    marker = tmp_path / "esrch_pgid_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('leader-done', flush=True)\n"
+    )
+    monkeypatch.setattr(launcher, "_process_group_id", lambda _pid: None)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.8,
+        )
+        assert result.returncode == 0
+        assert result.process_group_id == result.process_pid
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_unterminated_final_line_with_inherited_writer_is_collected_after_cleanup(tmp_path):
+    """When a leader writes an unterminated final line and a same-group descendant holds
+    stdout open, killing the descendant closes the pipe so the bounded final collection
+    captures the partial line in both LaunchResult.output and the log file."""
+    marker = tmp_path / "partial_line_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, time\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "sys.stdout.write('first-line\\nfinal-partial')\n"
+        "sys.stdout.flush()\n"
+    )
+    log_path = tmp_path / "run" / "output.log"
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=log_path,
+            timeout_seconds=0.8,
+        )
+        assert result.returncode == 0
+        assert result.drain_incomplete is True
+        assert result.cleanup_evidence is not None
+        assert "final-partial" in result.output
+        assert "final-partial" in log_path.read_text(encoding="utf-8")
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
