@@ -54,10 +54,11 @@ def _versions(count):
 
 
 class Upstream:
-    """The paged release listing and the archives, in memory; thread-safe; counts downloads."""
+    """The paged release listing, attestation API and the archives, in memory; thread-safe; counts downloads."""
 
-    def __init__(self, versions, *, broken=()):
+    def __init__(self, versions, *, broken=(), attestations=None):
         self.releases, self.blobs, self.downloads = [], {}, []
+        self.attestations = attestations if attestations is not None else _Attestations()
         self.lock, self.break_mid_stream = threading.Lock(), set()
         for version in versions:
             archive = b"not a tarball: " + version.encode() if version in broken else _archive(_image(version))
@@ -72,6 +73,8 @@ class Upstream:
     def open(self, url, *, accept):
         parts = urlsplit(url)
         if parts.hostname == prov.API_HOST:
+            if "/attestations/" in parts.path:
+                return self.attestations.open(url, accept=accept)
             query = parse_qs(parts.query)
             per_page, page = int(query["per_page"][0]), int(query.get("page", ["1"])[0])
             return io.BytesIO(json.dumps(self.releases[(page - 1) * per_page:page * per_page]).encode())
@@ -136,8 +139,12 @@ def world(tmp_path, monkeypatch):
     clock = [START]
     monkeypatch.setattr(q, "_ledger_clock", lambda: clock[0])
     attestations = _Attestations()
-    monkeypatch.setattr(att, "_Opener", lambda **_: attestations)
-    upstream = Upstream(_versions(14))
+    monkeypatch.setattr(
+        att,
+        "_Opener",
+        lambda **_: (_ for _ in ()).throw(AssertionError("agy_attestation._Opener must not bypass prov._Transport")),
+    )
+    upstream = Upstream(_versions(14), attestations=attestations)
     monkeypatch.setattr(prov, "_Transport", lambda: w.upstream)
     counts = SimpleNamespace(help=0, qualify=0)
 
@@ -452,7 +459,7 @@ def test_the_provenance_entry_carries_attestation_and_second_channel(world):
     """Case 8. First use records the attestation; the second channel is the catalog job's."""
     world.attestations.answer = (200, json.dumps({"attestations": [{"bundle": {}}]}).encode())
     versions = _versions(3)
-    world.upstream = Upstream(versions)
+    world.upstream = Upstream(versions, attestations=world.attestations)
     data = _image(versions[0])
     path = world.subject(data)
     assert _preflight(world, path) == ("admitted", "subject")
@@ -464,7 +471,7 @@ def test_the_provenance_entry_carries_attestation_and_second_channel(world):
 def test_an_unavailable_attestation_refuses_first_use_without_a_provenance_entry(world):
     world.attestations.answer = (403, b'{"message": "API rate limit exceeded"}')
     versions = _versions(3)
-    world.upstream = Upstream(versions)
+    world.upstream = Upstream(versions, attestations=world.attestations)
     data = _image(versions[0])
     path = world.subject(data)
     assert _preflight(world, path) == (prov.UNAVAILABLE, None)

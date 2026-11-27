@@ -10,7 +10,7 @@ replaced by counting fakes, and store ownership / machine-id are injected.
 """
 from __future__ import annotations
 
-from hashlib import sha256, sha512
+from hashlib import sha256
 import io
 import json
 import mmap
@@ -84,35 +84,14 @@ class _Answer:
         pass
 
 
-class _ChannelOpener:
-    """``agy_attestation``'s opener in every test here, so nothing reaches the network: GitHub
-    lists no attestation (404), and the installer manifest names ``manifest_version`` with
-    ``package`` as its archive (by default another version, so the second channel says
-    ``not_listed``)."""
-
-    def __init__(self):
-        self.manifest_version, self.package, self.attestation, self.requests = "0.0.0", b"google package", (404, b""), []
-
-    def open(self, url, *, accept):
-        self.requests.append(url)
-        parts = urlsplit(url)
-        if parts.hostname == prov.API_HOST and "/attestations/" in parts.path:
-            return _Answer(*self.attestation)
-        if parts.hostname == att.MANIFEST_HOST:
-            return _Answer(200, json.dumps({
-                "version": self.manifest_version,
-                "url": f"{att.MANIFEST_DOWNLOAD_PREFIX}{self.manifest_version}-1/linux-x64/cli_linux_x64.tar.gz",
-                "sha512": sha512(self.package).hexdigest()}).encode())
-        if parts.hostname == att.PACKAGE_HOST:
-            return _Answer(200, self.package)
-        raise AssertionError(f"unexpected upstream-channel request {url}")
-
-
 @pytest.fixture(autouse=True)
 def upstream_channel(monkeypatch):
-    channel = _ChannelOpener()
-    monkeypatch.setattr(att, "_Opener", lambda **_: channel)
-    return channel
+    """Fail closed if any in-process test falls back to agy_attestation._Opener instead of its
+    injected FakeTransport (agent-harness#2043)."""
+    def _forbid_default_opener(**_):
+        raise AssertionError("agy_attestation._Opener must not be called when caller supplies transport")
+
+    monkeypatch.setattr(att, "_Opener", _forbid_default_opener)
 
 
 def _archive(members):
@@ -131,10 +110,11 @@ def _archive(members):
 
 
 class FakeTransport:
-    """The release API and asset downloads, in memory; counts every request."""
+    """The release API, attestation API and asset downloads, in memory; counts every request."""
 
     def __init__(self):
         self.releases, self.blobs, self.calls = [], {}, []
+        self.attestation = (404, b"")
         self.fail = None
 
     def add(self, version, image, *, asset=HOST.asset, archive=None, prerelease=False, draft=False,
@@ -154,7 +134,10 @@ class FakeTransport:
         if self.fail is not None:
             raise self.fail
         if url.startswith(f"https://{prov.API_HOST}/"):
-            query = parse_qs(urlsplit(url).query)
+            parts = urlsplit(url)
+            if "/attestations/" in parts.path:
+                return _Answer(*self.attestation)
+            query = parse_qs(parts.query)
             if "per_page" in query:  # the paged listing (PROVFWD-detail §1.2)
                 per_page, page = int(query["per_page"][0]), int(query.get("page", ["1"])[0])
                 return io.BytesIO(json.dumps(self.releases[(page - 1) * per_page:page * per_page]).encode())
@@ -1786,23 +1769,18 @@ _CHILD = textwrap.dedent('''
     q.read_machine_id = lambda path="/etc/machine-id": "a" * 32
     prov.detect_platform = lambda **_: prov.HostPlatform("linux", "x64", "glibc")
     gh.QUALIFIED_IMAGES = {"f" * 64: "e" * 64}
-    class NoAttestation:
-        """The autouse ``upstream_channel`` fixture does not reach a child process: as there,
-        GitHub lists no attestation (404), and no other upstream request is expected, so
-        nothing here reaches the network."""
-        status = 404
-        def open(self, url, *, accept):
-            from urllib.parse import urlsplit
-            parts = urlsplit(url)
-            if parts.hostname == prov.API_HOST and "/attestations/" in parts.path:
-                return self
-            raise AssertionError(f"unexpected upstream-channel request {url}")
+    def _no_default_opener(**_):
+        raise AssertionError("agy_attestation._Opener must not be called when caller supplies transport")
+    att._Opener = _no_default_opener
+    image = (tmp / "bin" / "agy").read_bytes()
+    class _StatusBody:
+        def __init__(self, status, data):
+            import io
+            self.status, self._buf = status, io.BytesIO(data)
         def read(self, n=-1):
-            return b""
+            return self._buf.read(n)
         def close(self):
             pass
-    att._Opener = lambda **_: NoAttestation()
-    image = (tmp / "bin" / "agy").read_bytes()
     class T:
         def __init__(self):
             import io, tarfile
@@ -1814,6 +1792,8 @@ _CHILD = textwrap.dedent('''
             import io
             archive = self.archive
             if "api.github.com" in url:
+                if "/attestations/" in url:
+                    return _StatusBody(404, b"")
                 return io.BytesIO(json.dumps([{"tag_name": "1.2.99", "draft": False, "prerelease": False,
                     "assets": [{"name": prov.HostPlatform("linux","x64","glibc").asset,
                                 "browser_download_url": prov.DOWNLOAD_PREFIX + "1.2.99/agy_cli_linux_x64.tar.gz",

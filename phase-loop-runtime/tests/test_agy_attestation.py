@@ -447,3 +447,109 @@ def test_the_opener_refuses_control_and_non_ascii_characters_before_parsing(url)
     with pytest.raises(prov.ProvenanceError, match=prov.UNAVAILABLE):
         _opener(server).open(url, accept="*/*")
     assert server.connections == []
+
+
+def test_provenance_transport_is_adapted_for_attestation_and_second_channel():
+    """agent-harness#2043: a real agy_provenance._Transport passed directly uses its connection,
+    context_factory and timeout while keeping _Opener's 404 and no-redirect semantics."""
+    pkg = b"google package bytes"
+    asset = _asset(pkg)
+    manifest_url = f"{att.MANIFEST_DOWNLOAD_PREFIX}{asset.version}-1/linux-x64/cli_linux_x64.tar.gz"
+    manifest = {"version": asset.version, "url": manifest_url, "sha512": sha512(pkg).hexdigest()}
+    server = _Server({
+        (prov.API_HOST, _attestation_target(asset)): (404, b""),
+        (att.MANIFEST_HOST, att.MANIFEST_PATH): (200, json.dumps(manifest).encode()),
+        (att.PACKAGE_HOST, urlsplit(manifest_url).path): (200, pkg),
+    })
+    transport = prov._Transport(connection=server, context_factory=lambda: "pinned-context", timeout=23)
+    assert att.attestation_status(asset, transport=transport) == "absent"
+    assert att.second_channel_status(asset, sha256(b"member").hexdigest(), host=LINUX_X64, transport=transport) == "match"
+    assert all(ctx == "pinned-context" for _host, _port, ctx in server.connections)
+    assert len(server.requests) == 4
+
+
+def test_adapted_default_transport_keeps_dynamic_trust_context_lookup(monkeypatch):
+    """agent-harness#2043: adapting a default-context _Transport preserves _Opener's dynamic
+    lookup of agy_provenance._trust_context."""
+    asset = _asset(b"archive")
+    server = _Server({(prov.API_HOST, _attestation_target(asset)): (404, b"")})
+    transport = prov._Transport(connection=server, timeout=11)
+    monkeypatch.setattr(prov, "_trust_context", lambda: "dynamic-trust-context")
+    assert att.attestation_status(asset, transport=transport) == "absent"
+    assert [ctx for _host, _port, ctx in server.connections] == ["dynamic-trust-context"]
+
+
+def test_adapted_transport_preserves_falsey_callable_context_factory(monkeypatch):
+    """agent-harness#2043: a falsey callable context_factory must be called, never replaced."""
+    class _FalseyContextFactory:
+        def __init__(self):
+            self.calls = 0
+
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self):
+            self.calls += 1
+            return "falsey-custom-context"
+
+    factory = _FalseyContextFactory()
+    assert not bool(factory)
+    monkeypatch.setattr(prov, "_trust_context", lambda: (_ for _ in ()).throw(AssertionError("default context unused")))
+    asset = _asset(b"archive")
+    server = _Server({(prov.API_HOST, _attestation_target(asset)): (404, b"")})
+    transport = prov._Transport(connection=server, context_factory=factory, timeout=13)
+    assert att.attestation_status(asset, transport=transport) == "absent"
+    assert factory.calls == 1
+    assert [ctx for _host, _port, ctx in server.connections] == ["falsey-custom-context"]
+
+
+def test_adapter_works_when_transport_is_patched_before_attestation_import():
+    """agent-harness#2043: patching agy_provenance._Transport to a factory before importing
+    agy_attestation must not break isinstance() inside _opener_for()."""
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    src_dir = str(Path(prov.__file__).resolve().parent.parent)
+    script = f"""
+import sys
+sys.path.insert(0, {src_dir!r})
+from phase_loop_runtime import agy_provenance as prov
+
+class _Resp:
+    status = 404
+    def read(self, n=-1): return b""
+    def close(self): pass
+
+class _Fake:
+    def __init__(self): self.urls = []
+    def open(self, url, *, accept):
+        self.urls.append(url)
+        return _Resp()
+
+fake = _Fake()
+prov._Transport = lambda: fake
+from phase_loop_runtime import agy_attestation as att
+asset = prov.ReleaseAsset("1.5.13", "a.tar.gz", "https://example.invalid/a.tar.gz", "0" * 64)
+assert att.attestation_status(asset, transport=fake) == "absent"
+assert len(fake.urls) == 1
+"""
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_specd_mock_transport_uses_custom_transport_path(monkeypatch):
+    """agent-harness#2043: unittest.mock.Mock(spec=prov._Transport) fools isinstance() via __class__
+    but is not a real _Transport subclass; _opener_for() must call its open() directly."""
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(
+        att,
+        "_Opener",
+        lambda **_: (_ for _ in ()).throw(AssertionError("_Opener must not run for Mock(spec=_Transport)")),
+    )
+    mock_transport = Mock(spec=prov._Transport)
+    mock_transport.open.return_value = _Response(404, b"")
+    asset = _asset(b"archive")
+    assert att.attestation_status(asset, transport=mock_transport) == "absent"
+    mock_transport.open.assert_called_once()

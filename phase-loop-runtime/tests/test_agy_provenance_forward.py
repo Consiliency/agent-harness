@@ -451,12 +451,319 @@ def test_an_unavailable_attestation_refuses():
 def test_the_default_attest_is_the_attestation_query(monkeypatch):
     from phase_loop_runtime import agy_attestation
     seen = []
-    monkeypatch.setattr(agy_attestation, "attestation_status", lambda asset, transport=None: seen.append(asset) or "absent")
+    monkeypatch.setattr(
+        agy_attestation,
+        "attestation_status",
+        lambda asset, transport=None: seen.append((asset, transport)) or "absent",
+    )
     upstream, ledger = Upstream(_versions(1)), Ledger()
     kwargs = ledger.kwargs()
     del kwargs["attest"]
     found = prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=upstream, **kwargs)
     assert found.attestation == "absent" and len(seen) == 1
+    assert seen[0][1] is upstream
+
+
+def test_find_provenance_routes_attestation_through_custom_transport(monkeypatch):
+    """agent-harness#2043: one caller-injected transport governs releases, downloads and attestations."""
+    from phase_loop_runtime import agy_attestation
+
+    monkeypatch.setattr(
+        agy_attestation,
+        "_Opener",
+        lambda **_: (_ for _ in ()).throw(AssertionError("default _Opener must not be called")),
+    )
+
+    class _StatusResponse:
+        def __init__(self, status: int, body: bytes):
+            self.status, self._buf = status, io.BytesIO(body)
+
+        def read(self, n=-1):
+            return self._buf.read(n)
+
+        def close(self):
+            pass
+
+    class _UnifiedTransport(Upstream):
+        def __init__(self, versions, attestation_answer):
+            super().__init__(versions)
+            self.attestation_answer = attestation_answer
+            self.attestation_urls: list[str] = []
+
+        def open(self, url, *, accept):
+            parts = urlsplit(url)
+            if parts.hostname == prov.API_HOST and "/attestations/" in parts.path:
+                self.attestation_urls.append(url)
+                return _StatusResponse(*self.attestation_answer)
+            return super().open(url, accept=accept)
+
+    # 404 -> absent
+    t_absent = _UnifiedTransport(_versions(1), (404, b""))
+    ledger = Ledger()
+    kwargs = ledger.kwargs()
+    del kwargs["attest"]
+    found = prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=t_absent, **kwargs)
+    assert found.attestation == "absent" and len(t_absent.attestation_urls) == 1
+
+    # 200 with non-empty attestations -> present_unverified
+    t_present = _UnifiedTransport(_versions(1), (200, json.dumps({"attestations": [{"bundle": {}}]}).encode()))
+    ledger2 = Ledger()
+    kwargs2 = ledger2.kwargs()
+    del kwargs2["attest"]
+    found2 = prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=t_present, **kwargs2)
+    assert found2.attestation == "present_unverified" and len(t_present.attestation_urls) == 1
+
+    # 500 -> UNAVAILABLE (never falls back to default _Opener)
+    t_err = _UnifiedTransport(_versions(1), (500, b"boom"))
+    ledger3 = Ledger()
+    kwargs3 = ledger3.kwargs()
+    del kwargs3["attest"]
+    assert _refusal(
+        lambda: prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=t_err, **kwargs3)
+    ) == (prov.UNAVAILABLE, None)
+    assert len(t_err.attestation_urls) == 1
+
+
+def test_find_provenance_adapts_real_transport_into_attestation_opener():
+    """agent-harness#2043: _Transport(connection=..., context_factory=..., timeout=...) keeps _Opener semantics."""
+    archive = _archive(_image("1.100.0"))
+    asset_digest = sha256(archive).hexdigest()
+    release_doc = json.dumps([{
+        "tag_name": "1.100.0",
+        "draft": False,
+        "prerelease": False,
+        "assets": [{
+            "name": HOST.asset,
+            "browser_download_url": f"{prov.DOWNLOAD_PREFIX}1.100.0/{HOST.asset}",
+            "digest": f"sha256:{asset_digest}",
+        }],
+    }]).encode()
+    attestation_path = f"/repos/{prov.REPO}/attestations/sha256:{asset_digest}"
+    seen_timeouts: list[float] = []
+    seen_targets: list[tuple[str, str]] = []
+
+    class _FakeResp:
+        def __init__(self, status: int, body: bytes, headers=None):
+            self.status, self._buf, self._headers = status, io.BytesIO(body), headers or {}
+
+        def read(self, n=-1):
+            return self._buf.read(n)
+
+        def getheader(self, name, default=None):
+            return self._headers.get(name, default)
+
+        def close(self):
+            pass
+
+    def _make_server(att_response):
+        def _connection(host, port, *, context, timeout):
+            seen_timeouts.append(timeout)
+
+            class _Conn:
+                def request(self, method, target, headers=None):
+                    seen_targets.append((host, target))
+                    self._target = target
+
+                def getresponse(self):
+                    if self._target.startswith(f"/repos/{prov.REPO}/releases"):
+                        return _FakeResp(200, release_doc)
+                    if self._target == attestation_path:
+                        return _FakeResp(*att_response)
+                    return _FakeResp(200, archive)
+
+                def close(self):
+                    pass
+
+            return _Conn()
+
+        return _connection
+
+    # 404 from attestation endpoint must be recorded as "absent" (not UNAVAILABLE as _Transport.open would raise).
+    transport_404 = prov._Transport(connection=_make_server((404, b"")), context_factory=lambda: None, timeout=17)
+    found = prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=transport_404)
+    assert found.attestation == "absent"
+    assert (prov.API_HOST, attestation_path) in seen_targets
+    assert all(t == 17 for t in seen_timeouts)
+
+    # 302 redirect on attestation endpoint must still be refused by _Opener without following it.
+    seen_targets.clear()
+    transport_302 = prov._Transport(
+        connection=_make_server((302, b"", {"Location": f"https://{prov.API_HOST}/redirected"})),
+        context_factory=lambda: None,
+        timeout=19,
+    )
+    assert _refusal(
+        lambda: prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=transport_302)
+    ) == (prov.UNAVAILABLE, None)
+    assert all("/redirected" not in target for _host, target in seen_targets)
+
+
+def test_transport_subclass_overriding_open_is_not_replaced_by_default_opener(monkeypatch):
+    """agent-harness#2043: a _Transport subclass overriding open() keeps its overridden open()."""
+    from phase_loop_runtime import agy_attestation
+
+    monkeypatch.setattr(
+        agy_attestation,
+        "_Opener",
+        lambda **_: (_ for _ in ()).throw(AssertionError("_Opener must not bypass overridden open()")),
+    )
+
+    class _StatusResponse:
+        status = 404
+
+        def read(self, n=-1):
+            return b""
+
+        def close(self):
+            pass
+
+    archive = _archive(_image("1.100.0"))
+    asset_digest = sha256(archive).hexdigest()
+    release_doc = json.dumps([{
+        "tag_name": "1.100.0",
+        "draft": False,
+        "prerelease": False,
+        "assets": [{
+            "name": HOST.asset,
+            "browser_download_url": f"{prov.DOWNLOAD_PREFIX}1.100.0/{HOST.asset}",
+            "digest": f"sha256:{asset_digest}",
+        }],
+    }]).encode()
+
+    class _CustomSubclass(prov._Transport):
+        def __init__(self):
+            super().__init__()
+            self.urls: list[str] = []
+
+        def open(self, url: str, *, accept: str):
+            self.urls.append(url)
+            if "/attestations/" in url:
+                return _StatusResponse()
+            if "/releases/download/" in url:
+                return io.BytesIO(archive)
+            if "/releases" in url:
+                return io.BytesIO(release_doc)
+            raise AssertionError(f"unexpected url {url}")
+
+    sub = _CustomSubclass()
+    found = prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=sub)
+    assert found.attestation == "absent"
+    assert any("/attestations/" in url for url in sub.urls)
+
+    # Instance-level open override on a plain _Transport instance is also preserved.
+    inst = prov._Transport(connection=lambda *a, **k: (_ for _ in ()).throw(AssertionError("connection must not be called")))
+    inst_urls: list[str] = []
+
+    def _inst_open(url: str, *, accept: str):
+        inst_urls.append(url)
+        if "/attestations/" in url:
+            return _StatusResponse()
+        if "/releases/download/" in url:
+            return io.BytesIO(archive)
+        if "/releases" in url:
+            return io.BytesIO(release_doc)
+        raise AssertionError(f"unexpected url {url}")
+
+    inst.open = _inst_open
+    found_inst = prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=inst)
+    assert found_inst.attestation == "absent"
+    assert any("/attestations/" in url for url in inst_urls)
+
+    # Even if agy_provenance._Transport is monkeypatched to a factory function, custom transports still work.
+    monkeypatch.setattr(prov, "_Transport", lambda: (_ for _ in ()).throw(AssertionError("default _Transport unused")))
+    found_patched = prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=sub)
+    assert found_patched.attestation == "absent"
+
+
+def test_falsey_caller_transport_is_not_discarded(monkeypatch):
+    """agent-harness#2043: a valid transport whose __bool__ is False must not fall back to _Transport()."""
+    from phase_loop_runtime import agy_attestation
+
+    monkeypatch.setattr(prov, "_Transport", lambda: (_ for _ in ()).throw(AssertionError("_Transport must not run")))
+    monkeypatch.setattr(
+        agy_attestation,
+        "_Opener",
+        lambda **_: (_ for _ in ()).throw(AssertionError("_Opener must not run")),
+    )
+
+    class _StatusResponse:
+        status = 404
+
+        def read(self, n=-1):
+            return b""
+
+        def close(self):
+            pass
+
+    class _FalseyTransport(Upstream):
+        def __init__(self, versions):
+            super().__init__(versions)
+            self.attestation_urls: list[str] = []
+
+        def __bool__(self) -> bool:
+            return False
+
+        def open(self, url, *, accept):
+            parts = urlsplit(url)
+            if parts.hostname == prov.API_HOST and "/attestations/" in parts.path:
+                self.attestation_urls.append(url)
+                return _StatusResponse()
+            return super().open(url, accept=accept)
+
+    t = _FalseyTransport(_versions(1))
+    assert not bool(t)
+    found = prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=t)
+    assert found.attestation == "absent" and len(t.attestation_urls) == 1
+
+
+def test_class_level_transport_open_patch_is_not_bypassed(monkeypatch):
+    """agent-harness#2043: monkeypatching _Transport.open on the class itself must not be bypassed."""
+    from phase_loop_runtime import agy_attestation
+
+    monkeypatch.setattr(
+        agy_attestation,
+        "_Opener",
+        lambda **_: (_ for _ in ()).throw(AssertionError("_Opener must not bypass patched _Transport.open")),
+    )
+
+    class _StatusResponse:
+        status = 404
+
+        def read(self, n=-1):
+            return b""
+
+        def close(self):
+            pass
+
+    archive = _archive(_image("1.100.0"))
+    asset_digest = sha256(archive).hexdigest()
+    release_doc = json.dumps([{
+        "tag_name": "1.100.0",
+        "draft": False,
+        "prerelease": False,
+        "assets": [{
+            "name": HOST.asset,
+            "browser_download_url": f"{prov.DOWNLOAD_PREFIX}1.100.0/{HOST.asset}",
+            "digest": f"sha256:{asset_digest}",
+        }],
+    }]).encode()
+    seen_urls: list[str] = []
+
+    def _patched_open(self, url: str, *, accept: str):
+        seen_urls.append(url)
+        if "/attestations/" in url:
+            return _StatusResponse()
+        if "/releases/download/" in url:
+            return io.BytesIO(archive)
+        if "/releases" in url:
+            return io.BytesIO(release_doc)
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr(prov._Transport, "open", _patched_open)
+    transport = prov._Transport(connection=lambda *a, **k: (_ for _ in ()).throw(AssertionError("connection unused")))
+    found = prov.find_provenance(sha256(_image("1.100.0")).hexdigest(), host=HOST, transport=transport)
+    assert found.attestation == "absent"
+    assert any("/attestations/" in url for url in seen_urls)
 
 
 def test_a_provenance_error_keeps_its_code_as_its_string():

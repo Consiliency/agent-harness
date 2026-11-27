@@ -207,6 +207,13 @@ class _Transport:
         raise ProvenanceError(UNAVAILABLE)
 
 
+# Definition-time references so agy_attestation._opener_for() stays independent of
+# import order and detects class-level patches to _Transport or _Transport.open.
+_DEFAULT_TRUST_CONTEXT = _trust_context
+_DEFAULT_TRANSPORT_CLASS = _Transport
+_DEFAULT_TRANSPORT_OPEN = _Transport.open
+
+
 def version_hint(subject_path) -> str | None:
     """The version a subject's install path names, or ``None``: the first component of its
     real path that matches ``^(\\d+\\.\\d+\\.\\d+)(?:[-+].*)?$``.
@@ -545,13 +552,18 @@ def find_provenance(image_sha256: str, *, host: HostPlatform, transport: _Transp
     ``note_rejected``; ``UNAVAILABLE`` propagates. ``fetch_times``/``note_fetch`` and
     ``rejected``/``note_rejected`` are the caller's ledger; the defaults keep none.
 
-    On a match, ``attest`` (default ``agy_attestation.attestation_status``) is called once for
-    the matched asset and its value recorded. No match after every candidate refuses
-    ``UNVERIFIED`` with no reason: the definitive refusal.
+    On a match, ``attest`` (default ``agy_attestation.attestation_status`` using ``transport``)
+    is called once for the matched asset and its value recorded.
+    No match after every candidate refuses ``UNVERIFIED`` with no reason: the definitive
+    refusal.
     """
-    transport = transport or _Transport()
+    if transport is None:
+        transport = _Transport()
     if attest is None:
-        from .agy_attestation import attestation_status as attest
+        from . import agy_attestation
+
+        def attest(asset: ReleaseAsset) -> str:
+            return agy_attestation.attestation_status(asset, transport=transport)
     fetched = 0
     for asset in _candidates(transport, host, hint, dict(rejected() or {})):
         member = cached_member(asset)

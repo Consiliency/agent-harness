@@ -23,6 +23,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Pass the caller-supplied `transport` from `agy_provenance.find_provenance` through to
+  `agy_attestation.attestation_status` (adapting plain `agy_provenance._Transport`
+  instances into `agy_attestation._Opener` with the same `connection`, `context_factory`,
+  and `timeout` so 404-as-absent and no-redirect semantics hold while custom transports
+  govern every upstream request) (agent-harness#2043).
 - Add an autouse real-`PATH` provider-executable resolution guard in
   `test_panel_invoker.py`, stub `board_preflight_requalify` and `_publish_seat_modes`
   across the remaining sanctioned board-invocation tests, and inject a hermetic
