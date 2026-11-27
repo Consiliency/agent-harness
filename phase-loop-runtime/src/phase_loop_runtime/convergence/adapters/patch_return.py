@@ -8,6 +8,7 @@ except ImportError:  # native Windows: POSIX-only; every use here fails closed t
     fcntl = None  # type: ignore[assignment]
 from hashlib import sha1, sha256
 import json
+import math
 import os
 from pathlib import Path
 try:
@@ -619,11 +620,19 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
 
 def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: str | None = None,
                    wait_seconds: float = CANCEL_WAIT_SECONDS,
+                   deadline: float | None = None,
                    launcher_commands: tuple[tuple[str, ...], ...] = PRODUCTION_LAUNCHER_COMMANDS) -> CancelOutcome:
     if not 0 < wait_seconds <= CANCEL_WAIT_SECONDS:
         raise ValueError("cancel_wait_invalid")
+    if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+        raise ValueError("cancel_wait_invalid")
     if (run_id is None) == (attempt_id is None):
         raise ValueError("cancel_target_invalid")
+    poll_deadline = time.monotonic() + wait_seconds
+    if deadline is not None:
+        poll_deadline = min(poll_deadline, float(deadline))
+    if time.monotonic() >= poll_deadline:
+        return "cancel_pending"
     root = journal.open_journal_root(state_root / "journal", create=False)
     if isinstance(root, journal.JournalRefused):
         return "unknown_attempt"
@@ -685,13 +694,12 @@ def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: s
             os.close(fd)
         if pidfd is not None:
             os.close(pidfd)
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
+    while time.monotonic() < poll_deadline:
         status = projection.attempt_status(root, attempt_id)
         if status.state in ("finished", "refused"):
             if ((status.termination and status.termination.reason == "cancelled")
                     or (status.refusal and status.refusal.reason == "cancelled_before_start")):
                 return "cancelled"
             return "already_terminal"
-        time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        time.sleep(min(0.05, max(0, poll_deadline - time.monotonic())))
     return "cancel_pending"

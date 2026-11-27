@@ -1110,6 +1110,164 @@ def test_generation_unstarted_cancel_past_renewal_fence_returns_supervisor_outco
     assert env.cancels == []
 
 
+def test_generation_mark_start_intent_checks_caller_deadline_after_renewal_read(
+        prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    clock = Clock(heartbeat + 1.0)
+    caller_deadline = clock.now + 2.0
+    monkeypatch.setattr(sp, "_monotonic", clock)
+
+    orig_confirmed = life._confirmed_renewal
+    calls = 0
+
+    def slow_post_write_read(k, disposition):
+        nonlocal calls
+        calls += 1
+        row = orig_confirmed(k, disposition)
+        if calls == 2:
+            # Post-write renewal read crosses caller_deadline while renewal is still current.
+            clock.now = caller_deadline + 0.1
+            assert clock.now < heartbeat + ttl * 2 / 3
+        return row
+
+    monkeypatch.setattr(life, "_confirmed_renewal", slow_post_write_read)
+    with life.launch_operation_lock(key[0], GEN, timeout_s=1) as held:
+        assert held and not life.mark_start_intent(*key, deadline=caller_deadline)
+    assert calls == 2
+
+
+@pytest.mark.parametrize("bad_row", [
+    {"ttl_s": None},
+    {"heartbeat_at": "not-a-number"},
+    {"ttl_s": 0},
+    {"ttl_s": float("nan")},
+])
+def test_generation_malformed_renewal_fields_fail_closed_without_raw_exception(
+        prepared, monkeypatch, bad_row):
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=time.monotonic() + 5)
+    row = life._launch_read("renewals", f"{GEN}.0")
+    row.update(bad_row)
+    life._launch_write("renewals", f"{GEN}.0", row)
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
+
+    assert life.cancel_launch_owner(*key, deadline=time.monotonic() + 10) == "cancel_pending"
+    assert life._renewal_current(
+        sp._identity_fields(rid, request_id, generation),
+        life._disposition(sp._identity_fields(rid, request_id, generation)),
+    ) is False
+
+
+def test_generation_started_cancel_worker_deadline_bounds_verification_and_polling(
+        prepared, monkeypatch, tmp_path):
+    """Through the production patch_return.cancel_attempt path, advancing the monotonic clock
+    during launcher verification reduces or eliminates post-SIGTERM polling so the operation
+    lock is not held past h + 2T/3."""
+    from types import SimpleNamespace
+    import fcntl
+    import hashlib
+    import signal
+    import struct
+    from phase_loop_runtime.convergence.adapters import patch_return
+
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    run_id = prepared[3].paths.run_id
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    fence_at = heartbeat + ttl * 2 / 3
+    clock = Clock(fence_at - 1.5)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(patch_return.time, "monotonic", clock)
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
+
+    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=clock.now + 1.0)
+
+    worker_root = tmp_path / "worker-state"
+    (worker_root / "launchers").mkdir(parents=True)
+    exe = str(Path("/proc/self/exe").resolve())
+    cmdline = b"\0".join([b"python", *map(str.encode, patch_return.PRODUCTION_LAUNCHER_COMMANDS[0])]) + b"\0"
+    launcher_record = {
+        "pid": os.getpid(),
+        "process_start_time": "start-1",
+        "nonce": "nonce-1",
+        "attempt_id": run_id,
+        "run_id": run_id,
+        "assignment_digest": "a" * 64,
+        "exe_realpath": exe,
+        "cmdline_sha256": hashlib.sha256(cmdline).hexdigest(),
+    }
+    rec_path = worker_root / "launchers" / f"{run_id}.json"
+    rec_path.write_text(json.dumps(launcher_record), encoding="utf-8")
+    rec_path.chmod(0o600)
+
+    monkeypatch.setattr(patch_return, "default_state_root", lambda: worker_root)
+    monkeypatch.setattr(patch_return.journal, "open_journal_root", lambda *a, **k: worker_root / "journal")
+    monkeypatch.setattr(
+        patch_return.journal, "read_attempt",
+        lambda *a, **k: SimpleNamespace(
+            identity=SimpleNamespace(run_id=run_id, assignment_digest="a" * 64),
+            writer=SimpleNamespace(owner_pid=os.getpid(), process_start_time="start-1", writer_instance_id="nonce-1"),
+        ),
+    )
+    monkeypatch.setattr(
+        patch_return.projection, "attempt_status",
+        lambda *a, **k: SimpleNamespace(state="running", display="running", termination=None, refusal=None),
+    )
+
+    verification_delay = 1.6
+
+    def slow_start_identity(pid):
+        clock.now += verification_delay
+        return "start-1"
+
+    monkeypatch.setattr(patch_return.journal, "process_start_identity", slow_start_identity)
+    monkeypatch.setattr(patch_return.os, "pidfd_open", lambda pid: os.dup(0))
+    orig_read_bytes = Path.read_bytes
+    monkeypatch.setattr(
+        Path, "read_bytes",
+        lambda self: cmdline if str(self) == f"/proc/{os.getpid()}/cmdline" else orig_read_bytes(self),
+    )
+    monkeypatch.setattr(
+        patch_return.fcntl, "fcntl",
+        lambda fd, op, arg: struct.pack("hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 0, os.getpid())
+        if op == fcntl.F_GETLK else fcntl.fcntl(fd, op, arg),
+    )
+    signals_sent = []
+    monkeypatch.setattr(
+        patch_return.signal, "pidfd_send_signal",
+        lambda pidfd, sig: signals_sent.append(sig),
+    )
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock.now += seconds
+
+    monkeypatch.setattr(patch_return.time, "sleep", fake_sleep)
+    monkeypatch.setattr(life, "launch_cancel", sp._landed_launch_cancel)
+
+    # Case 1: verification consumes 1.6 s (> 1.5 s remaining to fence_at) -> zero polling sleep!
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancel_pending"
+    assert signals_sent == [signal.SIGTERM]
+    assert sleeps == []
+
+    # Case 2: verification consumes 1.0 s of 1.5 s remaining -> polls only the remaining 0.5 s.
+    signals_sent.clear()
+    sleeps.clear()
+    clock.now = fence_at - 1.5
+    verification_delay = 1.0
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancel_pending"
+    assert signals_sent == [signal.SIGTERM]
+    assert sum(sleeps) == pytest.approx(0.5)
+    assert clock.now == pytest.approx(fence_at)
+
+
 def test_generation_renewal_retries_within_confirmation_window(env, prepared, monkeypatch):
     life, key = _generation_claim(prepared)
     initial = life._launch_read("renewals", f"{GEN}.0")

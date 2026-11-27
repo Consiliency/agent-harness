@@ -4373,7 +4373,7 @@ class PlacementLifecycle:
                 return False
             row["start_intent"] = True
             self._launch_write("dispositions", generation, row)
-            return not bound.expired() and (not local or self._renewal_current(key, row))
+            return (not local or self._renewal_current(key, row)) and not bound.expired()
 
     def read_cleanup_debt(self, reservation_id: str, request_id: str, generation: str) -> Debt | None:
         key = _identity_fields(reservation_id, request_id, generation)
@@ -4494,7 +4494,14 @@ class PlacementLifecycle:
         if type(count) is not int or count < 0 or type(attempt) is not int or attempt < count:
             return None
         row = self._launch_read("renewals", f"{key['generation']}.{attempt}")
-        return row if _matches(row, key) and row.get("confirmation_count") == count else None
+        if not (_matches(row, key) and row.get("confirmation_count") == count):
+            return None
+        heartbeat = row.get("heartbeat_at")
+        ttl = row.get("ttl_s")
+        if (type(heartbeat) not in (int, float) or not math.isfinite(heartbeat)
+                or type(ttl) not in (int, float) or not math.isfinite(ttl) or ttl <= 0):
+            return None
+        return row
 
     def renew_launch(self, reservation_id: str, request_id: str, generation: str, *,
                      deadline: float) -> bool:
@@ -4602,13 +4609,15 @@ class PlacementLifecycle:
                     return "cancel_pending"
                 if not worker_allowed:
                     return outcome
-                wait = min(CANCEL_WAIT_S, bound.left())
+                now = _monotonic()
+                cancel_deadline = min(bound.end, now + CANCEL_WAIT_S)
                 if cap_to_fence:
-                    wait = 0.0 if fence_at is None else min(wait, max(0.0, fence_at - _monotonic()))
+                    cancel_deadline = now if fence_at is None else min(cancel_deadline, fence_at)
+                wait = min(CANCEL_WAIT_S, cancel_deadline - now)
                 if wait <= 0:
                     return "cancel_pending"
                 try:
-                    worker = self.launch_cancel(claim, wait)
+                    worker = _invoke_launch_cancel(self.launch_cancel, claim, wait, cancel_deadline)
                 except Exception:
                     return "cancel_pending"
         except (OSError, LifecycleError):
@@ -5710,7 +5719,27 @@ def _landed_launch_owner(claim: Mapping[str, object]) -> str:
     return "unverified"
 
 
-def _landed_launch_cancel(claim: Mapping[str, object], wait_s: float) -> str:
+def _invoke_launch_cancel(
+    fn: Callable[..., str], claim: Mapping[str, object], wait_s: float, deadline: float,
+) -> str:
+    """Invoke ``launch_cancel``, forwarding the absolute monotonic ``deadline`` when supported."""
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+        accepts_deadline = "deadline" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+    except (TypeError, ValueError):
+        accepts_deadline = False
+    if accepts_deadline:
+        return fn(claim, wait_s, deadline=deadline)
+    return fn(claim, wait_s)
+
+
+def _landed_launch_cancel(
+    claim: Mapping[str, object], wait_s: float, *, deadline: float | None = None,
+) -> str:
     """``cancel_attempt`` on the claimed run, through its verified owning launcher only."""
     from .convergence.adapters.patch_return import cancel_attempt, default_state_root
 
@@ -5718,7 +5747,9 @@ def _landed_launch_cancel(claim: Mapping[str, object], wait_s: float) -> str:
     if not isinstance(run_id, str):
         return "unknown_attempt"
     wait = min(CANCEL_WAIT_S, max(0.001, float(wait_s)))
-    return cancel_attempt(state_root=default_state_root(), attempt_id=run_id, wait_seconds=wait)
+    return cancel_attempt(
+        state_root=default_state_root(), attempt_id=run_id, wait_seconds=wait, deadline=deadline,
+    )
 
 
 def _remove_tree(path: Path) -> None:
