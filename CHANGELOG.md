@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- Raise the `test.yml` `clean-room (standalone-from-wheel, Gate A)` job timeout from
+  150 to 210 minutes (matching `publish-pypi.yml` from agent-harness#2191) after slow
+  hosted runners hit the 150-minute cap at 88% with no test failures (agent-harness#766).
+
 ## [0.7.47] - 2026-11-26
 
 ### Changed
