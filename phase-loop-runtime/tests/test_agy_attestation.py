@@ -477,3 +477,62 @@ def test_adapted_default_transport_keeps_dynamic_trust_context_lookup(monkeypatc
     monkeypatch.setattr(prov, "_trust_context", lambda: "dynamic-trust-context")
     assert att.attestation_status(asset, transport=transport) == "absent"
     assert [ctx for _host, _port, ctx in server.connections] == ["dynamic-trust-context"]
+
+
+def test_adapted_transport_preserves_falsey_callable_context_factory(monkeypatch):
+    """agent-harness#2043: a falsey callable context_factory must be called, never replaced."""
+    class _FalseyContextFactory:
+        def __init__(self):
+            self.calls = 0
+
+        def __bool__(self) -> bool:
+            return False
+
+        def __call__(self):
+            self.calls += 1
+            return "falsey-custom-context"
+
+    factory = _FalseyContextFactory()
+    assert not bool(factory)
+    monkeypatch.setattr(prov, "_trust_context", lambda: (_ for _ in ()).throw(AssertionError("default context unused")))
+    asset = _asset(b"archive")
+    server = _Server({(prov.API_HOST, _attestation_target(asset)): (404, b"")})
+    transport = prov._Transport(connection=server, context_factory=factory, timeout=13)
+    assert att.attestation_status(asset, transport=transport) == "absent"
+    assert factory.calls == 1
+    assert [ctx for _host, _port, ctx in server.connections] == ["falsey-custom-context"]
+
+
+def test_adapter_works_when_transport_is_patched_before_attestation_import():
+    """agent-harness#2043: patching agy_provenance._Transport to a factory before importing
+    agy_attestation must not break isinstance() inside _opener_for()."""
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    src_dir = str(Path(prov.__file__).resolve().parent.parent)
+    script = f"""
+import sys
+sys.path.insert(0, {src_dir!r})
+from phase_loop_runtime import agy_provenance as prov
+
+class _Resp:
+    status = 404
+    def read(self, n=-1): return b""
+    def close(self): pass
+
+class _Fake:
+    def __init__(self): self.urls = []
+    def open(self, url, *, accept):
+        self.urls.append(url)
+        return _Resp()
+
+fake = _Fake()
+prov._Transport = lambda: fake
+from phase_loop_runtime import agy_attestation as att
+asset = prov.ReleaseAsset("1.5.13", "a.tar.gz", "https://example.invalid/a.tar.gz", "0" * 64)
+assert att.attestation_status(asset, transport=fake) == "absent"
+assert len(fake.urls) == 1
+"""
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr

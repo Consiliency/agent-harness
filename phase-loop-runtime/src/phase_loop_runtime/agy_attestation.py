@@ -49,11 +49,6 @@ _CHUNK_BYTES = 1024 * 1024
 # What ``_read_json`` returns for its ``absent_status``. JSON ``null`` decodes to ``None``, so
 # absence needs a value no document can be.
 _ABSENT = object()
-# Keep the real _Transport class and default _trust_context so monkeypatching
-# agy_provenance._Transport or agy_provenance._trust_context in tests never breaks
-# isinstance() or dynamic trust lookup inside _opener_for().
-_PROVENANCE_TRANSPORT = _provenance._Transport
-_PROVENANCE_TRUST_CONTEXT = _provenance._trust_context
 
 
 def _clean(url) -> bool:
@@ -84,7 +79,7 @@ class _Opener:
                 or parts.username is not None or parts.password is not None):
             raise ProvenanceError(UNAVAILABLE)
         # Looked up when the request is made, so the trust rule is agy_provenance's, always.
-        context = (self.context_factory or _provenance._trust_context)()
+        context = (_provenance._trust_context if self.context_factory is None else self.context_factory)()
         conn = self.connection(parts.hostname, 443, context=context, timeout=self.timeout)
         target = parts.path + (f"?{parts.query}" if parts.query else "")
         try:
@@ -134,12 +129,12 @@ def _opener_for(transport):
     """
     if transport is None:
         return _Opener()
-    if (isinstance(transport, _PROVENANCE_TRANSPORT)
-            and type(transport).open is _PROVENANCE_TRANSPORT.open
+    if (isinstance(transport, _provenance._DEFAULT_TRANSPORT_CLASS)
+            and type(transport).open is _provenance._DEFAULT_TRANSPORT_OPEN
             and "open" not in getattr(transport, "__dict__", ())):
         context_factory = (
             None
-            if transport.context_factory is _PROVENANCE_TRUST_CONTEXT
+            if transport.context_factory is _provenance._DEFAULT_TRUST_CONTEXT
             else transport.context_factory
         )
         return _Opener(
