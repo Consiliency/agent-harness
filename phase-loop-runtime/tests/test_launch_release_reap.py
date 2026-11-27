@@ -1034,6 +1034,384 @@ def test_generation_reap_waits_for_unconfirmed_renewal_boundary(env, prepared, m
     assert result.inventory.pending == 1
 
 
+def test_generation_mark_start_intent_refuses_after_unconfirmed_renewal_boundary(
+        prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    fence_at = heartbeat + ttl * 2 / 3
+    clock = Clock(heartbeat + ttl / 3)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(life, "_confirm_slot", lambda *args: False)
+    assert not life.renew_launch(*key, deadline=clock.now + 1)
+    assert life._launch_read("dispositions", GEN)["fenced"] is False
+
+    # At or after h + 2T/3, start intent is refused even before fence_launch runs.
+    clock.now = fence_at
+    with life.launch_operation_lock(key[0], GEN, timeout_s=1) as held:
+        assert held and not life.mark_start_intent(*key, deadline=clock.now + 5)
+    assert life._launch_read("dispositions", GEN)["start_intent"] is False
+
+    # Before h + 2T/3, an unfenced failed renewal still allows start intent.
+    clock.now = fence_at - 1
+    with life.launch_operation_lock(key[0], GEN, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=clock.now + 5)
+    assert life._launch_read("dispositions", GEN)["start_intent"] is True
+
+
+def test_generation_started_cancel_bounds_worker_wait_to_renewal_fence(
+        env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    fence_at = heartbeat + ttl * 2 / 3
+    clock = Clock(heartbeat + 1)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
+
+    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=clock.now + 5)
+
+    waits = []
+    def record_cancel(claim, timeout_s):
+        waits.append(timeout_s)
+        return "cancelled"
+    monkeypatch.setattr(life, "launch_cancel", record_cancel)
+
+    # Unfenced and 1.5 s before h + 2T/3: WORKER cancel wait is capped to 1.5 s
+    # rather than holding launch_operation_lock for the full CANCEL_WAIT_S (10 s).
+    clock.now = fence_at - 1.5
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancelled"
+    assert waits == [pytest.approx(1.5)]
+
+    # At/after h + 2T/3 while still unfenced: yield immediately so fence_launch is not blocked.
+    waits.clear()
+    clock.now = fence_at
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancel_pending"
+    assert waits == []
+
+    # Once fenced, WORKER cancel gets the full CANCEL_WAIT_S budget.
+    assert life.fence_launch(*key, cause="renewal_lost", deadline=clock.now + 5)
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancelled"
+    assert waits == [pytest.approx(sp.CANCEL_WAIT_S)]
+
+
+def test_generation_unstarted_cancel_past_renewal_fence_returns_supervisor_outcome(
+        env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    fence_at = initial["heartbeat_at"] + initial["ttl_s"] * 2 / 3
+    clock = Clock(fence_at + 1)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "owner_unverified")
+
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 5) == "owner_unverified"
+    assert env.cancels == []
+
+
+def test_generation_mark_start_intent_checks_caller_deadline_after_renewal_read(
+        prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    clock = Clock(heartbeat + 1.0)
+    caller_deadline = clock.now + 2.0
+    monkeypatch.setattr(sp, "_monotonic", clock)
+
+    orig_confirmed = life._confirmed_renewal
+    calls = 0
+
+    def slow_post_write_read(k, disposition):
+        nonlocal calls
+        calls += 1
+        row = orig_confirmed(k, disposition)
+        if calls == 2:
+            # Post-write renewal read crosses caller_deadline while renewal is still current.
+            clock.now = caller_deadline + 0.1
+            assert clock.now < heartbeat + ttl * 2 / 3
+        return row
+
+    monkeypatch.setattr(life, "_confirmed_renewal", slow_post_write_read)
+    with life.launch_operation_lock(key[0], GEN, timeout_s=1) as held:
+        assert held and not life.mark_start_intent(*key, deadline=caller_deadline)
+    assert calls == 2
+
+
+@pytest.mark.parametrize("bad_row", [
+    {"ttl_s": None},
+    {"heartbeat_at": "not-a-number"},
+    {"ttl_s": 0},
+    {"ttl_s": float("nan")},
+    {"heartbeat_at": 10**400},
+    {"ttl_s": 1e308},
+])
+def test_generation_malformed_renewal_fields_fail_closed_without_raw_exception(
+        prepared, monkeypatch, bad_row):
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    row = life._launch_read("renewals", f"{GEN}.0")
+    row.update(bad_row)
+    life._launch_write("renewals", f"{GEN}.0", row)
+    ident = sp._identity_fields(rid, request_id, generation)
+    disp = life._disposition(ident)
+    assert life._renewal_fence_at(ident, disp) is None
+    assert life._renewal_current(ident, disp) is False
+    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
+        assert held and not life.mark_start_intent(*key, deadline=time.monotonic() + 5)
+
+    disp["start_intent"] = True
+    life._launch_write("dispositions", generation, disp)
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
+    assert life.cancel_launch_owner(*key, deadline=time.monotonic() + 10) == "cancel_pending"
+
+
+def test_generation_started_cancel_worker_deadline_bounds_verification_and_polling(
+        prepared, monkeypatch, tmp_path):
+    """Through the production patch_return.cancel_attempt path, launcher verification and
+    post-SIGTERM status polling run outside launch_operation_lock; the lock is acquired
+    only to revalidate generation/fence and deliver SIGTERM."""
+    from types import SimpleNamespace
+    import fcntl
+    import hashlib
+    import signal
+    import struct
+    from phase_loop_runtime.convergence.adapters import patch_return
+
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    run_id = prepared[3].paths.run_id
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    fence_at = heartbeat + ttl * 2 / 3
+    clock = Clock(fence_at - 1.5)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
+
+    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=clock.now + 1.0)
+
+    worker_root = tmp_path / "worker-state"
+    (worker_root / "launchers").mkdir(parents=True)
+    exe = str(Path("/proc/self/exe").resolve())
+    cmdline = b"\0".join([b"python", *map(str.encode, patch_return.PRODUCTION_LAUNCHER_COMMANDS[0])]) + b"\0"
+    launcher_record = {
+        "pid": os.getpid(),
+        "process_start_time": "start-1",
+        "nonce": "nonce-1",
+        "attempt_id": run_id,
+        "run_id": run_id,
+        "assignment_digest": "a" * 64,
+        "exe_realpath": exe,
+        "cmdline_sha256": hashlib.sha256(cmdline).hexdigest(),
+    }
+    rec_path = worker_root / "launchers" / f"{run_id}.json"
+    rec_path.write_text(json.dumps(launcher_record), encoding="utf-8")
+    rec_path.chmod(0o600)
+
+    monkeypatch.setattr(patch_return, "default_state_root", lambda: worker_root)
+    monkeypatch.setattr(patch_return.journal, "open_journal_root", lambda *a, **k: worker_root / "journal")
+    monkeypatch.setattr(
+        patch_return.journal, "read_attempt",
+        lambda *a, **k: SimpleNamespace(
+            identity=SimpleNamespace(run_id=run_id, assignment_digest="a" * 64),
+            writer=SimpleNamespace(owner_pid=os.getpid(), process_start_time="start-1", writer_instance_id="nonce-1"),
+        ),
+    )
+
+    lock_during_verify = []
+    lock_during_signal = []
+    lock_during_poll = []
+    signals_sent = []
+    sleeps = []
+    verification_delay = 1.6
+    fence_during_verify = False
+
+    def spy_attempt_status(*a, **k):
+        if signals_sent:
+            lock_during_poll.append(life._holds_operation(rid, generation))
+        else:
+            lock_during_verify.append(life._holds_operation(rid, generation))
+        return SimpleNamespace(state="running", display="running", termination=None, refusal=None)
+
+    monkeypatch.setattr(patch_return.projection, "attempt_status", spy_attempt_status)
+
+    def slow_start_identity(pid):
+        lock_during_verify.append(life._holds_operation(rid, generation))
+        clock.now += verification_delay
+        if fence_during_verify:
+            assert life.fence_launch(*key, cause="renewal_lost", deadline=clock.now + 5)
+        return "start-1"
+
+    monkeypatch.setattr(patch_return.journal, "process_start_identity", slow_start_identity)
+    monkeypatch.setattr(patch_return.os, "pidfd_open", lambda pid: os.dup(0))
+    orig_read_bytes = Path.read_bytes
+    monkeypatch.setattr(
+        Path, "read_bytes",
+        lambda self: cmdline if str(self) == f"/proc/{os.getpid()}/cmdline" else orig_read_bytes(self),
+    )
+    real_fcntl_fn = fcntl.fcntl
+    monkeypatch.setattr(
+        patch_return, "fcntl",
+        SimpleNamespace(
+            **{
+                **vars(fcntl),
+                "fcntl": lambda fd, op, arg: struct.pack(
+                    "hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 0, os.getpid(),
+                )
+                if op == fcntl.F_GETLK else real_fcntl_fn(fd, op, arg),
+            }
+        ),
+    )
+
+    def spy_signal(pidfd, sig):
+        lock_during_signal.append(life._holds_operation(rid, generation))
+        signals_sent.append(sig)
+
+    monkeypatch.setattr(patch_return.signal, "pidfd_send_signal", spy_signal)
+
+    def fake_sleep(seconds):
+        lock_during_poll.append(life._holds_operation(rid, generation))
+        sleeps.append(seconds)
+        clock.now += seconds
+
+    # Replace patch_return.time with a test-local namespace rather than mutating the
+    # process-wide time module so foreign threads calling time.sleep cannot interfere.
+    monkeypatch.setattr(patch_return, "time", SimpleNamespace(monotonic=clock, sleep=fake_sleep))
+    monkeypatch.setattr(life, "launch_cancel", sp._landed_launch_cancel)
+
+    # Case 1: verification crosses fence_at while still unfenced -> lock was not held during
+    # verification, signal_guard refuses to signal past fence_at, and zero polling runs.
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancel_pending"
+    assert lock_during_verify and all(held is False for held in lock_during_verify)
+    assert signals_sent == []
+    assert sleeps == []
+
+    # Case 2: verification completes before fence_at -> lock held ONLY during SIGTERM,
+    # released before status polling begins so polling cannot block fence_launch.
+    for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
+        lst.clear()
+    clock.now = fence_at - 1.5
+    verification_delay = 1.0
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 2.0) == "cancel_pending"
+    assert lock_during_verify and all(held is False for held in lock_during_verify)
+    assert signals_sent == [signal.SIGTERM]
+    assert lock_during_signal == [True]
+    assert lock_during_poll and all(held is False for held in lock_during_poll)
+    assert sum(sleeps) == pytest.approx(1.0)
+
+    # Case 3: verification exceeds WORKER cancel_deadline (CANCEL_WAIT_S=10 s) while caller
+    # deadline and renewal fence are still open -> no SIGTERM delivered past WORKER deadline.
+    for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
+        lst.clear()
+    clock.now = heartbeat + 1.0  # plenty of room before fence_at (heartbeat + 2T/3)
+    verification_delay = sp.CANCEL_WAIT_S + 1.0
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 60.0) == "cancel_pending"
+    assert signals_sent == []
+    assert sleeps == []
+
+    # Case 4: inside signal_guard under launch_operation_lock, launch_lock receives the
+    # absolute renewal-fence deadline so a scheduling pause cannot extend past fence_at.
+    for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
+        lst.clear()
+    clock.now = fence_at - 0.5
+    verification_delay = 0.0
+    orig_launch_lock = life.launch_lock
+    observed_guard_locks = []
+
+    def spy_launch_lock(reservation_id, *, timeout_s, deadline=None, **kwargs):
+        if life._holds_operation(rid, generation):
+            observed_guard_locks.append((timeout_s, deadline))
+            # Simulate a 0.75 s scheduling pause before _FileLock builds its deadline.
+            clock.now += 0.75
+        return orig_launch_lock(reservation_id, timeout_s=timeout_s, deadline=deadline, **kwargs)
+
+    monkeypatch.setattr(life, "launch_lock", spy_launch_lock)
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20.5) == "cancel_pending"
+    assert observed_guard_locks == [(pytest.approx(0.5), pytest.approx(fence_at))]
+    assert signals_sent == []
+    monkeypatch.setattr(life, "launch_lock", orig_launch_lock)
+
+    # Case 5: legacy 2-arg, generic **kwargs, transparent forwarding **kwargs, and
+    # functools.wraps(_landed_launch_cancel) adapters all stay on the lock-held legacy
+    # path, never receive unexpected deadline/signal_guard kwargs, and cap both their
+    # reservation-lock deadline and wait against fence_at.
+    import functools
+
+    def _make_forwarding_wrapper(rec):
+        def inner(claim, wait_s):
+            rec.append((life._holds_operation(rid, generation), wait_s))
+            return "cancelled"
+
+        def forward(*args, **kwargs):
+            return inner(*args, **kwargs)
+
+        return forward
+
+    def _make_wraps_adapter(rec):
+        @functools.wraps(sp._landed_launch_cancel)
+        def wrapped(claim, wait_s):
+            rec.append((life._holds_operation(rid, generation), wait_s))
+            return "cancelled"
+
+        return wrapped
+
+    for make_adapter in (
+        lambda rec: (lambda claim, wait_s: (rec.append((life._holds_operation(rid, generation), wait_s)), "cancelled")[1]),
+        lambda rec: (lambda claim, wait_s, **kwargs: (rec.append((life._holds_operation(rid, generation), wait_s)), "cancelled")[1]),
+        _make_forwarding_wrapper,
+        _make_wraps_adapter,
+    ):
+        legacy_locks = []
+        legacy_calls = []
+        clock.now = fence_at - 0.5
+
+        def spy_legacy_lock(reservation_id, *, timeout_s, deadline=None, **kwargs):
+            if life._holds_operation(rid, generation):
+                legacy_locks.append((timeout_s, deadline))
+            return orig_launch_lock(reservation_id, timeout_s=timeout_s, deadline=deadline, **kwargs)
+
+        monkeypatch.setattr(life, "launch_lock", spy_legacy_lock)
+        monkeypatch.setattr(life, "launch_cancel", make_adapter(legacy_calls))
+        assert life.cancel_launch_owner(*key, deadline=clock.now + 20.5) == "cancelled"
+        assert legacy_locks == [(pytest.approx(0.5), pytest.approx(fence_at))]
+        assert legacy_calls == [(True, pytest.approx(0.5))]
+    monkeypatch.setattr(life, "launch_lock", orig_launch_lock)
+    monkeypatch.setattr(life, "launch_cancel", sp._landed_launch_cancel)
+
+    # Case 6: direct cancel_attempt enforces poll_deadline inside _send_sigterm even if
+    # a custom signal_guard advances the clock past deadline before calling send_sigterm.
+    signals_sent.clear()
+    clock.now = fence_at - 5.0
+    def late_guard(send_sigterm):
+        clock.now += 2.0
+        send_sigterm()
+        return None
+    assert patch_return.cancel_attempt(
+        state_root=worker_root, attempt_id=run_id, wait_seconds=1.0,
+        deadline=clock.now + 1.0, signal_guard=late_guard,
+    ) == "cancel_pending"
+    assert signals_sent == []
+
+    # Case 7: fence_launch runs concurrently during verification (proving the lock is free);
+    # once fenced, signal_guard sees fenced=True and delivers SIGTERM even past fence_at.
+    for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
+        lst.clear()
+    clock.now = fence_at - 1.5
+    verification_delay = 1.6
+    fence_during_verify = True
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 3.0) == "cancel_pending"
+    assert signals_sent == [signal.SIGTERM]
+    assert lock_during_signal == [True]
+    assert lock_during_poll and all(held is False for held in lock_during_poll)
+
+    # Oversized integer deadline/wait raises ValueError("cancel_wait_invalid"), not OverflowError.
+    with pytest.raises(ValueError, match="cancel_wait_invalid"):
+        patch_return.cancel_attempt(state_root=worker_root, attempt_id=run_id, deadline=10**400)
+    with pytest.raises(ValueError, match="cancel_wait_invalid"):
+        patch_return.cancel_attempt(state_root=worker_root, attempt_id=run_id, wait_seconds=10**400)
+
+
 def test_generation_renewal_retries_within_confirmation_window(env, prepared, monkeypatch):
     life, key = _generation_claim(prepared)
     initial = life._launch_read("renewals", f"{GEN}.0")

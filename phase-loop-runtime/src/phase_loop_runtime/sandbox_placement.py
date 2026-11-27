@@ -3876,9 +3876,19 @@ class PlacementLifecycle:
         except (ValueError, TypeError, KeyError, LifecycleError, OSError):
             return True
 
-    def _renewal_current(self, key, disposition) -> bool:
+    def _renewal_fence_at(self, key, disposition) -> float | None:
         confirmed = self._confirmed_renewal(key, disposition)
-        return confirmed is not None and _monotonic() < confirmed["heartbeat_at"] + confirmed["ttl_s"] * 2 / 3
+        if confirmed is None:
+            return None
+        try:
+            fence_at = float(confirmed["heartbeat_at"]) + float(confirmed["ttl_s"]) * 2 / 3
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return fence_at if math.isfinite(fence_at) else None
+
+    def _renewal_current(self, key, disposition) -> bool:
+        fence_at = self._renewal_fence_at(key, disposition)
+        return fence_at is not None and _monotonic() < fence_at
 
     def _generation_collectible(self, claim, deadline, *, check_allocations=True) -> bool:
         key = _identity_fields(claim["reservation_id"], claim["request_id"], claim["generation"])
@@ -4356,14 +4366,18 @@ class PlacementLifecycle:
         bound = _Deadline(deadline)
         with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
             claim = self._owned_claim(key) if lock.held else None
-            if not claim or claim["owner"] != _own_identity() or claim.get("rollback_cause") or lock.window(None)[0]:
+            if not claim or claim["owner"] != _own_identity() or claim.get("rollback_cause"):
+                return False
+            code, active = lock.window(None)
+            if code or not active:
                 return False
             row = self._disposition(key)
-            if row["start_intent"] or bound.expired():
+            local = active["effect"]["kind"] == "local"
+            if row["start_intent"] or (local and not self._renewal_current(key, row)) or bound.expired():
                 return False
             row["start_intent"] = True
             self._launch_write("dispositions", generation, row)
-            return not bound.expired()
+            return (not local or self._renewal_current(key, row)) and not bound.expired()
 
     def read_cleanup_debt(self, reservation_id: str, request_id: str, generation: str) -> Debt | None:
         key = _identity_fields(reservation_id, request_id, generation)
@@ -4484,7 +4498,21 @@ class PlacementLifecycle:
         if type(count) is not int or count < 0 or type(attempt) is not int or attempt < count:
             return None
         row = self._launch_read("renewals", f"{key['generation']}.{attempt}")
-        return row if _matches(row, key) and row.get("confirmation_count") == count else None
+        if not (_matches(row, key) and row.get("confirmation_count") == count):
+            return None
+        heartbeat = row.get("heartbeat_at")
+        ttl = row.get("ttl_s")
+        if type(heartbeat) not in (int, float) or type(ttl) not in (int, float):
+            return None
+        try:
+            hb = float(heartbeat)
+            ttl_f = float(ttl)
+            fence_at = hb + ttl_f * 2 / 3
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not (math.isfinite(hb) and math.isfinite(ttl_f) and ttl_f > 0 and math.isfinite(fence_at)):
+            return None
+        return row
 
     def renew_launch(self, reservation_id: str, request_id: str, generation: str, *,
                      deadline: float) -> bool:
@@ -4568,28 +4596,143 @@ class PlacementLifecycle:
         if bound.expired():
             return "cancel_pending"
         # The supervisor exchange takes the operation lock on the server side.
-        # Acquire it locally afterward, and drop the journal before calling WORKER.
+        # When WORKER supports signal_guard, keep launcher verification and status
+        # polling outside the operation lock and acquire the lock only to revalidate
+        # the generation/fence and deliver SIGTERM to the verified pinned launcher.
         try:
-            operation = (self.launch_operation_lock(reservation_id, generation, timeout_s=bound.left())
-                         if started else nullcontext(True))
-            with operation as held:
-                if not held:
-                    return "cancel_pending"
+            if started and _launch_cancel_uses_signal_guard(self.launch_cancel):
                 with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
                     if not lock.held or self._owned_claim(key) != claim:
                         return "owner_unverified"
-                    # WORKER addresses a reusable attempt ID. Durable start intent
-                    # rules out rollback for the generation authorizing this call.
-                    worker_allowed = started and self._disposition(key)["start_intent"]
-                wait = min(CANCEL_WAIT_S, bound.left())
-                if wait <= 0:
+                    row = self._disposition(key)
+                    worker_allowed = started and row["start_intent"]
+                    cap_to_fence = (
+                        worker_allowed
+                        and not row["fenced"]
+                        and row.get("confirmed_count") is not None
+                    )
+                    fence_at = self._renewal_fence_at(key, row) if cap_to_fence else None
+                if bound.expired():
                     return "cancel_pending"
                 if not worker_allowed:
                     return outcome
+                now = _monotonic()
+                if cap_to_fence and (fence_at is None or now >= fence_at):
+                    return "cancel_pending"
+                cancel_deadline = min(bound.end, now + CANCEL_WAIT_S)
+                guard_bound = _Deadline(cancel_deadline)
+                wait = min(CANCEL_WAIT_S, guard_bound.left())
+                if wait <= 0:
+                    return "cancel_pending"
+
+                def _signal_guard(send_sigterm: Callable[[], None]) -> str | None:
+                    try:
+                        with self.launch_operation_lock(
+                            reservation_id, generation, timeout_s=guard_bound.left(),
+                        ) as held:
+                            if not held:
+                                return "cancel_pending"
+                            current_row = self._disposition(key)
+                            if not current_row["start_intent"]:
+                                return "owner_unverified"
+                            current_cap = (
+                                not current_row["fenced"]
+                                and current_row.get("confirmed_count") is not None
+                            )
+                            current_fence = (
+                                self._renewal_fence_at(key, current_row)
+                                if current_cap else None
+                            )
+                            lock_deadline = guard_bound.end
+                            if current_cap:
+                                if current_fence is None:
+                                    return "cancel_pending"
+                                lock_deadline = min(lock_deadline, current_fence)
+                            lock_timeout = lock_deadline - _monotonic()
+                            if lock_timeout <= 0:
+                                return "cancel_pending"
+                            with self.launch_lock(
+                                reservation_id, timeout_s=lock_timeout, deadline=lock_deadline,
+                            ) as lock:
+                                if not lock.held:
+                                    return "cancel_pending"
+                                if self._owned_claim(key) != claim:
+                                    return "owner_unverified"
+                            if guard_bound.expired():
+                                return "cancel_pending"
+                            if current_cap and (current_fence is None or _monotonic() >= current_fence):
+                                return "cancel_pending"
+                            send_sigterm()
+                            return None
+                    except LifecycleError:
+                        return "owner_unverified"
+
                 try:
-                    worker = self.launch_cancel(claim, wait)
+                    worker = _invoke_launch_cancel(
+                        self.launch_cancel, claim, wait, cancel_deadline,
+                        signal_guard=_signal_guard,
+                    )
                 except Exception:
                     return "cancel_pending"
+            else:
+                operation = (self.launch_operation_lock(reservation_id, generation, timeout_s=bound.left())
+                             if started else nullcontext(True))
+                with operation as held:
+                    if not held:
+                        return "cancel_pending"
+                    if started:
+                        # Serialized under launch_operation_lock: cap the reservation-lock
+                        # wait against the unfenced renewal fence before waiting on launch_lock.
+                        row = self._disposition(key)
+                        worker_allowed = bool(row["start_intent"])
+                        cap_to_fence = (
+                            worker_allowed
+                            and not row["fenced"]
+                            and row.get("confirmed_count") is not None
+                        )
+                        fence_at = self._renewal_fence_at(key, row) if cap_to_fence else None
+                        lock_deadline = bound.end
+                        if cap_to_fence:
+                            if fence_at is None:
+                                return "cancel_pending"
+                            lock_deadline = min(lock_deadline, fence_at)
+                        lock_timeout = lock_deadline - _monotonic()
+                        if lock_timeout <= 0:
+                            return "cancel_pending"
+                        lock_cm = self.launch_lock(
+                            reservation_id, timeout_s=lock_timeout, deadline=lock_deadline,
+                        )
+                    else:
+                        row = None
+                        worker_allowed = False
+                        cap_to_fence = False
+                        fence_at = None
+                        lock_cm = self.launch_lock(reservation_id, timeout_s=bound.left())
+                    with lock_cm as lock:
+                        if not lock.held:
+                            return "cancel_pending" if started else "owner_unverified"
+                        if self._owned_claim(key) != claim:
+                            return "owner_unverified"
+                        if not started:
+                            # WORKER addresses a reusable attempt ID. Durable start intent
+                            # rules out rollback for the generation authorizing this call.
+                            row = self._disposition(key)
+                            worker_allowed = False
+                    if bound.expired():
+                        return "cancel_pending"
+                    if not worker_allowed:
+                        return outcome
+                    now = _monotonic()
+                    cancel_deadline = min(bound.end, now + CANCEL_WAIT_S)
+                    if cap_to_fence:
+                        cancel_deadline = now if fence_at is None else min(cancel_deadline, fence_at)
+                    wait = min(CANCEL_WAIT_S, cancel_deadline - now)
+                    if wait <= 0:
+                        return "cancel_pending"
+                    try:
+                        worker = _invoke_launch_cancel(self.launch_cancel, claim, wait, cancel_deadline)
+                    except Exception:
+                        return "cancel_pending"
         except (OSError, LifecycleError):
             return "owner_unverified"
         if bound.expired():
@@ -4793,10 +4936,13 @@ class PlacementLifecycle:
         return [str(item.get("outcome")) for item in record.get("outcomes") or []]  # type: ignore[union-attr]
 
     def launch_lock(self, reservation_id: str, *, timeout_s: float,
-                    cancelled: threading.Event | None = None) -> "ReservationLock":
-        """The reservation's journal lock, waited on for at most ``timeout_s``. Use as a
-        context manager and check ``held``."""
-        return ReservationLock(self, reservation_id, _Deadline.after(timeout_s), cancelled)
+                    cancelled: threading.Event | None = None,
+                    deadline: float | None = None) -> "ReservationLock":
+        """The reservation's journal lock, waited on for at most ``timeout_s`` (or until
+        absolute monotonic ``deadline`` when supplied). Use as a context manager and check
+        ``held``."""
+        lock_bound = _Deadline(deadline) if deadline is not None else _Deadline.after(timeout_s)
+        return ReservationLock(self, reservation_id, lock_bound, cancelled)
 
     def _launch_window(self, reservation_id: str, echo: Mapping[str, object] | None
                        ) -> tuple[str | None, dict[str, object] | None]:
@@ -5689,7 +5835,44 @@ def _landed_launch_owner(claim: Mapping[str, object]) -> str:
     return "unverified"
 
 
-def _landed_launch_cancel(claim: Mapping[str, object], wait_s: float) -> str:
+def _launch_cancel_uses_signal_guard(fn: Callable[..., str]) -> bool:
+    """Explicit opt-in bound to the exact callable so ``**kwargs`` and
+    ``functools.wraps`` wrappers stay on the legacy lock path."""
+    return getattr(fn, "_supports_signal_guard_for", None) is fn
+
+
+def _launch_cancel_supports(fn: Callable[..., str], param: str) -> bool:
+    import inspect
+
+    try:
+        params = inspect.signature(fn, follow_wrapped=False).parameters
+        spec = params.get(param)
+        return spec is not None and spec.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _invoke_launch_cancel(
+    fn: Callable[..., str], claim: Mapping[str, object], wait_s: float, deadline: float, *,
+    signal_guard: Callable[[Callable[[], None]], str | None] | None = None,
+) -> str:
+    """Invoke ``launch_cancel``, forwarding optional ``deadline`` and ``signal_guard``."""
+    kwargs: dict[str, object] = {}
+    if _launch_cancel_supports(fn, "deadline"):
+        kwargs["deadline"] = deadline
+    if signal_guard is not None and _launch_cancel_uses_signal_guard(fn):
+        kwargs["signal_guard"] = signal_guard
+    return fn(claim, wait_s, **kwargs)
+
+
+def _landed_launch_cancel(
+    claim: Mapping[str, object], wait_s: float, *,
+    deadline: float | None = None,
+    signal_guard: Callable[[Callable[[], None]], str | None] | None = None,
+) -> str:
     """``cancel_attempt`` on the claimed run, through its verified owning launcher only."""
     from .convergence.adapters.patch_return import cancel_attempt, default_state_root
 
@@ -5697,7 +5880,13 @@ def _landed_launch_cancel(claim: Mapping[str, object], wait_s: float) -> str:
     if not isinstance(run_id, str):
         return "unknown_attempt"
     wait = min(CANCEL_WAIT_S, max(0.001, float(wait_s)))
-    return cancel_attempt(state_root=default_state_root(), attempt_id=run_id, wait_seconds=wait)
+    return cancel_attempt(
+        state_root=default_state_root(), attempt_id=run_id, wait_seconds=wait,
+        deadline=deadline, signal_guard=signal_guard,
+    )
+
+
+_landed_launch_cancel._supports_signal_guard_for = _landed_launch_cancel  # type: ignore[attr-defined]
 
 
 def _remove_tree(path: Path) -> None:

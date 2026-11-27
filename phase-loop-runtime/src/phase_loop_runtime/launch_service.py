@@ -132,11 +132,14 @@ def _landed_attempt_status(state_root: Path, attempt_id: str) -> object:
     return attempt_status(root, attempt_id)
 
 
-def _landed_cancel_attempt(state_root: Path, attempt_id: str, wait_s: float) -> str:
+def _landed_cancel_attempt(
+    state_root: Path, attempt_id: str, wait_s: float, *,
+    deadline: float | None = None, signal_guard: object = None,
+) -> str:
     from .convergence.adapters.patch_return import cancel_attempt
 
     return cancel_attempt(state_root=Path(state_root), attempt_id=attempt_id,
-                          wait_seconds=wait_s)
+                          wait_seconds=wait_s, deadline=deadline, signal_guard=signal_guard)
 
 
 class LaunchService:
@@ -342,10 +345,19 @@ def build_launch_service(
     worker_root = Path(worker_state_root) if worker_state_root is not None else _landed_worker_state_root()
     cancel_worker = cancel_attempt if cancel_attempt is not None else _landed_cancel_attempt
     if lifecycle is None:
+        if cancel_attempt is None:
+            def _lifecycle_cancel(claim, wait, *, deadline=None, signal_guard=None):
+                return _landed_cancel_attempt(
+                    worker_root, str(claim["run_id"]), wait,
+                    deadline=deadline, signal_guard=signal_guard,
+                )
+            _lifecycle_cancel._supports_signal_guard_for = _lifecycle_cancel  # type: ignore[attr-defined]
+        else:
+            def _lifecycle_cancel(claim, wait):
+                return cancel_worker(worker_root, str(claim["run_id"]), wait)
         lifecycle = PlacementLifecycle(client, caps_loader=load_caps, caps_readiness=readiness_code,
                                       clock=clock, route_state=route_state,
-                                      launch_cancel=lambda claim, wait: cancel_worker(
-                                          worker_root, str(claim["run_id"]), wait))
+                                      launch_cancel=_lifecycle_cancel)
     elif lifecycle.client != client:
         raise ValueError("launch_lifecycle_client_mismatch")
     return LaunchService(

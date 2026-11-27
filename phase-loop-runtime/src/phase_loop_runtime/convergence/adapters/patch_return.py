@@ -8,6 +8,7 @@ except ImportError:  # native Windows: POSIX-only; every use here fails closed t
     fcntl = None  # type: ignore[assignment]
 from hashlib import sha1, sha256
 import json
+import math
 import os
 from pathlib import Path
 try:
@@ -619,11 +620,34 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
 
 def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: str | None = None,
                    wait_seconds: float = CANCEL_WAIT_SECONDS,
+                   deadline: float | None = None,
+                   signal_guard: object = None,
                    launcher_commands: tuple[tuple[str, ...], ...] = PRODUCTION_LAUNCHER_COMMANDS) -> CancelOutcome:
-    if not 0 < wait_seconds <= CANCEL_WAIT_SECONDS:
+    if type(wait_seconds) not in (int, float):
         raise ValueError("cancel_wait_invalid")
+    try:
+        wait_f = float(wait_seconds)
+    except OverflowError:
+        raise ValueError("cancel_wait_invalid") from None
+    if not (math.isfinite(wait_f) and 0 < wait_f <= CANCEL_WAIT_SECONDS):
+        raise ValueError("cancel_wait_invalid")
+    deadline_f: float | None = None
+    if deadline is not None:
+        if type(deadline) not in (int, float):
+            raise ValueError("cancel_wait_invalid")
+        try:
+            deadline_f = float(deadline)
+        except OverflowError:
+            raise ValueError("cancel_wait_invalid") from None
+        if not math.isfinite(deadline_f):
+            raise ValueError("cancel_wait_invalid")
     if (run_id is None) == (attempt_id is None):
         raise ValueError("cancel_target_invalid")
+    poll_deadline = time.monotonic() + wait_f
+    if deadline_f is not None:
+        poll_deadline = min(poll_deadline, deadline_f)
+    if time.monotonic() >= poll_deadline:
+        return "cancel_pending"
     root = journal.open_journal_root(state_root / "journal", create=False)
     if isinstance(root, journal.JournalRefused):
         return "unknown_attempt"
@@ -677,7 +701,23 @@ def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: s
         lock_type, _, _, _, owner = struct.unpack("hhqqi", lock)
         if lock_type == fcntl.F_UNLCK or owner != pid:
             return "owner_unverified"
-        signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+        if time.monotonic() >= poll_deadline:
+            return "cancel_pending"
+        expired_before_signal = False
+        def _send_sigterm() -> None:
+            nonlocal expired_before_signal
+            if time.monotonic() >= poll_deadline:
+                expired_before_signal = True
+                return
+            signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+        if signal_guard is not None:
+            guarded = signal_guard(_send_sigterm)
+            if guarded is not None:
+                return guarded
+        else:
+            _send_sigterm()
+        if expired_before_signal:
+            return "cancel_pending"
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return "owner_unverified"
     finally:
@@ -685,13 +725,12 @@ def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: s
             os.close(fd)
         if pidfd is not None:
             os.close(pidfd)
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
+    while time.monotonic() < poll_deadline:
         status = projection.attempt_status(root, attempt_id)
         if status.state in ("finished", "refused"):
             if ((status.termination and status.termination.reason == "cancelled")
                     or (status.refusal and status.refusal.reason == "cancelled_before_start")):
                 return "cancelled"
             return "already_terminal"
-        time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        time.sleep(min(0.05, max(0, poll_deadline - time.monotonic())))
     return "cancel_pending"

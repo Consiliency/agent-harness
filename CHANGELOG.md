@@ -42,6 +42,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `test_file_lock_checks_budget_after_retry_sleep` so background threads in
   single-process Gate A runs cannot advance the test's fake clock before `flock`
   (agent-harness#2207).
+- Bound `SandboxPlacementLifecycle.cancel_launch_owner` WORKER-cancel waits against the
+  unfenced `h + 2T/3` renewal fence and refuse `mark_start_intent` on local generations
+  once `_renewal_current` is false (agent-harness#2159).
 
 ## [0.7.47] - 2026-11-26
 
