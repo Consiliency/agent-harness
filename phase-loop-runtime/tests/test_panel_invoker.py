@@ -114,6 +114,19 @@ def _install_firstseat_supplier_double(monkeypatch):
     return qualification
 
 
+def _window_fixture_key(profile_digest="f" * 64, allowlist_digest="b" * 64):
+    from phase_loop_runtime.seat_route_contract import QualificationKey
+
+    return QualificationKey(
+        profile_digest=profile_digest,
+        allowlist_digest=allowlist_digest,
+        falsifier_layout="1" * 64,
+        projection_digest=None,
+        variant=None,
+        host_identity="2" * 64,
+    )
+
+
 def _window_session(events, *, delivered=b'{"token":{"access_token":"fixture","expiry":"2099-01-01T00:00:00+00:00"}}'):
     class Session(SimpleNamespace):
         def cleanup(self):
@@ -121,10 +134,12 @@ def _window_session(events, *, delivered=b'{"token":{"access_token":"fixture","e
                 events.append("cleanup")
                 self.cleaned = True
 
+    key = _window_fixture_key()
     jail = SimpleNamespace(
         env={"HOME": "/seat/home", "HTTPS_PROXY": "http://127.0.0.1:3128",
              "SSL_CERT_FILE": "/seat/ca.pem", "DBUS_SESSION_BUS_ADDRESS": "drop"},
         profile_digest="f" * 64,
+        qualification_key=key,
     )
     seat = SimpleNamespace(
         jail=jail, probe_jail=jail, holder_pid=71, seat_dir=Path("/host/seat"),
@@ -144,7 +159,7 @@ def _window_session(events, *, delivered=b'{"token":{"access_token":"fixture","e
         prefix=("ns",), paths=paths,
         authorization=SimpleNamespace(staged_tree_sha256="c" * 64),
         quiescence_latch=SimpleNamespace(is_quiescent=lambda: True),
-        trace_path=None, cleaned=False,
+        trace_path=None, cleaned=False, qualification_key=key,
     )
 
 
@@ -634,10 +649,12 @@ def test_seats_firstseat_exec_record_window_launch_uses_fresh_seat_directory(
         socket: str
         allowlist_sha256: str
 
-    @dataclass(frozen=True, slots=True)
+    @dataclass
     class Seat:
         review_dir: Path
         seat_dir: Path
+        jail: object = field(default_factory=lambda: SimpleNamespace(dependency=None))
+        probe_jail: object = field(default_factory=lambda: SimpleNamespace(dependency=None))
         notices: tuple = ()
 
     def mkdtemp(*, prefix, dir):
@@ -785,10 +802,12 @@ def test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat(
         def record_backend_receipt(self, receipt):
             return None
 
-    @dataclass(frozen=True, slots=True)
+    @dataclass
     class Seat:
         review_dir: Path
         seat_dir: Path
+        jail: object = field(default_factory=lambda: SimpleNamespace(dependency=None))
+        probe_jail: object = field(default_factory=lambda: SimpleNamespace(dependency=None))
         notices: tuple = ()
 
     class Broker:
@@ -1206,6 +1225,566 @@ def test_seats_firstseat_exec_record_window_help_and_plugin(tmp_path, monkeypatc
             assert result.help_sha256 == hashlib.sha256(b"usage: gemini plugin\n").hexdigest()
         else:
             assert result.plugin_validation == "valid"
+
+
+@pytest.mark.parametrize("leg,kind", [
+    ("gemini", "measured"),
+    ("gemini", "tree_control"),
+    ("codex", "measured"),
+    ("codex", "tree_control"),
+    ("codex", "expired_copy"),
+])
+def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
+    tmp_path, monkeypatch, leg, kind,
+):
+    """agent-harness#2111: a window control launch whose host pass store has ONLY a v2
+    QualificationKey pass (no bare profile-digest pass) carries that route key onto both
+    its jail and probe jail, uses the started proxy's allowlist_digest, and gives every
+    invocation (both watch sentinels, provider launch, and bracket step) fresh offset-0
+    launch descriptors so real _require_qualified_jail / installed_filter_sha256 admits all."""
+    import os
+    from phase_loop_runtime import (
+        panel_invoker as pi,
+        seat_egress_proxy,
+        seat_jail,
+        seat_jail_qualification,
+        seat_profiles,
+        seat_qualification_key,
+        seat_window_supply,
+    )
+
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
+    host = "a" * 64
+    layout_id = "b" * 64
+    monkeypatch.setattr(seat_jail, "host_identity", lambda: host)
+    monkeypatch.setattr(seat_jail, "falsifier_layout_identity", lambda: layout_id)
+    profile = seat_profiles.profile_for(leg)
+    assert profile is not None
+    captured_allowlist_digest = seat_egress_proxy.allowlist_ref(profile.allowlist_id).content_digest
+    expected_key = seat_qualification_key.key_for_launch(
+        profile,
+        variant=None,
+        allowlist_digest=captured_allowlist_digest,
+        projection=None,
+    )
+    seat_jail_qualification._record_pass({
+        "result": "pass",
+        "profile_digest": expected_key.profile_digest,
+        "host_identity": expected_key.host_identity,
+        "falsifier_layout": expected_key.falsifier_layout,
+    }, expected_key)
+    # Bare profile-digest pass lookup cannot match a v2-only pass store.
+    assert seat_jail.pass_record_verdict(expected_key.profile_digest)[0] is False
+
+    commit = "d" * 40
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    provider_bin = tmp_path / f"fake-{leg}"
+    provider_bin.write_bytes(b"#!/bin/sh\nexit 0\n")
+    provider_bin.chmod(0o755)
+    egress_ca = tmp_path / "ca.pem"
+    egress_ca.write_bytes(b"fixture-ca")
+
+    monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr(pi._review_stage, "host_git",
+                        lambda *a, **k: SimpleNamespace(stdout=commit + "\n"))
+    monkeypatch.setattr(pi, "prepare_review_isolation_authorization",
+                        lambda *a, **k: SimpleNamespace(staged_tree_sha256="c" * 64))
+    monkeypatch.setattr(pi, "activate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "close_review_isolation_authorization", lambda *a, **k: None)
+
+    def stage(source, *, parent):
+        staged = Path(parent) / "staged"
+        staged.mkdir()
+        return staged
+
+    monkeypatch.setattr(pi._review_stage, "stage_review_tree", stage)
+    monkeypatch.setattr(pi._review_stage, "staged_source_commit", lambda tree: commit)
+    monkeypatch.setattr(pi._review_stage, "remove_review_stage", lambda base: None)
+    monkeypatch.setattr(pi._seat_uid, "subordinate_range", lambda path: (1, 2))
+    monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda u, g: 1)
+    monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lambda n: contextmanager(lambda: (yield 2))())
+    monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
+                        lambda **k: contextmanager(lambda: (yield ("nsenter", "-t", "71")))())
+    monkeypatch.setattr(pi._sandbox_egress, "wait_bridge_exit", lambda prefix: True)
+    monkeypatch.setattr(pi._seat_egress_proxy, "fence",
+                        lambda *a, **k: SimpleNamespace(acknowledged=True, acked_ns=1))
+    monkeypatch.setattr(pi._seat_egress_proxy, "proxy_stream",
+                        lambda proxy: SimpleNamespace(final=True))
+    monkeypatch.setattr(pi, "_read_window_trace", lambda *a: ((), (), True))
+    monkeypatch.setattr(pi, "_hold_window_fence_gap", lambda ns: None)
+    # Fail closed if key derivation tries to re-read packaged allowlists after proxy startup.
+    monkeypatch.setattr(
+        "phase_loop_runtime.seat_route._allowlist_digest_for_launch",
+        lambda _profile: pytest.fail("key derivation re-read packaged allowlist after proxy start"),
+    )
+
+    built_jails: list[seat_jail.SeatJail] = []
+
+    def make_real_seat_jail(subdir: Path) -> seat_jail.SeatJail:
+        subdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (subdir / seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, exist_ok=True)
+        kwargs = {
+            "seat_ids": (2, 2),
+            "egress_ca": egress_ca,
+            "egress_proxy": seat_egress_proxy.GEMINI_PROXY_URL if leg == "gemini" else "http://127.0.0.1:3128",
+        }
+        if leg == "gemini":
+            gcfg = subdir / seat_jail.HOST_GEMINI_CONFIG_DIRNAME
+            gcfg.mkdir(mode=0o700, exist_ok=True)
+            kwargs["gemini_config"] = gcfg
+        jail = pi._build_jail_with_owned_inputs(
+            leg, subdir, provider_bin, artifact=b"bundle", instructions=b"instr", **kwargs,
+        )
+        built_jails.append(jail)
+        return jail
+
+    def cleanup_built(seat, *, primary=None):
+        for closed in (seat.jail, seat.probe_jail):
+            if closed is not None:
+                seat_jail.close_jail_fds(closed)
+                built_jails[:] = [b for b in built_jails if b.seccomp_fd != closed.seccomp_fd]
+
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", cleanup_built)
+
+    def make_proxy():
+        return seat_egress_proxy.SeatEgressProxy(
+            socket="sock",
+            proxy_url=seat_egress_proxy.GEMINI_PROXY_URL if leg == "gemini" else "http://127.0.0.1:3128",
+            front_identity=None,
+            private_proxy_token=b"proxy-tok" if leg == "gemini" else b"",
+            ca_cert=b"ca",
+            ca_sha256="1" * 64,
+            inner_sni_check=True,
+            process=SimpleNamespace(),
+            allowlist_id=profile.allowlist_id,
+            allowlist_digest=captured_allowlist_digest,
+            allowlist_sha256="6" * 64,
+        )
+
+    def two_call_prove_sentinel(run):
+        first = run(("/bin/cat", "/seat/tree/open-sentinel"), env={}, use_proxy=False, timeout_s=1)
+        second = run(("/seat/tree/exec-sentinel",), env={}, use_proxy=False, timeout_s=1)
+        return first.exit_code == 0 and second.exit_code == 0
+
+    if leg == "gemini":
+        qualification = _install_firstseat_supplier_double(monkeypatch)
+        monkeypatch.setattr(
+            pi._seat_egress_proxy, "start_private_gemini_proxy",
+            lambda **k: contextmanager(lambda: (yield make_proxy()))(),
+        )
+        monkeypatch.setattr(
+            pi, "_prepare_jailed_gemini",
+            lambda review_dir, seat_dir, *a, **k: pi._JailedGeminiSeat(
+                jail=make_real_seat_jail(Path(seat_dir)),
+                probe_jail=make_real_seat_jail(Path(seat_dir) / "probe"),
+                holder_pid=71, token=b"tok",
+                review_dir=Path(review_dir), seat_dir=Path(seat_dir),
+                image_sha256="a" * 64, admission_class="fixture",
+                delivered_copy=b'{"token":{"access_token":"tok"}}',
+                private_proxy_token=b"proxy-tok",
+            ),
+        )
+        monkeypatch.setattr(
+            qualification, "arm_watch",
+            lambda layout, paths, *, kind: SimpleNamespace(
+                prove_sentinel=two_call_prove_sentinel,
+                drain_and_close=lambda *, quiescent: SimpleNamespace(read_marker_opened=True),
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(qualification, "measure_issuer", lambda d: SimpleNamespace(), raising=False)
+        monkeypatch.setattr(qualification, "scan_seat", lambda *a, **k: SimpleNamespace(), raising=False)
+        monkeypatch.setattr(
+            qualification, "run_bracket",
+            lambda proxy, run: run(("/usr/bin/true",), env={}, use_proxy=True, timeout_s=1),
+            raising=False,
+        )
+        monkeypatch.setattr(pi, "_broker_gemini_stream_protocol",
+                            lambda *a, **k: SimpleNamespace(transport="input"))
+        stdout = "\n".join((
+            json.dumps({"event": "init", "conversation_id": "c"}),
+            json.dumps({"event": "result", "conversation_id": "c", "result": {
+                "conversation_id": "c", "status": "SUCCESS", "response": "READY"}}),
+        ))
+    else:
+        supplier = seat_window_supply.available(leg)
+        assert supplier is not None
+        monkeypatch.setattr(
+            pi._seat_egress_proxy, "start_proxy",
+            lambda **k: contextmanager(lambda: (yield make_proxy()))(),
+        )
+        monkeypatch.setattr(
+            pi, "_window_prepare_leg",
+            lambda _leg, review_dir, seat_dir, *a, **k: pi._JailedSeat(
+                jail=make_real_seat_jail(Path(seat_dir)),
+                probe_jail=make_real_seat_jail(Path(seat_dir) / "probe"),
+                holder_pid=71, token=b"",
+                review_dir=Path(review_dir), seat_dir=Path(seat_dir),
+                image_sha256="a" * 64,
+            ),
+        )
+        monkeypatch.setattr(
+            supplier, "arm_watch",
+            lambda layout, paths, *, kind: SimpleNamespace(
+                prove_sentinel=two_call_prove_sentinel,
+                drain_and_close=lambda *, quiescent: "watch",
+            ),
+        )
+        monkeypatch.setattr(supplier, "scan_secrets", lambda seat: ())
+        monkeypatch.setattr(supplier, "measure_credential_scope", lambda seat: "pass")
+        monkeypatch.setattr(supplier, "refresh_detected", lambda seat: "pass")
+        monkeypatch.setattr(
+            supplier, "bracket_steps",
+            lambda: lambda proxy, run: run(("/usr/bin/true",), env={}, use_proxy=True, timeout_s=1),
+        )
+        stdout = json.dumps({"type": "turn.completed"})
+
+    monkeypatch.setattr(pi, "_render_broker_pointer_prompt", lambda *a, **k: "frame")
+    admitted: list[tuple[int, int]] = []
+
+    def gated_run(command, *, seat_jail: seat_jail.SeatJail, probe_jail: seat_jail.SeatJail, **kwargs):
+        assert seat_jail.qualification_key == expected_key
+        assert probe_jail.qualification_key == expected_key
+        # Exercise the REAL _require_qualified_jail -> actual_profile_digest ->
+        # installed_filter_sha256 (offset == 0 check) against the v2-only pass store.
+        pi._require_qualified_jail(seat_jail)
+        pi._require_qualified_jail(probe_jail)
+        # Simulate bwrap reading both inherited seccomp memfds to EOF (advancing offsets).
+        assert len(os.read(seat_jail.seccomp_fd, 1 << 20)) > 0
+        assert len(os.read(probe_jail.seccomp_fd, 1 << 20)) > 0
+        assert os.lseek(seat_jail.seccomp_fd, 0, os.SEEK_CUR) > 0
+        assert os.lseek(probe_jail.seccomp_fd, 0, os.SEEK_CUR) > 0
+        admitted.append((seat_jail.seccomp_fd, probe_jail.seccomp_fd))
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", gated_run)
+    spec = pi.WindowLaunchSpec(
+        kind=kind,
+        qualification_input=SimpleNamespace(
+            repo=repo, commit=commit, layout=SimpleNamespace(rows=()),
+        ),
+        model="fixture",
+        timeout_s=5.0,
+        leg=leg,
+    )
+    try:
+        result = pi.window_control_launch(spec)
+    finally:
+        for built in built_jails:
+            seat_jail.close_jail_fds(built)
+    # Two sentinel launches + provider launch (+ bracket launch for measured).
+    expected_launches = 4 if kind == "measured" else 3
+    assert len(admitted) == expected_launches
+    assert result.error is None
+    if leg == "gemini":
+        assert result.status == "SUCCESS"
+
+
+@pytest.mark.parametrize("tamper,expected_code", [
+    ("missing", "seat_sandbox_refused:jail_unqualified"),
+    ("other_session_key", "seat_sandbox_refused:identity"),
+    ("probe_missing", "seat_sandbox_refused:identity"),
+    ("probe_other", "seat_sandbox_refused:identity"),
+])
+def test_window_control_launch_refuses_missing_or_mismatched_qualification_key(
+    tmp_path, monkeypatch, tamper, expected_code,
+):
+    """agent-harness#2111: every window control launch boundary refuses a missing or
+    mismatched QualificationKey before _run_leg_with_liveness is invoked, and a sentinel
+    refusal still drains/closes the armed watch descriptor."""
+    from phase_loop_runtime import panel_invoker as pi
+
+    _install_firstseat_supplier_double(monkeypatch)
+    expected_key = _window_fixture_key()
+    other_key = _window_fixture_key(allowlist_digest="9" * 64)
+
+    def make_tampered_session():
+        session = _window_session([])
+        session.seat.jail = SimpleNamespace(**vars(session.seat.jail))
+        session.seat.probe_jail = SimpleNamespace(**vars(session.seat.probe_jail))
+        session.qualification_key = expected_key
+        if tamper == "missing":
+            session.seat.jail.qualification_key = None
+            session.seat.probe_jail.qualification_key = None
+        elif tamper == "other_session_key":
+            session.seat.jail.qualification_key = other_key
+            session.seat.probe_jail.qualification_key = other_key
+        elif tamper == "probe_missing":
+            session.seat.probe_jail.qualification_key = None
+        elif tamper == "probe_other":
+            session.seat.probe_jail.qualification_key = other_key
+        return session
+
+    monkeypatch.setattr(
+        pi, "_run_leg_with_liveness",
+        lambda *a, **k: pytest.fail("window control launch ran with invalid qualification key"),
+    )
+
+    session = make_tampered_session()
+    with pytest.raises(pi._seat_jail.SeatSandboxRefused) as exc:
+        pi._WindowJailedRun(
+            session.seat, session.quiescence_latch,
+            qualification_key=session.qualification_key,
+        )(["/usr/bin/true"], env={}, use_proxy=False, timeout_s=2.0)
+    assert exc.value.code == expected_code
+
+    session = make_tampered_session()
+    with pytest.raises(pi._seat_jail.SeatSandboxRefused) as exc:
+        pi._run_window_process(session, ["/seat/bin/gemini"], timeout_s=2.0)
+    assert exc.value.code == expected_code
+
+    session = make_tampered_session()
+    with pytest.raises(pi._seat_jail.SeatSandboxRefused) as exc:
+        pi._run_window_leg_process(session, ["/seat/bin/codex"], (), timeout_s=2.0)
+    assert exc.value.code == expected_code
+
+    # End-to-end through window_control_launch: refused as jail_unavailable, watch closed, nothing launched.
+    qualification = _install_firstseat_supplier_double(monkeypatch)
+    tampered = make_tampered_session()
+    watch_closed: list[bool] = []
+    monkeypatch.setattr(pi, "_open_window_launch", lambda spec: contextmanager(lambda: (yield tampered))())
+    monkeypatch.setattr(
+        qualification, "arm_watch",
+        lambda layout, paths, *, kind: SimpleNamespace(
+            prove_sentinel=lambda run: run(["sentinel"], env={}, use_proxy=False, timeout_s=1).exit_code == 0,
+            drain_and_close=lambda *, quiescent: watch_closed.append(quiescent),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(pi._seat_egress_proxy, "proxy_stream", lambda p: None, raising=False)
+    result = pi.window_control_launch(pi.WindowLaunchSpec(
+        kind="measured",
+        qualification_input=SimpleNamespace(
+            layout=SimpleNamespace(rows=()), commit="d" * 40, repo=tmp_path,
+        ),
+        model="fixture",
+        timeout_s=2.0,
+    ))
+    assert result.error == "jail_unavailable"
+    assert result.status == "NONE"
+    assert len(watch_closed) == 1
+
+
+def test_window_route_qualification_key_uses_started_proxy_allowlist_digest(monkeypatch):
+    """Key derivation binds the running SeatEgressProxy's captured allowlist_digest
+    rather than re-reading the packaged allowlist file, and refuses a proxy whose
+    allowlist_id disagrees with the profile."""
+    from phase_loop_runtime import panel_invoker as pi, seat_egress_proxy, seat_jail
+
+    monkeypatch.setattr(seat_jail, "host_identity", lambda: "a" * 64)
+    monkeypatch.setattr(seat_jail, "falsifier_layout_identity", lambda: "b" * 64)
+    monkeypatch.setattr(
+        "phase_loop_runtime.seat_route._allowlist_digest_for_launch",
+        lambda _profile: "f" * 64,
+    )
+    seat = SimpleNamespace(jail=SimpleNamespace(dependency=None, dependency_projection_digest=""))
+    proxy = seat_egress_proxy.SeatEgressProxy(
+        socket="sock", proxy_url=seat_egress_proxy.GEMINI_PROXY_URL,
+        front_identity=None, private_proxy_token=b"tok",
+        ca_cert=b"ca", ca_sha256="1" * 64, inner_sni_check=True,
+        process=SimpleNamespace(),
+        allowlist_id="gemini", allowlist_digest="e" * 64, allowlist_sha256="0" * 64,
+    )
+    key = pi._window_route_qualification_key("gemini", seat, proxy=proxy)
+    assert key.allowlist_digest == "e" * 64
+
+    wrong_proxy = seat_egress_proxy.SeatEgressProxy(
+        socket="sock", proxy_url=seat_egress_proxy.GEMINI_PROXY_URL,
+        front_identity=None, private_proxy_token=b"tok",
+        ca_cert=b"ca", ca_sha256="1" * 64, inner_sni_check=True,
+        process=SimpleNamespace(),
+        allowlist_id="codex", allowlist_digest="e" * 64, allowlist_sha256="0" * 64,
+    )
+    with pytest.raises(seat_jail.SeatSandboxRefused) as exc:
+        pi._window_route_qualification_key("gemini", seat, proxy=wrong_proxy)
+    assert exc.value.code == "seat_sandbox_refused:identity"
+
+
+def test_open_window_launch_cleans_up_seat_when_qualification_key_unavailable(
+    tmp_path, monkeypatch,
+):
+    """If route key derivation fails after preparing the seat in _open_window_launch,
+    the prepared seat is cleaned up before SeatSandboxRefused propagates."""
+    from phase_loop_runtime import panel_invoker as pi, seat_jail
+
+    _install_firstseat_supplier_double(monkeypatch)
+    commit = "d" * 40
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cleaned: list[tuple[object, BaseException | None]] = []
+    monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr(pi._review_stage, "host_git",
+                        lambda *a, **k: SimpleNamespace(stdout=commit + "\n"))
+    monkeypatch.setattr(pi, "prepare_review_isolation_authorization",
+                        lambda *a, **k: SimpleNamespace(staged_tree_sha256="c" * 64))
+    monkeypatch.setattr(pi, "activate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "close_review_isolation_authorization", lambda *a, **k: None)
+
+    def stage(source, *, parent):
+        staged = Path(parent) / "staged"
+        staged.mkdir()
+        return staged
+
+    monkeypatch.setattr(pi._review_stage, "stage_review_tree", stage)
+    monkeypatch.setattr(pi._review_stage, "staged_source_commit", lambda tree: commit)
+    monkeypatch.setattr(pi._review_stage, "remove_review_stage", lambda base: None)
+    monkeypatch.setattr(pi._seat_uid, "subordinate_range", lambda path: (1, 2))
+    monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda u, g: 1)
+    monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lambda n: contextmanager(lambda: (yield 2))())
+    monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
+    monkeypatch.setattr(
+        pi._seat_egress_proxy, "start_private_gemini_proxy",
+        lambda **k: contextmanager(lambda: (yield SimpleNamespace(socket="sock", allowlist_sha256="6" * 64)))(),
+    )
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
+                        lambda **k: contextmanager(lambda: (yield ("nsenter", "-t", "71")))())
+    seat_obj = SimpleNamespace(
+        review_dir=tmp_path, seat_dir=tmp_path,
+        jail=SimpleNamespace(dependency=None), probe_jail=SimpleNamespace(dependency=None),
+    )
+    monkeypatch.setattr(pi, "_prepare_jailed_gemini", lambda *a, **k: seat_obj)
+    monkeypatch.setattr(
+        pi, "_cleanup_jailed_seat",
+        lambda seat, *, primary=None: cleaned.append((seat, primary)),
+    )
+    monkeypatch.setattr(seat_jail, "host_identity", lambda: None)
+
+    spec = pi.WindowLaunchSpec(
+        kind="measured",
+        qualification_input=SimpleNamespace(
+            repo=repo, commit=commit, layout=SimpleNamespace(rows=()),
+        ),
+        model="fixture",
+        timeout_s=2.0,
+    )
+    with pytest.raises(seat_jail.SeatSandboxRefused) as exc:
+        with pi._open_window_launch(spec):
+            pass
+    assert exc.value.code == "seat_sandbox_refused:jail_unqualified"
+    assert cleaned == [(seat_obj, exc.value)]
+
+
+def test_fresh_window_launch_jails_rewrites_token_fd_in_process_owner(tmp_path):
+    """Cloning a token-bearing SeatJail updates env, pass_fds, token_fd, and Bubblewrap's
+    --setenv CLAUDE_TOKEN_FD_ENV argument in process_owner so bwrap passes the fresh pipe."""
+    import os
+    from phase_loop_runtime import panel_invoker as pi, seat_jail
+
+    provider_bin = tmp_path / "claude"
+    provider_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    provider_bin.chmod(0o700)
+    subdir = tmp_path / "seat"
+    subdir.mkdir(mode=0o700)
+    (subdir / seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700)
+
+    template = pi._build_jail_with_owned_inputs(
+        "claude", subdir, provider_bin, artifact=b"bundle", instructions=b"instr",
+        seat_ids=(2, 2), token=b"template-token",
+    )
+    try:
+        assert template.token_fd is not None
+        seat = SimpleNamespace(jail=template, probe_jail=template, token=b"fresh-token")
+        with pi._fresh_window_launch_jails(seat) as (cloned_jail, cloned_probe):
+            for cloned, expected_bytes in ((cloned_jail, b"fresh-token"), (cloned_probe, b"probe")):
+                assert cloned.token_fd is not None
+                assert cloned.token_fd != template.token_fd
+                assert cloned.token_fd in cloned.pass_fds
+                assert template.token_fd not in cloned.pass_fds
+                assert cloned.env[seat_jail.CLAUDE_TOKEN_FD_ENV] == str(cloned.token_fd)
+                setenv_vals = [
+                    cloned.process_owner[idx + 2]
+                    for idx, arg in enumerate(cloned.process_owner)
+                    if arg == "--setenv"
+                    and idx + 2 < len(cloned.process_owner)
+                    and cloned.process_owner[idx + 1] == seat_jail.CLAUDE_TOKEN_FD_ENV
+                ]
+                assert setenv_vals == [str(cloned.token_fd)]
+                assert os.read(cloned.token_fd, 64) == expected_bytes
+    finally:
+        seat_jail.close_jail_fds(template)
+
+
+@pytest.mark.parametrize("teardown_fault,expected_note", [
+    ("seat_cleanup", "RuntimeError"),
+    ("proxy_shutdown", "TimeoutExpired"),
+])
+def test_open_window_launch_preserves_qualification_refusal_when_teardown_fails(
+    tmp_path, monkeypatch, teardown_fault, expected_note,
+):
+    """If seat teardown or exit-stack proxy shutdown raises while unwinding a qualification
+    refusal in _open_window_launch, the primary SeatSandboxRefused is preserved instead of
+    being masked by a teardown error."""
+    import subprocess
+    from phase_loop_runtime import panel_invoker as pi, seat_jail
+
+    _install_firstseat_supplier_double(monkeypatch)
+    commit = "d" * 40
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr(pi._review_stage, "host_git",
+                        lambda *a, **k: SimpleNamespace(stdout=commit + "\n"))
+    monkeypatch.setattr(pi, "prepare_review_isolation_authorization",
+                        lambda *a, **k: SimpleNamespace(staged_tree_sha256="c" * 64))
+    monkeypatch.setattr(pi, "activate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "close_review_isolation_authorization", lambda *a, **k: None)
+
+    def stage(source, *, parent):
+        staged = Path(parent) / "staged"
+        staged.mkdir()
+        return staged
+
+    monkeypatch.setattr(pi._review_stage, "stage_review_tree", stage)
+    monkeypatch.setattr(pi._review_stage, "staged_source_commit", lambda tree: commit)
+    monkeypatch.setattr(pi._review_stage, "remove_review_stage", lambda base: None)
+    monkeypatch.setattr(pi._seat_uid, "subordinate_range", lambda path: (1, 2))
+    monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda u, g: 1)
+    monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lambda n: contextmanager(lambda: (yield 2))())
+    monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
+
+    @contextmanager
+    def failing_proxy(**_kwargs):
+        try:
+            yield SimpleNamespace(socket="sock", allowlist_sha256="6" * 64)
+        finally:
+            if teardown_fault == "proxy_shutdown":
+                raise subprocess.TimeoutExpired(cmd=["proxy"], timeout=1.0)
+
+    monkeypatch.setattr(pi._seat_egress_proxy, "start_private_gemini_proxy", failing_proxy)
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
+                        lambda **k: contextmanager(lambda: (yield ("nsenter", "-t", "71")))())
+    seat_obj = SimpleNamespace(
+        review_dir=tmp_path, seat_dir=tmp_path,
+        jail=SimpleNamespace(dependency=None), probe_jail=SimpleNamespace(dependency=None),
+        notices=[],
+    )
+    monkeypatch.setattr(pi, "_prepare_jailed_gemini", lambda *a, **k: seat_obj)
+    if teardown_fault == "seat_cleanup":
+        monkeypatch.setattr(
+            seat_jail, "close_jail_fds",
+            lambda _j: (_ for _ in ()).throw(RuntimeError("stage_refused")),
+        )
+    else:
+        monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat, *, primary=None: None)
+    monkeypatch.setattr(seat_jail, "host_identity", lambda: None)
+
+    spec = pi.WindowLaunchSpec(
+        kind="measured",
+        qualification_input=SimpleNamespace(
+            repo=repo, commit=commit, layout=SimpleNamespace(rows=()),
+        ),
+        model="fixture",
+        timeout_s=2.0,
+    )
+    with pytest.raises(seat_jail.SeatSandboxRefused) as exc:
+        with pi._open_window_launch(spec):
+            pass
+    assert exc.value.code == "seat_sandbox_refused:jail_unqualified"
+    assert any(expected_note in note for note in getattr(exc.value, "__notes__", ()))
 
 
 def test_seats_firstseat_exec_record_window_board_frame_is_opt_in():
