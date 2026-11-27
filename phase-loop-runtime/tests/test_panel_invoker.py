@@ -60,18 +60,35 @@ def _dir_in_host_dirs(directory: str, host_dirs: frozenset[str]) -> bool:
     )
 
 
+def _split_unnormalized_parts(raw_str: str) -> tuple[str, list[str]]:
+    """Split ``raw_str`` into ``(anchor, parts)`` without collapsing ``..`` before symlink resolution."""
+    if os.path.isabs(raw_str):
+        anchor = Path(raw_str).anchor or os.sep
+        tail = raw_str[len(anchor):]
+        return anchor, [part for part in tail.split(os.sep) if part]
+    cwd = os.getcwd()
+    anchor = Path(cwd).anchor or os.sep
+    cwd_parts = [part for part in cwd[len(anchor):].split(os.sep) if part]
+    rel_parts = [part for part in raw_str.split(os.sep) if part]
+    return anchor, cwd_parts + rel_parts
+
+
 def _walk_path_hops(
     candidate: Path | str,
     *,
     is_dir: bool = False,
     max_hops: int = 40,
 ) -> tuple[set[str], set[str]]:
-    """Resolve ``candidate`` component-by-component, returning touched dirs and leaf basenames."""
-    raw = os.path.abspath(os.fsdecode(candidate))
-    anchor = Path(raw).anchor or os.sep
-    remaining = list(Path(raw).parts[1:])
+    """Resolve ``candidate`` component-by-component, preserving symlinks before ``..``.
+
+    ``touched_dirs`` records only directories where an entry was actually looked up or
+    traversed via a symlink hop (the final search directory / leaf parent directory, plus
+    the containing directory of each symlink encountered) — never ordinary non-symlink
+    ancestor directories above an isolated subdirectory.
+    """
+    anchor, remaining = _split_unnormalized_parts(os.fsdecode(candidate))
     resolved = anchor
-    touched_dirs: set[str] = {resolved}
+    touched_dirs: set[str] = set()
     touched_leaf_names: set[str] = set()
     hops = 0
 
@@ -81,17 +98,16 @@ def _walk_path_hops(
             continue
         if part == "..":
             resolved = os.path.dirname(resolved)
-            touched_dirs.add(resolved)
             continue
         next_path = os.path.join(resolved, part)
         is_leaf = not remaining
-        touched_dirs.add(resolved)
-        if not is_leaf or is_dir:
-            touched_dirs.add(next_path)
         if is_leaf and not is_dir:
+            touched_dirs.add(resolved)
             touched_leaf_names.add(part.lower())
         if os.path.islink(next_path) and hops < max_hops:
             hops += 1
+            # The symlink entry itself resides in ``resolved``.
+            touched_dirs.add(resolved)
             try:
                 target = os.readlink(next_path)
             except OSError:
@@ -101,11 +117,13 @@ def _walk_path_hops(
             if is_leaf and not is_dir and target_path.name:
                 touched_leaf_names.add(target_path.name.lower())
             if os.path.isabs(target):
-                resolved = target_path.anchor or os.sep
-                touched_dirs.add(resolved)
-                remaining = list(target_path.parts[1:]) + remaining
+                target_anchor = target_path.anchor or os.sep
+                resolved = target_anchor
+                target_parts = [p for p in target[len(target_anchor):].split(os.sep) if p]
+                remaining = target_parts + remaining
             else:
-                remaining = list(target_path.parts) + remaining
+                target_parts = [p for p in target.split(os.sep) if p]
+                remaining = target_parts + remaining
         else:
             resolved = next_path
 
@@ -475,6 +493,25 @@ def test_real_path_provider_resolution_guard_catches_hops_wrappers_cwd_and_late_
     monkeypatch.setitem(seat_subject._PROVIDER_EXECUTABLES, "custom", "custom-cli")
     with pytest.raises(pytest.fail.Exception, match="real PATH"):
         shutil.which("custom-cli", path=str(fake_host_bin))
+
+    # 9. Symlink followed by '..' resolves symlink before '..' (both live and missing target).
+    nested_dir = fake_host_bin / "nested"
+    nested_dir.mkdir()
+    nested_agy = nested_dir / "agy"
+    nested_agy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    nested_agy.chmod(0o700)
+    alias_to_nested = tmp_path / "alias-to-nested"
+    alias_to_nested.symlink_to(nested_dir)
+    # Ordinary subdirectory under a host PATH ancestor is allowed when searched directly.
+    assert shutil.which("agy", path=str(nested_dir)) == str(nested_agy)
+    # Traversing alias/.. lands in fake_host_bin and must be rejected (live and missing).
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=f"{alias_to_nested}{os.sep}..")
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which(f"{alias_to_nested}{os.sep}..{os.sep}agy")
+    host_hop.unlink()
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which(f"{alias_to_nested}{os.sep}..{os.sep}agy")
 
 
 def _install_firstseat_supplier_double(monkeypatch):
