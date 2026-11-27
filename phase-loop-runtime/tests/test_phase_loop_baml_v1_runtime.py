@@ -1815,20 +1815,52 @@ def scenario_launch_path_with_live_worker_and_stalled_spawn(tmp: str) -> None:
 
     lease = os.open(tmp_path / "lease.lock", os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    script = 'for f in /proc/$$/fd/* /proc/$PPID/fd/*; do readlink "$f"; done > "$1"'
+    lease_target = os.readlink(f"/proc/self/fd/{lease}")
+    # Inspect the executor's (self) and supervisor's (ppid) open descriptors
+    # separately. A transient fd (e.g. the supervisor closing its go-pipe right
+    # after releasing the child, or listdir's own opendir fd) can vanish between
+    # listdir and readlink; ignore only ENOENT on individual descriptor lookups
+    # so permission/directory/write failures still fail loudly (agent-harness#2032).
+    probe = (
+        "import json, os, sys\n"
+        "def fds(pid):\n"
+        "    out = []\n"
+        "    for name in os.listdir(f'/proc/{pid}/fd'):\n"
+        "        try:\n"
+        "            out.append(os.readlink(f'/proc/{pid}/fd/{name}'))\n"
+        "        except FileNotFoundError:\n"
+        "            continue\n"
+        "    return out\n"
+        "with open(sys.argv[1], 'w', encoding='utf-8') as fh:\n"
+        "    json.dump({'self': fds(os.getpid()), 'ppid': fds(os.getppid())}, fh)\n"
+    )
 
     def run_executor(name):
         out = tmp_path / name
+        log_path = tmp_path / f"{name}.log"
         started = time.monotonic()
         result = launch(
-            ["/bin/sh", "-c", script, "sh", str(out)],
+            [sys.executable, "-I", "-S", "-c", probe, str(out)],
             lease_authority=_Lease(lease),
-            log_path=tmp_path / f"{name}.log",
+            log_path=log_path,
             heartbeat_interval_seconds=30,
         )
-        assert result.returncode == 0
-        assert time.monotonic() - started < 15
-        return set(out.read_text().split())
+        elapsed = time.monotonic() - started
+        if result.returncode != 0:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else "<missing>"
+            raise AssertionError(
+                f"executor {name!r} failed with rc={result.returncode} after {elapsed:.2f}s\n"
+                f"output={result.output!r}\nlog={log_text!r}"
+            )
+        assert elapsed < 15, f"executor {name!r} took {elapsed:.2f}s (limit 15s)"
+        captured = json.loads(out.read_text(encoding="utf-8"))
+        self_fds = set(captured["self"])
+        ppid_fds = set(captured["ppid"])
+        assert lease_target in ppid_fds, f"expected lease fd {lease_target!r} in supervisor fds: {sorted(ppid_fds)!r}"
+        assert os.path.realpath(out) in self_fds, (
+            f"expected output fd {os.path.realpath(out)!r} in executor fds: {sorted(self_fds)!r}"
+        )
+        return self_fds | ppid_fds
 
     # (a) a live, serving worker
     spy = _scenario_setup()
@@ -1847,10 +1879,16 @@ def scenario_launch_path_with_live_worker_and_stalled_spawn(tmp: str) -> None:
     deadline = _deadline()
     spy = _scenario_setup(retries=0, deadline_s=deadline)
     returned: list = []
+    spawn_entered = threading.Event()
+    release_spawn = threading.Event()
+    gate_timed_out = threading.Event()
 
     def slow(argv, **kwargs):
         if not returned:
-            time.sleep(deadline + 2.0)
+            spawn_entered.set()
+            if not release_spawn.wait(deadline + 30.0):
+                gate_timed_out.set()
+                raise RuntimeError("stalled-spawn release gate expired before test released it")
         proc = _REAL_SPAWN(argv, **kwargs)
         returned.append(proc.pid)
         return proc
@@ -1859,10 +1897,19 @@ def scenario_launch_path_with_live_worker_and_stalled_spawn(tmp: str) -> None:
     box = {}
     stalled = threading.Thread(target=lambda: box.setdefault("exc", _raises(_parse)))
     stalled.start()
-    time.sleep(0.2)
-    run_executor("stalled")
-    stalled.join(deadline + 10)
-    assert type(box["exc"]) is BamlWorkerError and box["exc"].kind == "spawn"
+    try:
+        assert spawn_entered.wait(10), f"stalled spawn did not enter _spawn_popen within 10s (exc={box.get('exc')!r})"
+        run_executor("stalled")
+        stalled.join(deadline + 10)
+        assert not stalled.is_alive(), "stalled spawn thread did not exit within deadline + 10s"
+        assert not gate_timed_out.is_set(), "stalled-spawn release gate expired before executor and timeout completed"
+        assert not returned, "stalled spawn called _REAL_SPAWN before test released the gate"
+        assert type(box["exc"]) is BamlWorkerError and box["exc"].kind == "spawn"
+    finally:
+        release_spawn.set()
+        if stalled.is_alive():
+            stalled.join(5)
+    assert not gate_timed_out.is_set(), "stalled-spawn release gate expired before release"
     assert _wait(lambda: returned and _gone(returned[0]), deadline + 5)
     assert _parse() and _pid() not in (None, returned[0])
     spy.assert_each_once()
@@ -1875,7 +1922,7 @@ def test_executor_launch_path_after_1140_with_a_live_worker_and_a_stalled_spawn(
         "t.scenario_launch_path_with_live_worker_and_stalled_spawn(%r)" % (str(TESTS), str(SRC), MODULE, str(tmp_path))
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=180, cwd=str(TESTS.parent))
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, f"rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}"
 
 
 @pytest.mark.parametrize("name", ["pool_thread_exit", "cold_start_concurrency"])
