@@ -22,11 +22,17 @@ _UNSET = object()
 
 def _git(repo: Path, *args: str) -> None:
     env = {
-        **os.environ,
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
     }
+    env.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
     subprocess.run(
         [
             "git",
@@ -302,6 +308,92 @@ def test_update_lifecycle_replan_refuses_detailed_entries(tmp_path: Path) -> Non
     assert not validation.valid
     assert not validation.entries[-1].valid
     assert any("only valid for phase entries" in err for err in validation.entries[-1].errors)
+
+    # A hand-written replan event on a detailed row at a canonical phase-plan path
+    # is rejected by both validate_manifest() and plan_manifest.check().
+    canonical_doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+    canonical_doc["plans"][0] = {
+        "acceptance_criteria_count": 1,
+        "created_at": "2026-11-09T00:00:00Z",
+        "file": "plans/phase-plan-v14-REPLAN.md",
+        "handoff_ref": None,
+        "if_gates_produced": [],
+        "lanes": [],
+        "lifecycle": [
+            {
+                "at": "2026-11-09T15:00:00Z",
+                "by": "claude-plan-detailed",
+                "metadata": {
+                    "superseded_plan_sha256": SHA_A,
+                    "frozen_inputs": {},
+                    "reason": "detailed row at canonical phase-plan path",
+                },
+                "transition": "replan",
+            }
+        ],
+        "owner_skill": "claude-plan-detailed",
+        "phase_alias": None,
+        "reflection_ref": None,
+        "roadmap_ref": None,
+        "slug": "v14-REPLAN",
+        "status": "committed",
+        "task_summary": "Detailed row at canonical path",
+        "type": "detailed",
+        "updated_at": "2026-11-09T00:00:00Z",
+    }
+    manifest_path.write_text(json.dumps(canonical_doc, indent=2) + "\n", encoding="utf-8")
+    canonical_validation = pm.validate_manifest(manifest_path)
+    assert not canonical_validation.valid
+    assert not canonical_validation.entries[0].valid
+    canonical_check = pm.check(repo)
+    assert canonical_check.exit_code == 1
+    assert any(
+        finding.path == "plans/phase-plan-v14-REPLAN.md"
+        and finding.kind == "replan-lifecycle"
+        for finding in canonical_check.malformed
+    )
+
+
+def test_git_fixture_ignores_inherited_git_dir_and_preserves_decoy_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    _git(decoy, "init", "-b", "main")
+    _git(decoy, "config", "user.name", "Decoy User")
+    _git(decoy, "config", "user.email", "decoy@example.com")
+    (decoy / "sentinel.txt").write_text("decoy\n", encoding="utf-8")
+    _git(decoy, "add", "sentinel.txt")
+    _git(decoy, "commit", "-m", "decoy init")
+
+    def _decoy_state() -> tuple[str, str, bytes]:
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        refs = subprocess.run(
+            ["git", "-C", str(decoy), "show-ref"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=clean_env,
+        ).stdout
+        status = subprocess.run(
+            ["git", "-C", str(decoy), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=clean_env,
+        ).stdout
+        index_bytes = (decoy / ".git" / "index").read_bytes()
+        return refs, status, index_bytes
+
+    before = _decoy_state()
+    monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(decoy / ".git" / "index"))
+    monkeypatch.setenv("GIT_COMMON_DIR", str(decoy / ".git"))
+
+    repo = _init_repo_with_manifest(tmp_path / "isolated", status="committed")
+    assert (repo / ".git").is_dir()
+    assert _decoy_state() == before
 
 
 @pytest.mark.parametrize("disallowed_status", ["executing", "completed", "failed", "orphaned"])

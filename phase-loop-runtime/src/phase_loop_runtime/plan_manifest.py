@@ -3207,7 +3207,8 @@ def _manifest_entry_scope_from_snapshot(
                         continue
                     if event.get("transition") == REPLAN_TRANSITION:
                         if (
-                            not isinstance(event.get("by"), str)
+                            entry.get("type") != "phase"
+                            or not isinstance(event.get("by"), str)
                             or not event.get("by").strip()
                             or not isinstance(event.get("at"), str)
                             or not event.get("at").strip()
