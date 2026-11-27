@@ -29,11 +29,16 @@ SCHEMA_VERSION = 1
 MANIFEST_PATH = PurePosixPath("plans/manifest.json")
 PLAN_TYPES = {"phase", "detailed"}
 PLAN_STATUSES = {"imported", "committed", "executing", "completed", "failed", "orphaned"}
+REPLAN_TRANSITION = "replan"
 TRANSITIONS = {
-    "imported": {"executing", "orphaned"},
-    "committed": {"executing", "orphaned"},
+    "imported": {"executing", "orphaned", REPLAN_TRANSITION},
+    "committed": {"executing", "orphaned", REPLAN_TRANSITION},
     "executing": {"completed", "failed", "orphaned"},
 }
+_TRANSITION_RESULT_STATUS = {
+    REPLAN_TRANSITION: "committed",
+}
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _PINNED_REPO_ROOT_FD: ContextVar[int | None] = ContextVar(
     "pinned_repo_root_fd",
@@ -336,6 +341,69 @@ def append_entry(repo: Path, entry: DotfilesPlanEntry) -> None:
     _write_manifest_document(repo, document)
 
 
+def _is_valid_repo_relative_posix_path(value: Any) -> bool:
+    if not isinstance(value, str) or not value or value != value.strip():
+        return False
+    if value.startswith("/") or "\\" in value:
+        return False
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        return False
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    if ":" in parts[0]:
+        return False
+    return True
+
+
+def _frozen_inputs_errors(frozen_inputs: Any, label: str) -> list[str]:
+    if not isinstance(frozen_inputs, dict):
+        return [f"{label} must be an object mapping path to sha256 seal"]
+    errors: list[str] = []
+    for path, seal in frozen_inputs.items():
+        if not _is_valid_repo_relative_posix_path(path):
+            errors.append(
+                f"{label} key {path!r} must be a repo-relative POSIX path"
+            )
+            continue
+        if (
+            not isinstance(seal, dict)
+            or set(seal) != {"sha256"}
+            or not isinstance(seal.get("sha256"), str)
+            or _SHA256_RE.fullmatch(seal["sha256"]) is None
+        ):
+            errors.append(
+                f"{label}[{path!r}] must be {{'sha256': '<64-hex>'}}"
+            )
+    return errors
+
+
+def _replan_metadata_errors(metadata: dict[str, Any], label: str) -> list[str]:
+    errors: list[str] = []
+    superseded = metadata.get("superseded_plan_sha256")
+    if not isinstance(superseded, str) or _SHA256_RE.fullmatch(superseded) is None:
+        errors.append(
+            f"{label}.superseded_plan_sha256 must be a 64-character lowercase hex sha256"
+        )
+    reason = metadata.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        errors.append(f"{label}.reason must be a non-empty string")
+    errors.extend(_frozen_inputs_errors(metadata.get("frozen_inputs"), f"{label}.frozen_inputs"))
+    return errors
+
+
+def _normalize_replan_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    errors = _replan_metadata_errors(metadata, "replan metadata")
+    if errors:
+        raise ValueError("; ".join(errors))
+    normalized = dict(metadata)
+    normalized["frozen_inputs"] = {
+        path: {"sha256": seal["sha256"]}
+        for path, seal in metadata["frozen_inputs"].items()
+    }
+    return normalized
+
+
 def update_lifecycle(repo: Path, slug: str, transition: str, by: str, metadata: dict[str, Any]) -> None:
     if not isinstance(metadata, dict):
         raise ValueError("metadata must be an object")
@@ -350,22 +418,54 @@ def update_lifecycle(repo: Path, slug: str, transition: str, by: str, metadata: 
         if transition not in allowed:
             raise ValueError(f"invalid lifecycle transition for {slug}: {entry.status} -> {transition}")
 
+        event_metadata = metadata
+        merged_frozen_inputs: dict[str, Any] | None = None
+        if transition == REPLAN_TRANSITION:
+            if entry.type != "phase":
+                raise ValueError(f"replan transition is only supported for phase entries: {slug}")
+            if not isinstance(by, str) or not by.strip():
+                raise ValueError("by must be a non-empty string")
+            event_metadata = _normalize_replan_metadata(metadata)
+            new_frozen = event_metadata["frozen_inputs"]
+            has_existing_frozen = "frozen_inputs" in rows[index]
+            if has_existing_frozen:
+                existing_frozen = rows[index]["frozen_inputs"]
+                existing_errors = _frozen_inputs_errors(
+                    existing_frozen, "manifest entry frozen_inputs"
+                )
+                if existing_errors:
+                    raise ValueError("; ".join(existing_errors))
+            else:
+                existing_frozen = None
+            if new_frozen:
+                merged_frozen_inputs = (
+                    dict(existing_frozen) if existing_frozen is not None else {}
+                )
+                for path, seal in new_frozen.items():
+                    if path in merged_frozen_inputs and merged_frozen_inputs[path] != seal:
+                        raise ValueError(
+                            f"frozen_inputs already seals {path!r} with a different digest"
+                        )
+                for path, seal in new_frozen.items():
+                    if path not in merged_frozen_inputs:
+                        merged_frozen_inputs[path] = dict(seal)
+
         if entry.type == "phase" and transition == "completed":
-            if "issue_inventory" not in metadata or not isinstance(metadata["issue_inventory"], list):
+            if "issue_inventory" not in event_metadata or not isinstance(event_metadata["issue_inventory"], list):
                 raise ValueError("issue_inventory is required for phase completed lifecycle")
-            if "issue_dispositions" not in metadata or not isinstance(metadata["issue_dispositions"], list):
+            if "issue_dispositions" not in event_metadata or not isinstance(event_metadata["issue_dispositions"], list):
                 raise ValueError("issue_dispositions is required for phase completed lifecycle")
 
-            inventory_ids = [_require_qualified_issue_id(item) for item in metadata["issue_inventory"]]
+            inventory_ids = [_require_qualified_issue_id(item) for item in event_metadata["issue_inventory"]]
             if len(inventory_ids) != len(set(inventory_ids)):
                 raise ValueError("duplicate issue_id in issue_inventory")
 
-            expected_phase = entry.phase_alias or metadata.get("phase_alias")
+            expected_phase = entry.phase_alias or event_metadata.get("phase_alias")
             disposition_ids: list[str] = []
             normalized_dispositions: list[dict[str, Any]] = []
             allowed_fields = {"issue_id", "phase", "disposition", "owner", "successor_plan"}
 
-            for item in metadata["issue_dispositions"]:
+            for item in event_metadata["issue_dispositions"]:
                 if isinstance(item, IssueDisposition):
                     disposition = item
                     serialized = {
@@ -404,15 +504,17 @@ def update_lifecycle(repo: Path, slug: str, transition: str, by: str, metadata: 
                     f"issue_inventory {set(inventory_ids)} and issue_dispositions {set(disposition_ids)} do not match"
                 )
 
-            metadata = dict(metadata)
-            metadata["issue_dispositions"] = normalized_dispositions
+            event_metadata = dict(event_metadata)
+            event_metadata["issue_dispositions"] = normalized_dispositions
 
-        event = DotfilesPlanLifecycleEvent(transition=transition, by=by, at=now, metadata=metadata)
+        event = DotfilesPlanLifecycleEvent(transition=transition, by=by, at=now, metadata=event_metadata)
         # Change only this row, and only the fields a transition owns; the row's
         # other keys keep their order and every other row keeps its bytes (ah#1174).
         row = rows[index]
-        row["status"] = transition
+        row["status"] = _TRANSITION_RESULT_STATUS.get(transition, transition)
         row["updated_at"] = now
+        if merged_frozen_inputs is not None:
+            row["frozen_inputs"] = merged_frozen_inputs
         row["lifecycle"] = [*(row.get("lifecycle") or []), _sorted_json(_event_to_json(event))]
         updated = True
     if not updated:
@@ -467,7 +569,12 @@ def _validate_manifest_data(data: Any, repo: Path) -> ValidationResult:
             _validate_phase_entry(label, raw_entry, entry_errors)
         elif raw_entry.get("type") == "detailed":
             _validate_detailed_entry(label, raw_entry, entry_errors)
-        _validate_lifecycle(label, raw_entry.get("lifecycle"), entry_errors)
+        _validate_lifecycle(
+            label,
+            raw_entry.get("lifecycle"),
+            entry_errors,
+            entry_type=raw_entry.get("type"),
+        )
         entry_results.append(
             EntryValidationResult(
                 index=index,
@@ -797,7 +904,13 @@ def _validate_detailed_entry(label: str, entry: dict[str, Any], errors: list[str
         errors.append(f"{label}.lanes must be empty for detailed entries")
 
 
-def _validate_lifecycle(label: str, lifecycle: Any, errors: list[str]) -> None:
+def _validate_lifecycle(
+    label: str,
+    lifecycle: Any,
+    errors: list[str],
+    *,
+    entry_type: Any = None,
+) -> None:
     if not isinstance(lifecycle, list):
         errors.append(f"{label}.lifecycle must be an array")
         return
@@ -811,6 +924,14 @@ def _validate_lifecycle(label: str, lifecycle: Any, errors: list[str]) -> None:
                 errors.append(f"{event_label}.{field_name} is required")
         if not isinstance(event.get("metadata"), dict):
             errors.append(f"{event_label}.metadata must be an object")
+        elif event.get("transition") == REPLAN_TRANSITION:
+            if entry_type is not None and entry_type != "phase":
+                errors.append(f"{event_label}.transition replan is only valid for phase entries")
+            for field_name in ("by", "at"):
+                field_value = event.get(field_name)
+                if isinstance(field_value, str) and field_value and not field_value.strip():
+                    errors.append(f"{event_label}.{field_name} must be a non-empty string")
+            errors.extend(_replan_metadata_errors(event["metadata"], f"{event_label}.metadata"))
 
 
 def _utc_now() -> str:
@@ -1549,7 +1670,7 @@ def phase_status_disagreements(
 MANIFEST_MALFORMED_KINDS = frozenset(
     {
         "noncanonical", "path-escape", "conflicted-index", "symlink", "non-regular",
-        "undecodable-name", "plan-contract", "plan-digest",
+        "undecodable-name", "plan-contract", "plan-digest", "replan-lifecycle",
     }
 )
 MANIFEST_ORIGIN_FLAGS = frozenset({"head", "index", "filesystem", "manifest"})
@@ -1663,7 +1784,6 @@ _PLAN_AUTHORITY_SCHEMA = "plan_current_authority.v1"
 _PLAN_AUTHORITY_KEYS = frozenset(
     {"schema", "source", "plan_sha256", "roadmap_sha256"}
 )
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ManifestSourceError(RuntimeError):
@@ -3075,6 +3195,7 @@ def _manifest_entry_scope_from_snapshot(
             historical_binding_malformed = (
                 "lifecycle" in entry and not isinstance(lifecycle, list)
             )
+            replan_malformed = entry.get("status") == REPLAN_TRANSITION
             if isinstance(lifecycle, list):
                 for event in lifecycle:
                     if not isinstance(event, dict):
@@ -3084,6 +3205,16 @@ def _manifest_entry_scope_from_snapshot(
                     if not isinstance(metadata, dict):
                         historical_binding_malformed = True
                         continue
+                    if event.get("transition") == REPLAN_TRANSITION:
+                        if (
+                            entry.get("type") != "phase"
+                            or not isinstance(event.get("by"), str)
+                            or not event.get("by").strip()
+                            or not isinstance(event.get("at"), str)
+                            or not event.get("at").strip()
+                            or _replan_metadata_errors(metadata, "replan")
+                        ):
+                            replan_malformed = True
                     binding_in_event = False
                     for key, target in (
                         ("legible_plan_contract", contracts),
@@ -3119,6 +3250,10 @@ def _manifest_entry_scope_from_snapshot(
             if historical_binding_malformed:
                 malformed.append(
                     MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
+                )
+            if replan_malformed:
+                malformed.append(
+                    MalformedPlanFinding(rel, "replan-lifecycle", frozenset({"manifest"}))
                 )
             contract = contracts[-1] if contracts else None
             if rel == _LEGIBLE_PLAN_REL:
