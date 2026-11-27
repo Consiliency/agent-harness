@@ -8,6 +8,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Classify structured error fields inside failed `agy` NDJSON `event="result"` records
+  (when `status != "SUCCESS"` and `response` is empty/absent) into `provider_error_class`
+  on both nonzero native exits and exit-0 `final_result_invalid` failures without
+  scanning `response`/`step_update` prose or retaining raw text (agent-harness#2215).
 - Raise the `test.yml` `clean-room (standalone-from-wheel, Gate A)` job timeout from
   150 to 210 minutes (matching `publish-pypi.yml` from agent-harness#2191) after slow
   hosted runners hit the 150-minute cap at 88% with no test failures (agent-harness#766).

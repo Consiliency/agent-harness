@@ -240,6 +240,42 @@ def test_qualification_provider_error_ignores_raw_text_and_unverified_codes(prov
     assert rc == 1 and body == ""
     assert metadata["provider_stream_outcome"] == "final_result_invalid"
     assert panel._agy_provider_error_class(native_rc=0, stream=metadata) == "unknown"
+    assert panel._agy_provider_error_class(native_rc=0, stream=metadata, native_stdout=raw) == "unknown"
+
+
+@pytest.mark.parametrize(("result_fields", "expected"), [
+    ({"status": "ERROR", "error": {"code": 429, "message": "RESOURCE_EXHAUSTED"}}, "quota_exhausted"),
+    ({"status": "FAILED", "error_code": 401, "error_message": "UNAUTHENTICATED"}, "auth_missing"),
+    ({"status": "ERROR", "error": "OAuth refresh failed: invalid_grant"}, "auth_expired"),
+    ({"status": "ERROR", "status_code": 403, "detail": "PERMISSION_DENIED"}, "permission_denied"),
+    ({"status": "ERROR", "reason": "DEADLINE_EXCEEDED"}, "timeout"),
+    ({"status": "ERROR", "details": [{"message": "connect ECONNREFUSED"}]}, "network"),
+    ({"status": "ERROR", "message": "MODEL_NOT_FOUND"}, "model_error"),
+    ({"status": "ERROR", "error_code": "429"}, "quota_exhausted"),
+    ({"status": "ERROR", "error": "opaque internal state"}, "unknown"),
+    ({"status": "SUCCESS", "error": {"code": 429}}, "unknown"),
+    ({"status": "ERROR", "response": "HTTP 429 quota exceeded", "error": {"code": 429}}, "unknown"),
+])
+def test_agy_result_error_fields_classify_failed_ndjson_results(result_fields, expected):
+    """Failed agy NDJSON result events carry structured error fields without non-empty prose
+    (agent-harness#2215). Classify those fixed error markers on both non-zero native exits
+    and zero-exit final_result_invalid outcomes while never scanning prose or step events."""
+    protocol = panel._broker_gemini_stream_protocol("synthetic input")
+    result_row = {"event": "result", "conversation_id": "fixture-session", "result": result_fields}
+    step_row = {"event": "step_update", "step_update": {"text": "HTTP 401 invalid_grant"}}
+    raw = "\n".join((json.dumps(step_row), json.dumps(result_row)))
+    assert panel._agy_provider_error_class(native_rc=1, native_stdout=raw) == expected
+    if result_fields.get("status") != "SUCCESS":
+        rc, body, _, metadata = panel._broker_gemini_stream_result(raw, protocol)
+        assert rc == 1 and body == ""
+        assert metadata["provider_stream_outcome"] == "final_result_invalid"
+        assert panel._agy_provider_error_class(
+            native_rc=0, stream=metadata, native_stdout=raw,
+        ) == expected
+    # Stderr retains precedence over structured result error fields.
+    assert panel._agy_provider_error_class(
+        native_rc=1, native_stdout=raw, native_stderr="HTTP 401",
+    ) == "auth_missing"
 
 
 def _fixture_repo(tmp_path):

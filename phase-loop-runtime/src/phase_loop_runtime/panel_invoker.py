@@ -17398,6 +17398,14 @@ def _exec_jailed_gemini_leg(
         broker_evidence.update(metadata)
         _retain_agy_stream_progress(broker_evidence, proc.stdout, protocol, metadata, tooled=True)
     if rc != 0:
+        if broker_evidence is not None:
+            error_class = (
+                ProviderErrorClass.AUTH_EXPIRED if expired else _agy_provider_error_class(
+                    native_rc=0, stream=metadata, response_present=bool(text.strip()),
+                    native_stdout=proc.stdout, native_stderr=proc.stderr,
+                )
+            )
+            broker_evidence["provider_error_class"] = error_class.value
         if detail == _JAILED_GEMINI_UNKNOWN_EVENT:
             seat.notices.append(_JAILED_GEMINI_UNKNOWN_EVENT)
             # What the refused line was, as closed fields, for the leg's private record.
@@ -17406,6 +17414,14 @@ def _exec_jailed_gemini_leg(
                                failure_detail_sink)
     status = _classify_leg(0, text, "", "review")
     if status != "OK":
+        if broker_evidence is not None:
+            error_class = (
+                ProviderErrorClass.AUTH_EXPIRED if expired else _agy_provider_error_class(
+                    native_rc=0, stream=metadata, response_present=bool(text.strip()),
+                    native_stdout=proc.stdout, native_stderr=proc.stderr,
+                )
+            )
+            broker_evidence["provider_error_class"] = error_class.value
         return _jailed_failure("Gemini broker response lacks a terminal verdict"
                                if text.strip() else "Gemini broker completed without review text",
                                failure_detail_sink)
@@ -18533,6 +18549,70 @@ def _agy_native_diagnostic_class(output: str, *, stream_json: bool = False) -> P
                  if pattern.search(tail)), None)
 
 
+_AGY_RESULT_ERROR_KEYS = frozenset({
+    "error", "error_code", "error_message", "message", "reason",
+    "code", "status_code", "status", "detail", "details", "type",
+})
+
+
+def _agy_extract_result_error_fragments(obj: Mapping[str, object], *, depth: int = 0) -> list[str]:
+    fragments: list[str] = []
+    if depth > 2:
+        return fragments
+    for key, value in obj.items():
+        if key not in _AGY_RESULT_ERROR_KEYS:
+            continue
+        if isinstance(value, str) and value:
+            label = "code" if key == "error_code" and value.isdigit() else key
+            fragments.append(f"{label}: {value}")
+        elif type(value) is int:
+            label = "code" if key == "error_code" else key
+            fragments.append(f"{label}: {value}")
+        elif isinstance(value, Mapping):
+            fragments.extend(_agy_extract_result_error_fragments(value, depth=depth + 1))
+        elif isinstance(value, list) and depth < 2:
+            for item in value[:8]:
+                if isinstance(item, str) and item:
+                    fragments.append(f"{key}: {item}")
+                elif isinstance(item, Mapping):
+                    fragments.extend(_agy_extract_result_error_fragments(item, depth=depth + 1))
+    return fragments
+
+
+def _agy_result_error_class(output: str) -> ProviderErrorClass | None:
+    """Classify structured error fields inside failed agy NDJSON ``event='result'`` records
+    (agent-harness#2215). Ignores ``step_update``, ``tool_info``, and any ``response`` prose."""
+    limit = _LEG_LOG_MAX_BYTES
+    tail = output[-(limit + 1):].encode("utf-8", errors="replace")[-(limit + 1):]
+    if len(tail) > limit:
+        preceding, tail = tail[:1], tail[1:]
+        if preceding != b"\n":
+            tail = tail.partition(b"\n")[2]
+    fragments: list[str] = []
+    for raw_line in tail.split(b"\n"):
+        stripped = raw_line.lstrip()
+        if not stripped.startswith(b"{"):
+            continue
+        try:
+            event = json.loads(stripped.decode("utf-8", errors="replace"))
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict) or event.get("event") != "result":
+            continue
+        result = event.get("result")
+        if not isinstance(result, dict) or result.get("status") == "SUCCESS":
+            continue
+        response = result.get("response")
+        if isinstance(response, str) and response.strip():
+            continue
+        fragments.extend(_agy_extract_result_error_fragments(result))
+    if not fragments:
+        return None
+    blob = "\n".join(fragments).encode("utf-8", errors="replace")[:limit]
+    return next((error_class for error_class, pattern in _AGY_NATIVE_EXIT_PATTERNS
+                 if pattern.search(blob)), None)
+
+
 def _agy_provider_error_class(
     *, native_rc: int | None = None, stream: Mapping[str, object] | None = None,
     response_present: bool | None = None, timed_out: bool = False,
@@ -18561,6 +18641,7 @@ def _agy_provider_error_class(
     if type(native_rc) is int and native_rc > 0:
         return (
             _agy_native_diagnostic_class(native_stderr)
+            or _agy_result_error_class(native_stdout)
             or _agy_native_diagnostic_class(native_stdout, stream_json=True)
             or ProviderErrorClass.UNKNOWN
         )
@@ -18570,6 +18651,12 @@ def _agy_provider_error_class(
             stream.get("provider_stream_outcome") == "accepted" and response_present is False
         ):
             return ProviderErrorClass.EMPTY_RESPONSE
+        if stream.get("provider_stream_outcome") == "final_result_invalid":
+            return (
+                _agy_native_diagnostic_class(native_stderr)
+                or _agy_result_error_class(native_stdout)
+                or ProviderErrorClass.UNKNOWN
+            )
     return ProviderErrorClass.UNKNOWN
 
 
