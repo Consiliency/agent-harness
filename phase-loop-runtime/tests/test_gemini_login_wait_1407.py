@@ -784,7 +784,8 @@ def test_other_providers_are_not_looked_at(host, monkeypatch):
 
 def test_the_notices_say_what_happens_when_it_ends_and_the_command():
     what, why, fix = seat_jail.NOTICES["gemini_credential_near_expiry"]
-    assert what == "leg refused" and "under 10 minutes" in why and "`agy models`" in why
+    assert what == "leg refused" and "expired or has under 10 minutes left" in why and "`agy models`" in why
+    assert "has not been renewed" in why and "did not extend" not in why
     # ONE command, the renewal's own.
     command = "`DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`"
     assert fix.startswith("run " + command + ", then re-run") and "sign in" in fix
@@ -807,8 +808,8 @@ def test_the_notices_say_what_happens_when_it_ends_and_the_command():
     firstseat = {"leg_auth_signed_out", "leg_auth_unavailable", "leg_execution_failed",
                  "leg_exec_record_unavailable", "grok_tool_surface_unverified"}
     assert firstseat <= seat_jail.NOTICES.keys()
-    assert len(seat_jail.NOTICES.keys() - firstseat) == 119
-    assert len(seat_jail.NOTICE_CODES - firstseat) == 115
+    assert len(seat_jail.NOTICES.keys() - firstseat) == 120
+    assert len(seat_jail.NOTICE_CODES - firstseat) == 116
 
 
 def test_the_suite_never_sleeps_through_a_real_long_gemini_login_sleep(host):

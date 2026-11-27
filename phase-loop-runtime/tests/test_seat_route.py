@@ -128,21 +128,23 @@ def test_local_route_holds_one_lease_and_keys_the_real_allowlist(ready_gemini):
     )
 
 
+@pytest.mark.parametrize(("dep_code", "expected"), [
+    ("authority_missing", "seat_dependency_authority_missing"),
+    ("authority_invalid", "seat_sandbox_refused:identity"),
+])
 def test_dependency_admission_failure_is_a_typed_identity_refusal(
-    monkeypatch, ready_gemini,
+    monkeypatch, ready_gemini, dep_code, expected,
 ):
     from phase_loop_runtime.executable_dependency import ExecutableDependencyError
 
     monkeypatch.setattr(
         seat_route, "_projection_for_launch",
-        lambda *_a, **_k: (_ for _ in ()).throw(ExecutableDependencyError("authority_missing")),
+        lambda *_a, **_k: (_ for _ in ()).throw(ExecutableDependencyError(dep_code)),
     )
     decision = seat_route.resolve(
         request(), policy=policy(), remote=Remote(), native=Native(), capacity=Capacity(),
     )
-    assert (decision.mode, decision.code) == (
-        "degraded", "seat_sandbox_refused:identity",
-    )
+    assert (decision.mode, decision.code) == ("degraded", expected)
 
 
 @pytest.mark.parametrize("code", [
@@ -1220,9 +1222,12 @@ def test_managed_grok_route_reaches_the_null_projection_key(
 
 
 @pytest.mark.parametrize("managed_grok", ["image-pin-only"], indirect=True)
-@pytest.mark.parametrize("source", ["managed_image", "unexpected"])
+@pytest.mark.parametrize(("source", "expected_code"), [
+    ("managed_image", "seat_dependency_authority_missing"),
+    ("unexpected", "seat_sandbox_refused:identity"),
+])
 def test_grok_route_refuses_unadmitted_source_before_key(
-    managed_grok, ready_managed_grok_route, monkeypatch, source,
+    managed_grok, ready_managed_grok_route, monkeypatch, source, expected_code,
 ):
     from phase_loop_runtime import seat_qualification_key, seat_subject
 
@@ -1243,6 +1248,6 @@ def test_grok_route_refuses_unadmitted_source_before_key(
         capacity=Capacity(),
     )
     assert (decision.mode, decision.code, decision.steps[-1].step) == (
-        "degraded", "seat_sandbox_refused:identity", "L6",
+        "degraded", expected_code, "L6",
     )
     assert calls == []

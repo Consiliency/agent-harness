@@ -377,6 +377,7 @@ _ORDINARY_CODES = frozenset({
     "seat_broker_socket_unavailable", "seat_cli_adapter_missing", "seat_cli_platform_unsupported",
     "seat_cli_qualification_failed", "seat_cli_qualification_store_unsafe",
     "seat_cli_qualification_unavailable", "seat_cli_unqualified",
+    "seat_dependency_authority_missing",
     "seat_filesystem_unconfined", "seat_filtered_egress_unavailable",
     "seat_identity_unverified", "seat_jail_qualification_failed",
     "seat_keyring_unavailable", "seat_launch_owner_required",

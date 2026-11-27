@@ -193,11 +193,12 @@ def test_subject_only_declaration_admits_without_auxiliary_projection_entries(tm
         fixture.close()
 
 
-# The JAILCORE route refuses every projection admission failure with its typed identity
-# code (``test_seat_route.test_dependency_admission_failure_is_a_typed_identity_refusal``);
-# the doctor names the specific authority code so LA1-AUTHORITY-PIN is selected.
+# The JAILCORE route refuses missing authority with its ordinary typed code
+# ``seat_dependency_authority_missing`` (agent-harness#2109) and invalid authority with
+# ``seat_sandbox_refused:identity``; the doctor names the specific authority code so
+# LA1-AUTHORITY-PIN is selected.
 _SEAT_CODE = {
-    "authority_missing": "seat_sandbox_refused:identity",
+    "authority_missing": "seat_dependency_authority_missing",
     "authority_invalid": "seat_sandbox_refused:identity",
 }
 

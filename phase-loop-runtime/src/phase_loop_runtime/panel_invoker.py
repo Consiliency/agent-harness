@@ -3208,7 +3208,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "seat_broker_socket_path_too_long",
     "seat_resource_caps_unavailable",
     "seat_launch_owner_required", "seat_output_path_unavailable", "seat_profile_unavailable",
-    "seat_provider_unavailable", "seat_filtered_egress_unavailable",
+    "seat_provider_unavailable", "seat_dependency_authority_missing", "seat_filtered_egress_unavailable",
     "executor_review_route_unsupported", "gemini_credential_near_expiry",
     "gemini_credential_refresh_timeout", "seat_keyring_unavailable",
     "claude_agent_view_review_unsupported", "claude_tui_journal_collection_refused",
