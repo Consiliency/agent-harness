@@ -2060,6 +2060,22 @@ class PanelLegResult:
         return getattr(self, "_review_monitoring", None)
 
     @property
+    def claude_code_version(self) -> str | None:
+        """Content-free Claude Code package version for jailed Claude seats (agent-harness#2170)."""
+        if self.leg != "claude":
+            return None
+        direct = getattr(self, "_claude_code_version", None)
+        if direct is not None:
+            return _seat_subject.normalize_claude_code_version(direct)
+        evidence = self.harden_isolation_evidence or {}
+        if "claude_code_version" in evidence:
+            return _seat_subject.normalize_claude_code_version(evidence["claude_code_version"])
+        exec_metadata = getattr(self, "_leg_exec_metadata", None) or {}
+        if "claude_code_version" in exec_metadata:
+            return _seat_subject.normalize_claude_code_version(exec_metadata["claude_code_version"])
+        return None
+
+    @property
     def seat_notices(self) -> tuple["_seat_jail.Notice", ...]:
         """Typed seat notices (agent-harness#1132), rendered only from literals.
 
@@ -3457,12 +3473,14 @@ _CLAUDE_STALL_JOURNAL_TYPES = (
     "user", "assistant", "api_error", "stream_event", "system", "progress", "other",
 )
 _CLAUDE_STALL_SECONDS = r"(?:[0-9]{1,10}\.[0-9]{3}|null)"
+_CLAUDE_CODE_VERSION_PATTERN = r"(?:[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}|unknown)"
 _CLAUDE_STALL_DIAGNOSTIC_PATTERN = (
     r"submit_key_written=(?:true|false) submit_key_offset_s=" + _CLAUDE_STALL_SECONDS
     + r" user_request_journaled=(?:true|false) assistant_event_seen=(?:true|false)"
     r" first_assistant_event_age_s=" + _CLAUDE_STALL_SECONDS
     + r" journal_events_after_submit=[0-9]{1,8} last_journal_event_type="
     + _alt((*_CLAUDE_STALL_JOURNAL_TYPES, "null")) + r" api_error_seen=(?:true|false)"
+    r" claude_code_version=" + _CLAUDE_CODE_VERSION_PATTERN
 )
 _UNKNOWN_DETAIL = "unknown failure; CLI output not retained"
 # Failure templates with NO field: a plain string equal to one of these is our own literal.
@@ -9880,7 +9898,7 @@ def _claude_exact_tool_diagnostic(path: Path | None, *, lines: Sequence[str] | N
 
 def _claude_post_submit_diagnostic(
     lines: Sequence[str], *, submit_offset: float | None,
-    start_wall: float, elapsed: float,
+    start_wall: float, elapsed: float, claude_code_version: str = "unknown",
 ) -> str:
     """Summarize the exact session at reclaim using the fixed request outside the paste.
 
@@ -9946,11 +9964,13 @@ def _claude_post_submit_diagnostic(
                 if first_assistant_age == "null" and event_wall is not None and event_wall <= finished_wall:
                     first_assistant_age = f"{finished_wall - event_wall:.3f}"
     offset = "null" if submit_offset is None else f"{submit_offset:.3f}"
+    version = _seat_subject.normalize_claude_code_version(claude_code_version)
     return (
         f"submit_key_written={str(submit_offset is not None).lower()} submit_key_offset_s={offset}"
         f" user_request_journaled={str(journaled).lower()} assistant_event_seen={str(assistant_seen).lower()}"
         f" first_assistant_event_age_s={first_assistant_age} journal_events_after_submit={count}"
         f" last_journal_event_type={last_type} api_error_seen={str(api_error_seen).lower()}"
+        f" claude_code_version={version}"
     )
 
 
@@ -11522,6 +11542,7 @@ def _run_claude_tui_session(
     probe_jail: "_seat_jail.SeatJail | None" = None,
     transcript_refresh: Callable[[], None] | None = None,
     stall_diagnostic_sink: list[str] | None = None,
+    claude_code_version: str = "unknown",
 ) -> tuple[int, str, str, str]:
     """``seat_jail`` (agent-harness#1132) launches the TUI inside its per-seat jail: the
     trust auto-answer is never armed (a modal refuses the leg), and ``transcript_refresh``
@@ -11756,6 +11777,7 @@ def _run_claude_tui_session(
                 stall_diagnostic_sink.append(_claude_post_submit_diagnostic(
                     lines,
                     submit_offset=submit_key_offset, start_wall=start_wall, elapsed=elapsed,
+                    claude_code_version=claude_code_version,
                 ))
             tail = diagnostic + (f"; {tail}" if tail else "")
         # The marker is ours (provenance by type for the detail prefix, agent-harness#1102).
@@ -13849,6 +13871,15 @@ def _prepare_jailed_claude(
     _validate_jail_dependency("claude", dependency)
     executable = (Path(dependency.subject_source) if dependency is not None
                   else None if subject is None else subject.subject_path)
+    subject_version = getattr(subject, "provider_version", None) if subject is not None else None
+    claude_code_version = (
+        _seat_subject.normalize_claude_code_version(subject_version)
+        if subject_version is not None
+        else _seat_subject.claude_code_version_for_subject(executable, managed=True)
+    )
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None and transport == "tui":
+        observation["claude_code_version"] = claude_code_version
     tree = review_dir / _seat_jail.HOST_TREE_DIRNAME
     try:
         seat_dir.mkdir(mode=0o700)
@@ -13889,6 +13920,10 @@ def _prepare_jailed_claude(
                 artifact=artifact.encode("utf-8"), instructions=instructions.encode("utf-8"),
                 token=token, seat_ids=(seat_id, seat_id), dependency=dependency,
             )
+            if isinstance(jail, _seat_jail.SeatJail):
+                jail = replace(jail, claude_code_version=claude_code_version)
+            else:
+                setattr(jail, "claude_code_version", claude_code_version)
             try:
                 if _seat_jail.CLAUDE_PRESEED:
                     home = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
@@ -13910,6 +13945,10 @@ def _prepare_jailed_claude(
                     token=b"probe", seat_ids=(seat_id, seat_id),
                     dependency=dependency,
                 )
+                if isinstance(probe, _seat_jail.SeatJail):
+                    probe = replace(probe, claude_code_version=claude_code_version)
+                else:
+                    setattr(probe, "claude_code_version", claude_code_version)
                 if dependency is not None and (
                     jail.dependency_projection_digest != dependency.projection_digest
                     or probe.dependency_projection_digest != dependency.projection_digest
@@ -14139,8 +14178,21 @@ def _exec_jailed_claude_leg(
             **({session_name: "<CLAUDE_SESSION_NAME>"} if session_name else {}),
         },
     )
+    raw_claude_version = getattr(jail, "claude_code_version", "")
+    if raw_claude_version:
+        claude_code_version = _seat_subject.normalize_claude_code_version(raw_claude_version)
+    elif getattr(jail, "provider_path", ""):
+        claude_code_version = _seat_subject.claude_code_version_for_subject(
+            Path(jail.provider_path), managed=True,
+        )
+    else:
+        claude_code_version = "unknown"
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None:
+        observation["claude_code_version"] = claude_code_version
     if broker_evidence is not None:
         broker_evidence.update({
+            "claude_code_version": claude_code_version,
             "provider_input_mode": "pointer",
             "provider_input_inline": False,
             "provider_cwd_class": "seat_jail_tree",
@@ -14168,6 +14220,7 @@ def _exec_jailed_claude_leg(
             allow_transcript_final=True, broker_transcript_path=transcript_snapshot,
             seat_jail=jail, probe_jail=seat.probe_jail,
             transcript_refresh=_refresh_transcript, stall_diagnostic_sink=stall_diagnostic,
+            claude_code_version=claude_code_version,
             **({"review_monitor": review_monitor} if review_monitor is not None else {}),
         )
         _refresh_transcript()
@@ -17912,6 +17965,9 @@ def _retain_panel_leg(result):
     record["outcome"] = "leg_execution_unobserved"
     if "seat_memory" in seat_memory:
         record["seat_memory"] = seat_memory["seat_memory"]
+    claude_code_version = result.claude_code_version
+    if claude_code_version is not None:
+        record["claude_code_version"] = claude_code_version
     try:
         path = write_private_record("leg-" + record["attempt_id"] + ".json", record)
         record_digest = sha256(path.read_bytes()).hexdigest()
@@ -17921,11 +17977,16 @@ def _retain_panel_leg(result):
             object.__setattr__(result, "_seat_memory_metadata", seat_memory)
             if seat_memory.get("seat_memory_notice") == _seat_jail.SEAT_MEMORY_NOTICE:
                 attach_seat_notices(result, (_seat_jail.SEAT_MEMORY_NOTICE,))
+        if claude_code_version is not None:
+            object.__setattr__(result, "_claude_code_version", claude_code_version)
         return result
-    object.__setattr__(result, "_leg_exec_metadata", {
+    retained_meta = {
         "record_digest": record_digest, "outcome": record["outcome"],
         "attempt_id": record["attempt_id"], **seat_memory,
-    })
+    }
+    if claude_code_version is not None:
+        retained_meta["claude_code_version"] = claude_code_version
+    object.__setattr__(result, "_leg_exec_metadata", retained_meta)
     return result
 
 
@@ -17994,6 +18055,10 @@ def _retained_leg_exec(function):
                 codex_run = observation.get("codex_run")
                 if codex_run is not None:
                     record.update(codex_run)
+                claude_code_version = observation.get("claude_code_version")
+                if claude_code_version is not None:
+                    claude_code_version = _seat_subject.normalize_claude_code_version(claude_code_version)
+                    record["claude_code_version"] = claude_code_version
                 memory_metadata = {}
                 if observation["seat_memory"] is not None:
                     record["seat_memory"] = memory_metadata["seat_memory"] = observation["seat_memory"]
@@ -18018,6 +18083,8 @@ def _retained_leg_exec(function):
                         **memory_metadata}
                     if codex_run is not None:
                         metadata["codex_run"] = codex_run
+                    if claude_code_version is not None:
+                        metadata["claude_code_version"] = claude_code_version
                     if result is None and leg_error is not None:
                         setattr(leg_error, "_leg_exec_metadata", metadata)
                     if result is not None and type(result[0]) is str:
@@ -19832,6 +19899,10 @@ def _default_spawn(
             _release_seat_route(seat_route)
             return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(transport_refusal),
                                         seat_notices=_ignored_override(leg))
+        if claude_transport == "tui":
+            observation = _EXEC_OBSERVATION.get()
+            if observation is not None:
+                observation["claude_code_version"] = "unknown"
     # IF-0-CLAUDE-3: an admitted `sdk` runs its worker preflight here, before the login wait
     # or anything else reads the credential store, and its prepared launch is carried to the
     # jail and the transport. A refusal launches nothing and never falls back.
@@ -20274,6 +20345,14 @@ def _default_spawn(
                                 sdk_prepared=sdk_prepared,
                             )
                             seat = _bind_route_qualification(seat, seat_route)
+                            if claude_transport == "tui":
+                                claude_version = _seat_subject.normalize_claude_code_version(
+                                    getattr(seat.jail, "claude_code_version", "") or "unknown"
+                                )
+                                broker.evidence["claude_code_version"] = claude_version
+                                observation = _EXEC_OBSERVATION.get()
+                                if observation is not None:
+                                    observation["claude_code_version"] = claude_version
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
                             seat_notices.append(exc.code)
@@ -20923,6 +21002,8 @@ def _write_incremental_verdict(
             evidence = result.harden_isolation_evidence or {}
             run_fields = ({key: evidence[key] for key in _AGY_RUN_FIELDS if key in evidence}
                           if "provider_stage_reached" in evidence else {})
+            if result.claude_code_version is not None:
+                run_fields = {**run_fields, "claude_code_version": result.claude_code_version}
         payload.update(run_fields)
         if result.review_monitoring is not None:
             # agent-harness#1176: heartbeat_only only; metadata, never provider text.
@@ -22696,6 +22777,8 @@ def invoke_board(
                                      invocation_id, index, operation_cancel)
             broker_evidence = None
             codex_run = None
+            claude_code_version = None
+            orig_exec_metadata = None
             seat_memory = {}
             body_notices: tuple[str, ...] = ()
             placement_evidence = None
@@ -22706,8 +22789,10 @@ def invoke_board(
                 else:
                     result = _run_seat_body(item, monitor)
                 broker_evidence = result.harden_isolation_evidence
-                exec_metadata = getattr(result, "_leg_exec_metadata", None) or {}
+                orig_exec_metadata = getattr(result, "_leg_exec_metadata", None)
+                exec_metadata = orig_exec_metadata or {}
                 codex_run = exec_metadata.get("codex_run")
+                claude_code_version = result.claude_code_version
                 seat_memory = {key: exec_metadata[key] for key in ("seat_memory", "seat_memory_notice")
                                if key in exec_metadata}
                 body_notices = getattr(result, "_seat_notice_codes", ())
@@ -22723,6 +22808,10 @@ def invoke_board(
                 error_metadata = getattr(exc, "_leg_exec_metadata", None) or {}
                 seat_memory.update({key: error_metadata[key] for key in ("seat_memory", "seat_memory_notice")
                                     if key in error_metadata})
+                if claude_code_version is None and "claude_code_version" in error_metadata:
+                    claude_code_version = _seat_subject.normalize_claude_code_version(
+                        error_metadata["claude_code_version"]
+                    )
                 result = _skip(seat, seat.harness, "review_monitoring_write_failed")
                 monitor.record["terminal_reason"] = "monitoring_write_failed"
             except BaseException:
@@ -22736,6 +22825,19 @@ def invoke_board(
             if codex_run is not None:
                 # A replacement keeps diagnostics but gets its own retention decision.
                 object.__setattr__(result, "_codex_run", codex_run)
+            if claude_code_version is not None:
+                object.__setattr__(result, "_claude_code_version", claude_code_version)
+            if (result.leg == "claude"
+                    and claude_code_version is not None
+                    and orig_exec_metadata is not None
+                    and getattr(result, "_leg_exec_metadata", None) is None
+                    and operation_cancel.is_set()
+                    and not monitor.write_failed
+                    and monitor.record.get("terminal_reason") != "monitoring_write_failed"):
+                # Preserve the original execution-record binding across Claude cancellation
+                # replacement while keeping existing retention behavior for monitoring failures
+                # and all other seats.
+                object.__setattr__(result, "_leg_exec_metadata", orig_exec_metadata)
             if seat_memory:
                 object.__setattr__(result, "_seat_memory_metadata", seat_memory)
             if not getattr(result, "_seat_notice_codes", ()) and body_notices:

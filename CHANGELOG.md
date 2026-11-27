@@ -6,8 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Added
+
+- Jailed Claude TUI legs now read the selected Claude Code version from verified
+  managed `package.json` metadata without executing the binary, recording it (or
+  `unknown`) in content-free leg diagnostics and board records (agent-harness#2170).
+
 ### Fixed
 
+- Keep a phase `blocked` with its `runner_verification_failed` blocker when runner-owned
+  verification fails closed, instead of letting a child's `complete` closeout overwrite
+  the phase status to `complete` (agent-harness#2135).
 - Bound the launcher's post-exit stdout/stderr drain by the launch deadline, mark
   incomplete drains (`drain_incomplete=True`, usage `UNKNOWN`), stop the reader thread
   without deadlocking on pipe close, and terminate surviving descendants in the child's
