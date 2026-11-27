@@ -84,6 +84,13 @@ _LOG = logging.getLogger(__name__)
 # Candidate loading in one process is serialized (AGYFRESH §1.2). Re-entrant, so a nested
 # admission on the same thread waits for nothing rather than for itself.
 _LOCK = threading.RLock()
+_SEARCH_FAULT_STATE = threading.local()
+
+
+def _record_search_fault(reason: str) -> None:
+    faults = getattr(_SEARCH_FAULT_STATE, "faults", None)
+    if faults is not None:
+        faults.append(reason)
 
 
 class HeldCandidate(NamedTuple):
@@ -422,6 +429,7 @@ def select(ordered: list[tuple[HeldCandidate, int]], *, predicate: Predicate, ex
         try:
             directory, fd, before, name = _open_candidate(anchor, candidate)
         except OSError:
+            _record_search_fault("admission_error")
             continue
         image = None
         try:
@@ -436,6 +444,7 @@ def select(ordered: list[tuple[HeldCandidate, int]], *, predicate: Predicate, ex
             try:
                 image = gh.VerifiedImage.from_fd(fd)
             except (OSError, ValueError, gh.AgyCanaryEvidenceError):
+                _record_search_fault("admission_error")
                 continue
             if not _unchanged(fd, directory, name, before):
                 image.close()
@@ -446,6 +455,7 @@ def select(ordered: list[tuple[HeldCandidate, int]], *, predicate: Predicate, ex
                 image = None
                 raise ValueError(_CANCELLED)
         except OSError:
+            _record_search_fault("admission_error")
             if image is not None:
                 image.close()
                 image = None
@@ -497,7 +507,9 @@ def search(*, members: Iterable[dict], store_dir: Path | None, cache_version: Ca
                     try:
                         cache = _open_dir_at(HELD_DIRNAME, store_anchor)
                         opened.append(cache)
-                    except OSError:
+                    except OSError as exc:
+                        if exc.errno != errno.ENOENT:
+                            _record_search_fault("store_unsafe")
                         cache = None
             vendor = []
             for index, root in enumerate(VENDOR_STORES):

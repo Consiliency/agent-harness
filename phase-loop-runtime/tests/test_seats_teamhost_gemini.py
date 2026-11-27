@@ -1239,3 +1239,96 @@ def test_verdict_refusal_reasons_hardening_r3(tmp_path, monkeypatch):
         assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
             "refuses", "agy_image_unqualified", "admission_error"
         )
+
+
+def test_verdict_refusal_reasons_hardening_r4(tmp_path, monkeypatch):
+    """Regression coverage for r3 review findings (LKG provider propagation, hold open/seal, host/opt-out agreement)."""
+    import errno
+    from phase_loop_runtime import agy_hold
+
+    lkg_bytes = b"#!/bin/sh\necho lkg\n"
+    lkg_path = _subject(tmp_path, "agy-lkg", lkg_bytes)
+    unqualified_path = _subject(tmp_path, "agy-unqualified", b"#!/bin/sh\necho other\n")
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {})
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setattr(agy_hold, "_WALK_ROOT", tmp_path)
+    monkeypatch.setattr(agy_hold, "VENDOR_STORES", ())
+    store = _seed(lkg_bytes)
+    held_img = gh.VerifiedImage.from_bytes(lkg_bytes, lkg_path)
+    try:
+        agy_hold.retain(held_img, store, cache_version=lambda _d, _v: (9, 9, 9))
+    finally:
+        held_img.close()
+
+    # Baseline: healthy hold admits
+    with monkeypatch.context() as ctx:
+        ctx.setattr(q, "measure_help", lambda *_a, **_kw: HELP)
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "admits", None, None
+        )
+
+    # P1: LKG provider raising OSError(EIO) or ProviderProcessGroupQuiescenceError must NOT
+    # be swallowed into a hold admission.
+    with monkeypatch.context() as ctx:
+        ctx.setattr(q, "measure_help", lambda *_a, **_kw: HELP)
+        ctx.setattr(
+            q, "_LAST_KNOWN_GOOD_PROVIDER",
+            lambda: (_ for _ in ()).throw(OSError(errno.EIO, "lkg provider EIO")),
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(q, "measure_help", lambda *_a, **_kw: HELP)
+        ctx.setattr(
+            q, "_LAST_KNOWN_GOOD_PROVIDER",
+            lambda: (_ for _ in ()).throw(
+                panel_invoker.ProviderProcessGroupQuiescenceError("quiescence_timeout")
+            ),
+        )
+        verdict = q.admission_verdict(env, unqualified_path, execute=True)
+        assert verdict.status == "refuses"
+        assert verdict.code != "agy_image_unqualified"
+
+    # P1: Hold candidate open EIO and seal failure must report admission_error (not no_qualification_record)
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            agy_hold, "_open_candidate",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError(errno.EIO, "candidate open EIO")),
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    real_from_fd = gh.VerifiedImage.from_fd
+    calls = {"n": 0}
+
+    def _fail_second_seal(fd, *, path=None):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise gh.AgyCanaryEvidenceError("candidate_seal_failed")
+        return real_from_fd(fd, path=path)
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(gh.VerifiedImage, "from_fd", _fail_second_seal)
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    # P2: Explicit self_qualification=false + hold enabled + _host() failing -> host_unknown in BOTH modes
+    cfg_file = tmp_path / "cfg" / "agent-harness" / "advisor-boards.toml"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text("[agy]\nself_qualification = false\nhold = true\n", encoding="utf-8")
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            q, "_host",
+            lambda: (_ for _ in ()).throw(ValueError("unknown host")),
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "host_unknown"
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "host_unknown"
+        )

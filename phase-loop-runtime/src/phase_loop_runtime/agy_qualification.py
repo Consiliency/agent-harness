@@ -1786,12 +1786,7 @@ def has_record(image_sha256: str, *, store: Store | None = None) -> bool:
 
 
 def _admit_last_known_good(env, *, store=None, faults: list[str] | None = None):
-    try:
-        image = last_known_good()
-    except (OSError, ValueError, RuntimeError):
-        if faults is not None:
-            faults.append("admission_error")
-        return None
+    image = last_known_good()
     if image is None:
         return None
     admitted = False
@@ -1890,8 +1885,17 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
             from . import agy_hold
 
             resolved = Path(os.path.realpath(path))
-            if not _names_managed_release(path, resolved) and agy_hold._hold_config_error():
-                return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
+            if not _names_managed_release(path, resolved):
+                hold_state = agy_hold._hold_enabled_state()
+                if hold_state == "error":
+                    return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
+                if hold_state == "enabled":
+                    try:
+                        _host()
+                    except ValueError:
+                        return AgyVerdict("refuses", "agy_image_unqualified", "host_unknown")
+                    if agy_hold._hold_deny_state()[0] == "error":
+                        return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
         return AgyVerdict("refuses", "agy_image_unqualified", reason)
 
     cfg_state = _self_qualification_config_state()
@@ -2460,13 +2464,16 @@ def _hold_or_refuse(env, refused, resolved, *, store, cancel_event, path=None):
             _with_verdict_reason(refusal, "host_unknown")
         raise refusal from refusal.__cause__
     prev_faults = getattr(_HOLD_FAULT_STATE, "faults", None)
+    prev_search_faults = getattr(agy_hold._SEARCH_FAULT_STATE, "faults", None)
     hold_faults: list[str] = []
     _HOLD_FAULT_STATE.faults = hold_faults
+    agy_hold._SEARCH_FAULT_STATE.faults = hold_faults
     try:
         admission = admit_held(env, reason=refused.reason, subject_sha256=refused.subject_sha256,
                                store=store, cancel_event=cancel_event)
     finally:
         _HOLD_FAULT_STATE.faults = prev_faults
+        agy_hold._SEARCH_FAULT_STATE.faults = prev_search_faults
     if admission is None:
         if (hold_faults
                 and getattr(refusal, "_verdict_reason", None) in _UNQUALIFIED_VERDICT_REASONS):
