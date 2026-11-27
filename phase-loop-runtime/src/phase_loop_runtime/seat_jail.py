@@ -1441,6 +1441,8 @@ class SeatJail:
     #: re-establishes the v2 pass for exactly this key; ``None`` keeps the profile-digest
     #: read for callers that do not carry a route decision.
     qualification_key: object | None = field(default=None, repr=False, compare=False)
+    #: Content-free Claude Code package version resolved from package.json (agent-harness#2170).
+    claude_code_version: str = field(default="", compare=False)
 
     def redacted_owner(self) -> list[str]:
         """The owner argv with every descriptor number replaced by a placeholder, for
