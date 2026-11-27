@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- Patch `sandbox_placement._sleep` instead of process-wide `time.sleep` in
+  `test_file_lock_checks_budget_after_retry_sleep` so background threads in
+  single-process Gate A runs cannot advance the test's fake clock before `flock`
+  (agent-harness#2207).
+
 ## [0.7.47] - 2026-11-26
 
 ### Changed
