@@ -27,6 +27,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Raise the `test.yml` `clean-room (standalone-from-wheel, Gate A)` job timeout from
   150 to 210 minutes (matching `publish-pypi.yml` from agent-harness#2191) after slow
   hosted runners hit the 150-minute cap at 88% with no test failures (agent-harness#766).
+- Patch `sandbox_placement._sleep` instead of process-wide `time.sleep` in
+  `test_file_lock_checks_budget_after_retry_sleep` so background threads in
+  single-process Gate A runs cannot advance the test's fake clock before `flock`
+  (agent-harness#2207).
 
 ## [0.7.47] - 2026-11-26
 

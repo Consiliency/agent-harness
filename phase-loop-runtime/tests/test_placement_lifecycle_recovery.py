@@ -896,6 +896,25 @@ def test_file_lock_takes_its_first_try_even_when_already_cancelled(env):
         assert held
 
 
+def test_file_lock_budget_check_ignores_foreign_thread_sleeps(tmp_path, monkeypatch, foreign_sleeper):
+    """agent-harness#2207: patching process-wide ``time.sleep`` lets background threads
+    advance the fake clock before the first ``flock`` call in single-process Gate A runs."""
+    from test_placement_lifecycle_process import test_file_lock_checks_budget_after_retry_sleep
+
+    real_sleep = time.sleep
+    original_enter = sp._FileLock.__enter__
+    checked = []
+
+    def assert_global_sleep_unpatched(self):
+        checked.append(time.sleep is real_sleep)
+        return original_enter(self)
+
+    monkeypatch.setattr(sp._FileLock, "__enter__", assert_global_sleep_unpatched)
+    with monkeypatch.context() as inner:
+        test_file_lock_checks_budget_after_retry_sleep(tmp_path, inner)
+    assert checked == [True]
+
+
 # -- agent-harness#1989 P3a: completed cleanup owners are collected -----------------------------
 
 def test_a_settled_attempt_interrupted_after_its_completion_journal_keeps_no_owner(env, monkeypatch):
