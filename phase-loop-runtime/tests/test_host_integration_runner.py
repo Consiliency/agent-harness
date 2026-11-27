@@ -164,7 +164,8 @@ CASES = {
         lambda spec, plan, tmp: _result(spec, returncode=None, available=False, output=_closeout("complete", plan)),
         None, INFRA, None, None),
     "zero_exit_failing_gate_is_quality": (_complete, _failing_gate, QUALITY, "blocked", "contract_bug"),
-    "failed_verification_beats_a_complete_closeout": (_complete, _red_verification, QUALITY, None, None),
+    "failed_verification_beats_a_complete_closeout": (_complete, _red_verification, QUALITY, "blocked",
+                                                      "repeated_verification_failure"),
     "tier3_rejection_is_quality": (_complete, _tier3("repeated_verification_failure"), QUALITY, "blocked",
                                    "repeated_verification_failure"),
     "tier3_config_error_reports_nothing": (_complete, _tier3("contract_bug", config_error="malformed"), None,
@@ -244,7 +245,75 @@ def test_acceptance_verdicts_reach_the_observer(tmp_path, monkeypatch, case):
         transitions = [event["metadata"]["state_transition"].get("reason") for event in read_events(repo)
                        if event["action"] == "state_transition"]
         assert "runner_verification_failed" in transitions
+        assert reconciled.blocker_summary == "Synthetic red suite."
     assert not [event for event in read_events(repo) if event["action"] == HOOK_FAILED]
+
+
+def test_failed_runner_verification_stays_blocked_without_integration(tmp_path, monkeypatch):
+    """agent-harness#2135: a failed runner verification is fail-closed even without a host
+    integration; a later valid ``complete`` closeout from the child must not overwrite it."""
+    repo, roadmap, plan = _phase(tmp_path, monkeypatch)
+    _red_verification(monkeypatch, tmp_path)
+    executed = []
+
+    def launcher(spec, **_kwargs):
+        executed.append(spec)
+        return _complete(spec, plan, tmp_path)
+
+    monkeypatch.setattr(runner, "launch_with_spec", launcher)
+    snapshot, _results = runner.run_loop(repo, roadmap, phase="RUNNER", executor="codex", closeout_mode="commit")
+    assert len(executed) == 1
+    reconciled = reconcile(repo, roadmap)
+    assert snapshot.phases["RUNNER"] == "blocked"
+    assert reconciled.phases["RUNNER"] == "blocked"
+    assert reconciled.blocker_class == "repeated_verification_failure"
+    assert reconciled.blocker_summary == "Synthetic red suite."
+    transitions = [event["metadata"]["state_transition"].get("reason") for event in read_events(repo)
+                   if event["action"] == "state_transition"]
+    assert transitions[-1] == "runner_verification_failed"
+
+
+def test_failed_runner_verification_stays_authoritative_when_produced_gates_also_fail(tmp_path, monkeypatch):
+    """agent-harness#2135: when both runner verification and produced-gates fail, keep the
+    runner verification blocker authoritative while still recording produced-gates evidence
+    and fleet metrics with ``completed=False``."""
+    repo, roadmap, plan = _phase(tmp_path, monkeypatch)
+    _red_verification(monkeypatch, tmp_path)
+    _failing_gate(monkeypatch, tmp_path)
+    fleet_calls = []
+    real_record = runner._record_fleet_metrics_best_effort
+
+    def capture_fleet(*args, **kwargs):
+        fleet_calls.append({"completed": kwargs.get("completed"), "missing_gates": kwargs.get("missing_gates")})
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_record_fleet_metrics_best_effort", capture_fleet)
+    executed = []
+
+    def launcher(spec, **_kwargs):
+        executed.append(spec)
+        return _complete(spec, plan, tmp_path)
+
+    monkeypatch.setattr(runner, "launch_with_spec", launcher)
+    snapshot, _results = runner.run_loop(repo, roadmap, phase="RUNNER", executor="codex", closeout_mode="commit")
+    assert len(executed) == 1
+    reconciled = reconcile(repo, roadmap)
+    assert snapshot.phases["RUNNER"] == "blocked"
+    assert reconciled.phases["RUNNER"] == "blocked"
+    assert reconciled.blocker_class == "repeated_verification_failure"
+    assert reconciled.blocker_summary == "Synthetic red suite."
+    events = read_events(repo)
+    transitions = [event["metadata"]["state_transition"].get("reason") for event in events
+                   if event["action"] == "state_transition"]
+    assert transitions[-1] == "runner_verification_failed"
+    assert fleet_calls == [{"completed": False, "missing_gates": ("SL-0-gate",)}]
+    launch_events = [event for event in events if event["action"] == "run" and "child_automation" in event.get("metadata", {})]
+    assert launch_events
+    assert launch_events[-1]["status"] == "blocked"
+    assert launch_events[-1]["blocker"]["blocker_class"] == "repeated_verification_failure"
+    assert launch_events[-1]["metadata"]["child_automation"]["produced_gates_validation"] == {
+        "ok": False, "missing_gates": ["SL-0-gate"],
+    }
 
 
 def test_launch_contract_verdict_uses_the_reason_captured_at_the_check(tmp_path, monkeypatch):
