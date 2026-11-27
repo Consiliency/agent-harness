@@ -13819,9 +13819,192 @@ def _bind_route_qualification(seat: "_JailedSeat", route: object) -> "_JailedSea
     """Carry the route decision's qualification key onto the jails it admitted."""
     key = getattr(getattr(route, "decision", None), "qualification_key", None)
     if key is not None:
-        seat.jail = replace(seat.jail, qualification_key=key)
-        seat.probe_jail = replace(seat.probe_jail, qualification_key=key)
+        if isinstance(seat.jail, _seat_jail.SeatJail):
+            seat.jail = replace(seat.jail, qualification_key=key)
+        else:
+            setattr(seat.jail, "qualification_key", key)
+        if isinstance(seat.probe_jail, _seat_jail.SeatJail):
+            seat.probe_jail = replace(seat.probe_jail, qualification_key=key)
+        else:
+            setattr(seat.probe_jail, "qualification_key", key)
     return seat
+
+
+def _window_route_qualification_key(
+    leg: str, seat: "_JailedSeat", *, proxy: object | None = None,
+) -> "_seat_route_contract.QualificationKey":
+    """Build the route's live QualificationKey for a window control launch from the leg's
+    registered profile, active variant, the running proxy's captured allowlist digest and
+    the dependency projection bound onto ``seat.jail``."""
+    from .seat_profiles import profile_for
+    from .seat_qualification_key import key_for_launch
+    from .seat_route import _allowlist_digest_for_launch
+
+    profile = profile_for(leg)
+    if profile is None:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"), f"no jail profile registered for {leg}")
+    variant = None
+    if profile.variant is not None:
+        variant, code = profile.variant(os.environ)
+        if code is not None:
+            raise _seat_jail.SeatSandboxRefused(code)
+    if profile.allowlist_id is None:
+        allowlist_digest = None
+    elif isinstance(proxy, _seat_egress_proxy.SeatEgressProxy):
+        if proxy.allowlist_id != profile.allowlist_id or not proxy.allowlist_digest:
+            raise _seat_jail.SeatSandboxRefused(
+                _seat_jail.refused("identity"),
+                "window control proxy allowlist does not match the leg profile",
+            )
+        allowlist_digest = proxy.allowlist_digest
+    elif (proxy is not None
+          and isinstance(getattr(proxy, "allowlist_digest", None), str)
+          and proxy.allowlist_digest):
+        allowlist_digest = proxy.allowlist_digest
+    else:
+        allowlist_digest = _allowlist_digest_for_launch(profile)
+    projection = getattr(seat.jail, "dependency", None)
+    if projection is None:
+        dep_digest = getattr(seat.jail, "dependency_projection_digest", "")
+        if dep_digest:
+            projection = SimpleNamespace(projection_digest=dep_digest)
+    try:
+        return key_for_launch(
+            profile, variant=variant, allowlist_digest=allowlist_digest,
+            projection=projection,
+        )
+    except ValueError as exc:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("jail_unqualified"), str(exc)) from exc
+
+
+@contextmanager
+def _fresh_window_launch_jails(seat: "_JailedSeat"):
+    """Clone single-use launch descriptors (seccomp/bundle/instructions memfds and any
+    token pipe) at offset 0 for one window invocation so repeated launches on the same
+    seat (watch sentinels, provider launch, bracket steps) never advance the template's
+    offsets or fail ``installed_filter_sha256``."""
+    jail = getattr(seat, "jail", None)
+    probe = getattr(seat, "probe_jail", None)
+    if not isinstance(jail, _seat_jail.SeatJail) or jail.seccomp_fd < 0:
+        yield jail, probe
+        return
+    allocated: list[int] = []
+
+    def _pread_all(fd: int) -> bytes:
+        size = os.fstat(fd).st_size
+        return os.pread(fd, size, 0) if size > 0 else b""
+
+    def _clone_one(template: object, token_bytes: bytes | None) -> object:
+        if not isinstance(template, _seat_jail.SeatJail) or template.seccomp_fd < 0:
+            return template
+        new_seccomp = _seat_jail.memfd_with("seat-seccomp", _pread_all(template.seccomp_fd))
+        allocated.append(new_seccomp)
+        new_bundle = template.bundle_fd
+        if template.bundle_fd >= 0:
+            new_bundle = _seat_jail.memfd_with("seat-bundle", _pread_all(template.bundle_fd))
+            allocated.append(new_bundle)
+        new_instructions = template.instructions_fd
+        if template.instructions_fd >= 0:
+            new_instructions = _seat_jail.memfd_with(
+                "seat-instructions", _pread_all(template.instructions_fd))
+            allocated.append(new_instructions)
+        new_token = template.token_fd
+        if template.token_fd is not None:
+            new_token = _seat_jail.token_pipe(b"" if token_bytes is None else token_bytes)
+            allocated.append(new_token)
+
+        fd_map = {template.seccomp_fd: new_seccomp}
+        if template.bundle_fd >= 0:
+            fd_map[template.bundle_fd] = new_bundle
+        if template.instructions_fd >= 0:
+            fd_map[template.instructions_fd] = new_instructions
+        if template.token_fd is not None and new_token is not None:
+            fd_map[template.token_fd] = new_token
+
+        str_map = {str(old): str(new) for old, new in fd_map.items()}
+        owner = list(template.process_owner)
+        for idx, arg in enumerate(owner):
+            if arg in ("--seccomp", "--ro-bind-data") and idx + 1 < len(owner):
+                replaced = str_map.get(owner[idx + 1])
+                if replaced is not None:
+                    owner[idx + 1] = replaced
+            elif (
+                arg == "--setenv"
+                and idx + 2 < len(owner)
+                and owner[idx + 1] == _seat_jail.CLAUDE_TOKEN_FD_ENV
+                and template.token_fd is not None
+                and new_token is not None
+            ):
+                owner[idx + 2] = str(new_token)
+        env = dict(template.env)
+        if (template.token_fd is not None and new_token is not None
+                and _seat_jail.CLAUDE_TOKEN_FD_ENV in env):
+            env[_seat_jail.CLAUDE_TOKEN_FD_ENV] = str(new_token)
+        pass_fds = tuple(fd_map.get(fd, fd) for fd in template.pass_fds)
+        return replace(
+            template,
+            process_owner=tuple(owner),
+            env=MappingProxyType(env),
+            pass_fds=pass_fds,
+            seccomp_fd=new_seccomp,
+            bundle_fd=new_bundle,
+            instructions_fd=new_instructions,
+            token_fd=new_token,
+        )
+
+    try:
+        yield _clone_one(jail, getattr(seat, "token", b"")), _clone_one(probe, b"probe")
+    finally:
+        for fd in allocated:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _require_window_qualification_key(
+    seat: "_JailedSeat",
+    expected_key: object | None = None,
+) -> "_seat_route_contract.QualificationKey":
+    """Require a window control seat's jail and probe jail to carry a matching route
+    QualificationKey (and match ``expected_key`` when supplied), refusing before launch
+    rather than falling back to a bare profile-digest pass lookup."""
+    jail = getattr(seat, "jail", None)
+    probe = getattr(seat, "probe_jail", None)
+    key = getattr(jail, "qualification_key", None)
+    probe_key = getattr(probe, "qualification_key", None)
+    if not isinstance(key, _seat_route_contract.QualificationKey):
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("jail_unqualified"),
+            "window control jail has no route qualification key",
+        )
+    if probe_key != key:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "window control probe jail qualification key does not match",
+        )
+    if expected_key is not None and key != expected_key:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "window control jail is not the route's qualified profile",
+        )
+    if (isinstance(jail, _seat_jail.SeatJail)
+            and (key.profile_digest != _seat_jail.actual_profile_digest(jail)
+                 or key.projection_digest != (jail.dependency_projection_digest or None))):
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "window control jail is not the route's qualified profile",
+        )
+    if (isinstance(probe, _seat_jail.SeatJail)
+            and (probe_key.profile_digest != _seat_jail.actual_profile_digest(probe)
+                 or probe_key.projection_digest != (probe.dependency_projection_digest or None))):
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "window control probe jail is not the route's qualified profile",
+        )
+    return key
 
 
 def _prepare_jailed_claude(
@@ -15558,6 +15741,7 @@ class _WindowJailedRun:
 
     seat: _JailedSeat
     quiescence_latch: _ProviderQuiescenceLatch
+    qualification_key: object | None = None
 
     def __call__(
         self, argv: Sequence[str], *, env: Mapping[str, str], use_proxy: bool,
@@ -15584,6 +15768,7 @@ class _WindowJailedRun:
 
         if any(_env_bad(name, value) for name, value in exact.items()):
             return qualification.JailedStep(exit_code=None, timed_out=False, stdout=b"")
+        _require_window_qualification_key(self.seat, self.qualification_key)
         command = ["/usr/bin/python3", "-I", "-S", "-c", _WINDOW_ENV_WRAPPER, *map(str, argv)]
         payload = "\0".join(f"{name}={exact[name]}" for name in sorted(exact)) + "\0"
         kept = 0
@@ -15595,19 +15780,20 @@ class _WindowJailedRun:
 
         observation = _EXEC_OBSERVATION.set(None)
         try:
-            try:
-                done = _run_leg_with_liveness(
-                    command, cwd=_seat_jail.SEAT_TREE, env=dict(self.seat.jail.env),
-                    deadline_s=float(timeout_s), input_text=payload, stdout_guard=_cap,
-                    quiescence_latch=self.quiescence_latch,
-                    seat_jail=self.seat.jail, probe_jail=self.seat.probe_jail,
-                )
-            except subprocess.TimeoutExpired as exc:
-                output = exc.output if isinstance(exc.output, str) else ""
-                return qualification.JailedStep(
-                    exit_code=None, timed_out=True,
-                    stdout=output.encode("utf-8", errors="replace")[:_WINDOW_STEP_STDOUT_CAP],
-                )
+            with _fresh_window_launch_jails(self.seat) as (launch_jail, launch_probe):
+                try:
+                    done = _run_leg_with_liveness(
+                        command, cwd=_seat_jail.SEAT_TREE, env=dict(launch_jail.env),
+                        deadline_s=float(timeout_s), input_text=payload, stdout_guard=_cap,
+                        quiescence_latch=self.quiescence_latch,
+                        seat_jail=launch_jail, probe_jail=launch_probe,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    output = exc.output if isinstance(exc.output, str) else ""
+                    return qualification.JailedStep(
+                        exit_code=None, timed_out=True,
+                        stdout=output.encode("utf-8", errors="replace")[:_WINDOW_STEP_STDOUT_CAP],
+                    )
         finally:
             _EXEC_OBSERVATION.reset(observation)
         return qualification.JailedStep(
@@ -15626,11 +15812,17 @@ class _WindowLaunchSession:
     quiescence_latch: _ProviderQuiescenceLatch
     trace_path: Path | None = None
     cleaned: bool = False
+    qualification_key: object | None = None
 
-    def cleanup(self) -> None:
+    def cleanup(self, *, primary: BaseException | None = None) -> None:
         if not self.cleaned:
-            _cleanup_jailed_seat(self.seat)
-            self.cleaned = True
+            try:
+                if primary is None:
+                    _cleanup_jailed_seat(self.seat)
+                else:
+                    _cleanup_jailed_seat(self.seat, primary=primary)
+            finally:
+                self.cleaned = True
 
 
 def _window_host_paths(qualification, seat: _JailedSeat, *, credential: bool) -> object:
@@ -15773,7 +15965,9 @@ def _open_window_launch(spec: WindowLaunchSpec):
     )
     stack = contextlib.ExitStack()
     session = None
+    seat = None
     base = None
+    primary: BaseException | None = None
     try:
         activate_review_isolation_authorization(
             authorization, DEFAULT_BOARD, artifact, mode="review",
@@ -15851,6 +16045,12 @@ def _open_window_launch(spec: WindowLaunchSpec):
                 _seat_uid.holder_pid_from_prefix(prefix), (artifact, ""), proxy,
                 credential_mode=credential_mode, copy_transform=supplier.copy_transform,
             )
+        # Bind the route's live QualificationKey onto both jails before any launch
+        # (agent-harness#2111), using the same mechanism as _bind_route_qualification.
+        qualification_key = _window_route_qualification_key(spec.leg, seat, proxy=proxy)
+        seat = _bind_route_qualification(
+            seat, SimpleNamespace(decision=SimpleNamespace(qualification_key=qualification_key)),
+        )
         trace_path = None
         if spec.kind in _WINDOW_CONTROL_KINDS:
             trace_path = base / _WINDOW_TRACE_FILE
@@ -15865,19 +16065,41 @@ def _open_window_launch(spec: WindowLaunchSpec):
             ) if supplier is None else supplier.host_path_map(
                 seat, credential=credential_mode != "none"),
             authorization=authorization, quiescence_latch=latch, trace_path=trace_path,
+            qualification_key=qualification_key,
         )
         yield session
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        try:
-            if session is not None and not session.cleaned:
-                session.cleanup()
-        finally:
+        teardown_errors: list[BaseException] = []
+
+        def _finish_step(fn: Callable[[], object]) -> None:
             try:
-                stack.close()
-            finally:
-                close_review_isolation_authorization(authorization)
-                if base is not None:
-                    _review_stage.remove_review_stage(base)
+                fn()
+            except BaseException as exc:
+                if primary is not None:
+                    primary.add_note(f"window launch teardown also failed: {type(exc).__name__}")
+                else:
+                    teardown_errors.append(exc)
+
+        if session is not None and not session.cleaned:
+            _finish_step(lambda: session.cleanup(primary=primary))
+        elif session is None and seat is not None:
+            _finish_step(
+                (lambda: _cleanup_jailed_seat(seat))
+                if primary is None
+                else (lambda: _cleanup_jailed_seat(seat, primary=primary))
+            )
+        _finish_step(stack.close)
+        _finish_step(lambda: close_review_isolation_authorization(authorization))
+        if base is not None:
+            _finish_step(lambda: _review_stage.remove_review_stage(base))
+        if teardown_errors:
+            first, *additional = teardown_errors
+            for extra in additional:
+                first.add_note(f"additional window launch teardown failure: {type(extra).__name__}")
+            raise first
 
 
 def _window_control_command(kind: str, model: str) -> list[str]:
@@ -16067,6 +16289,9 @@ def _run_window_process(
     input_text: str | None = None, trace_output: str | None = None,
 ) -> _WindowProcess:
     secrets = _jailed_gemini_secrets(session.seat)
+    _require_window_qualification_key(
+        session.seat, getattr(session, "qualification_key", None),
+    )
     carry = b""
     longest = max((len(secret) for secret in secrets), default=1)
 
@@ -16079,18 +16304,19 @@ def _run_window_process(
 
     observation = _EXEC_OBSERVATION.set(None)
     try:
-        try:
-            done = _run_leg_with_liveness(
-                command, cwd=_seat_jail.SEAT_GEMINI_WORKSPACE,
-                env=dict(session.seat.jail.env), deadline_s=float(timeout_s),
-                input_text=input_text, stdout_guard=_guard, stderr_guard=_guard,
-                quiescence_latch=session.quiescence_latch,
-                seat_jail=session.seat.jail, probe_jail=session.seat.probe_jail,
-                trace_output=trace_output,
-            )
-        except subprocess.TimeoutExpired as exc:
-            output = exc.output if isinstance(exc.output, str) else ""
-            return _WindowProcess(None, True, output)
+        with _fresh_window_launch_jails(session.seat) as (launch_jail, launch_probe):
+            try:
+                done = _run_leg_with_liveness(
+                    command, cwd=_seat_jail.SEAT_GEMINI_WORKSPACE,
+                    env=dict(launch_jail.env), deadline_s=float(timeout_s),
+                    input_text=input_text, stdout_guard=_guard, stderr_guard=_guard,
+                    quiescence_latch=session.quiescence_latch,
+                    seat_jail=launch_jail, probe_jail=launch_probe,
+                    trace_output=trace_output,
+                )
+            except subprocess.TimeoutExpired as exc:
+                output = exc.output if isinstance(exc.output, str) else ""
+                return _WindowProcess(None, True, output)
     finally:
         _EXEC_OBSERVATION.reset(observation)
     return _WindowProcess(done.returncode, False, done.stdout)
@@ -16169,10 +16395,30 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
                     error = "watch_unavailable"
                     watch_handle = None
                 if watch_handle is not None:
-                    run = _WindowJailedRun(session.seat, session.quiescence_latch)
+                    watch_closed = False
+
+                    def _ensure_watch_closed(handle=watch_handle) -> None:
+                        if not watch_closed:
+                            try:
+                                handle.drain_and_close(
+                                    quiescent=session.quiescence_latch.is_quiescent(),
+                                )
+                            except Exception:
+                                close_fd = getattr(handle, "_close_fd", None)
+                                if callable(close_fd):
+                                    with contextlib.suppress(Exception):
+                                        close_fd()
+
+                    stack.callback(_ensure_watch_closed)
+                    run = _WindowJailedRun(
+                        session.seat, session.quiescence_latch,
+                        qualification_key=getattr(session, "qualification_key", None),
+                    )
                     first_launch_ns = time.monotonic_ns()
                     try:
                         sentinel = bool(watch_handle.prove_sentinel(run))
+                    except _seat_jail.SeatSandboxRefused:
+                        raise
                     except Exception:  # an unavailable sentinel is an incomplete watch
                         sentinel = False
                     if not sentinel:
@@ -16266,9 +16512,14 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
                             if end is None or not end.acknowledged:
                                 error = error or "fence_unacknowledged"
                     quiescent = session.quiescence_latch.is_quiescent()
+                    watch_closed = True
                     try:
                         watch = watch_handle.drain_and_close(quiescent=quiescent)
                     except Exception:
+                        close_fd = getattr(watch_handle, "_close_fd", None)
+                        if callable(close_fd):
+                            with contextlib.suppress(Exception):
+                                close_fd()
                         watch = None
                         error = error or "watch_unavailable"
                     if spec.kind in _WINDOW_CONTROL_KINDS:
@@ -16364,7 +16615,25 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
             if spec.kind in _WINDOW_RUNTIME_KINDS:
                 supplier.seed_runtime_plants(layout, session.paths)
             watch_handle = supplier.arm_watch(layout, session.paths, kind=spec.kind)
-            run = _WindowJailedRun(session.seat, session.quiescence_latch)
+            watch_closed = False
+
+            def _ensure_leg_watch_closed(handle=watch_handle) -> None:
+                if not watch_closed:
+                    try:
+                        handle.drain_and_close(
+                            quiescent=session.quiescence_latch.is_quiescent(),
+                        )
+                    except Exception:
+                        close_fd = getattr(handle, "_close_fd", None)
+                        if callable(close_fd):
+                            with contextlib.suppress(Exception):
+                                close_fd()
+
+            stack.callback(_ensure_leg_watch_closed)
+            run = _WindowJailedRun(
+                session.seat, session.quiescence_latch,
+                qualification_key=getattr(session, "qualification_key", None),
+            )
             values["first_jailed_launch_ns"] = time.monotonic_ns()
             if not watch_handle.prove_sentinel(run):
                 error = "watch_unavailable"
@@ -16439,9 +16708,14 @@ def _window_control_launch_leg(spec: WindowLaunchSpec) -> WindowLaunchResult:
                     values["bracket"] = qualification.run_bracket(proxy, run) \
                         if steps is None else steps(proxy, run)
             quiescent = session.quiescence_latch.is_quiescent()
+            watch_closed = True
             try:
                 values["watch"] = watch_handle.drain_and_close(quiescent=quiescent)
             except Exception:
+                close_fd = getattr(watch_handle, "_close_fd", None)
+                if callable(close_fd):
+                    with contextlib.suppress(Exception):
+                        close_fd()
                 error = error or "watch_unavailable"
             values["binding"] = qualification.LaunchBinding(
                 image_sha256=str(session.seat.image_sha256),
@@ -16470,6 +16744,9 @@ def _run_window_leg_process(
     session: _WindowLaunchSession, command: Sequence[str], secrets: tuple[bytes, ...], *,
     timeout_s: float, input_text: str | None = None,
 ) -> _WindowProcess:
+    _require_window_qualification_key(
+        session.seat, getattr(session, "qualification_key", None),
+    )
     carry = b""
     longest = max((len(secret) for secret in secrets), default=1)
 
@@ -16482,17 +16759,18 @@ def _run_window_leg_process(
 
     observation = _EXEC_OBSERVATION.set(None)
     try:
-        try:
-            done = _run_leg_with_liveness(
-                list(command), cwd="/seat/home/workspace", env=dict(session.seat.jail.env),
-                deadline_s=float(timeout_s), input_text=input_text,
-                stdout_guard=_guard, stderr_guard=_guard,
-                quiescence_latch=session.quiescence_latch,
-                seat_jail=session.seat.jail, probe_jail=session.seat.probe_jail,
-            )
-        except subprocess.TimeoutExpired as exc:
-            output = exc.output if isinstance(exc.output, str) else ""
-            return _WindowProcess(None, True, output)
+        with _fresh_window_launch_jails(session.seat) as (launch_jail, launch_probe):
+            try:
+                done = _run_leg_with_liveness(
+                    list(command), cwd="/seat/home/workspace", env=dict(launch_jail.env),
+                    deadline_s=float(timeout_s), input_text=input_text,
+                    stdout_guard=_guard, stderr_guard=_guard,
+                    quiescence_latch=session.quiescence_latch,
+                    seat_jail=launch_jail, probe_jail=launch_probe,
+                )
+            except subprocess.TimeoutExpired as exc:
+                output = exc.output if isinstance(exc.output, str) else ""
+                return _WindowProcess(None, True, output)
     finally:
         _EXEC_OBSERVATION.reset(observation)
     return _WindowProcess(done.returncode, False, done.stdout)
@@ -17461,6 +17739,14 @@ def _exec_jailed_gemini_leg(
         broker_evidence.update(metadata)
         _retain_agy_stream_progress(broker_evidence, proc.stdout, protocol, metadata, tooled=True)
     if rc != 0:
+        if broker_evidence is not None:
+            error_class = (
+                ProviderErrorClass.AUTH_EXPIRED if expired else _agy_provider_error_class(
+                    native_rc=0, stream=metadata, response_present=bool(text.strip()),
+                    native_stdout=proc.stdout, native_stderr=proc.stderr,
+                )
+            )
+            broker_evidence["provider_error_class"] = error_class.value
         if detail == _JAILED_GEMINI_UNKNOWN_EVENT:
             seat.notices.append(_JAILED_GEMINI_UNKNOWN_EVENT)
             # What the refused line was, as closed fields, for the leg's private record.
@@ -17469,6 +17755,14 @@ def _exec_jailed_gemini_leg(
                                failure_detail_sink)
     status = _classify_leg(0, text, "", "review")
     if status != "OK":
+        if broker_evidence is not None:
+            error_class = (
+                ProviderErrorClass.AUTH_EXPIRED if expired else _agy_provider_error_class(
+                    native_rc=0, stream=metadata, response_present=bool(text.strip()),
+                    native_stdout=proc.stdout, native_stderr=proc.stderr,
+                )
+            )
+            broker_evidence["provider_error_class"] = error_class.value
         return _jailed_failure("Gemini broker response lacks a terminal verdict"
                                if text.strip() else "Gemini broker completed without review text",
                                failure_detail_sink)
@@ -18610,6 +18904,83 @@ def _agy_native_diagnostic_class(output: str, *, stream_json: bool = False) -> P
                  if pattern.search(tail)), None)
 
 
+_AGY_RESULT_ERROR_KEYS = frozenset({
+    "error", "error_code", "error_message", "message", "reason",
+    "code", "status_code", "status", "detail", "details", "type",
+})
+
+
+def _agy_extract_result_error_fragments(obj: Mapping[str, object], *, depth: int = 0) -> list[str]:
+    fragments: list[str] = []
+    if depth > 2:
+        return fragments
+    for key, value in obj.items():
+        if key not in _AGY_RESULT_ERROR_KEYS:
+            continue
+        if isinstance(value, str) and value:
+            label = "code" if key == "error_code" and value.isdigit() else key
+            fragments.append(f"{label}: {value}")
+        elif type(value) is int:
+            label = "code" if key == "error_code" else key
+            fragments.append(f"{label}: {value}")
+        elif isinstance(value, Mapping):
+            fragments.extend(_agy_extract_result_error_fragments(value, depth=depth + 1))
+        elif isinstance(value, list) and depth < 2:
+            for item in value[:8]:
+                if isinstance(item, str) and item:
+                    fragments.append(f"{key}: {item}")
+                elif isinstance(item, Mapping):
+                    fragments.extend(_agy_extract_result_error_fragments(item, depth=depth + 1))
+    return fragments
+
+
+def _agy_result_error_class(output: str) -> ProviderErrorClass | None:
+    """Classify structured error fields inside failed agy NDJSON ``event='result'`` records
+    (agent-harness#2215). Ignores ``step_update``, ``tool_info``, and any ``response`` prose."""
+    limit = _LEG_LOG_MAX_BYTES
+    tail = output[-(limit + 1):].encode("utf-8", errors="replace")[-(limit + 1):]
+    if len(tail) > limit:
+        preceding, tail = tail[:1], tail[1:]
+        if preceding != b"\n":
+            tail = tail.partition(b"\n")[2]
+    fragments: list[str] = []
+    for raw_line in tail.split(b"\n"):
+        stripped = raw_line.lstrip()
+        if not stripped.startswith(b"{"):
+            continue
+        try:
+            event = json.loads(stripped.decode("utf-8", errors="replace"))
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict) or event.get("event") != "result":
+            continue
+        result = event.get("result")
+        if not isinstance(result, dict) or result.get("status") == "SUCCESS":
+            continue
+        response = result.get("response")
+        if response is not None and not (isinstance(response, str) and not response.strip()):
+            continue
+        fragments.extend(_agy_extract_result_error_fragments(result))
+    if not fragments:
+        return None
+    bounded: list[bytes] = []
+    used = 0
+    for fragment in fragments:
+        encoded = fragment.encode("utf-8", errors="replace")
+        sep = 1 if bounded else 0
+        if used + sep + len(encoded) > limit:
+            continue
+        if sep:
+            bounded.append(b"\n")
+        bounded.append(encoded)
+        used += sep + len(encoded)
+    if not bounded:
+        return None
+    blob = b"".join(bounded)
+    return next((error_class for error_class, pattern in _AGY_NATIVE_EXIT_PATTERNS
+                 if pattern.search(blob)), None)
+
+
 def _agy_provider_error_class(
     *, native_rc: int | None = None, stream: Mapping[str, object] | None = None,
     response_present: bool | None = None, timed_out: bool = False,
@@ -18638,6 +19009,7 @@ def _agy_provider_error_class(
     if type(native_rc) is int and native_rc > 0:
         return (
             _agy_native_diagnostic_class(native_stderr)
+            or _agy_result_error_class(native_stdout)
             or _agy_native_diagnostic_class(native_stdout, stream_json=True)
             or ProviderErrorClass.UNKNOWN
         )
@@ -18647,6 +19019,12 @@ def _agy_provider_error_class(
             stream.get("provider_stream_outcome") == "accepted" and response_present is False
         ):
             return ProviderErrorClass.EMPTY_RESPONSE
+        if stream.get("provider_stream_outcome") == "final_result_invalid":
+            return (
+                _agy_native_diagnostic_class(native_stderr)
+                or _agy_result_error_class(native_stdout)
+                or ProviderErrorClass.UNKNOWN
+            )
     return ProviderErrorClass.UNKNOWN
 
 
