@@ -403,7 +403,7 @@ def test_interrupt_during_post_exit_drain_cleans_up_descendant_before_reap(tmp_p
     cleanup_calls = []
 
     def spy_descendant_cleanup(
-        process_pid, process_group_id, *, reason, pipes_closed, include_leader=False, leader_exited=None,
+        process_pid, process_group_id, *, reason, pipes_closed, include_leader=False, leader_exited=None, **kwargs,
     ):
         cleanup_calls.append((reason, process_pid, process_group_id))
         return orig_descendant_cleanup(
@@ -413,6 +413,7 @@ def test_interrupt_during_post_exit_drain_cleans_up_descendant_before_reap(tmp_p
             pipes_closed=pipes_closed,
             include_leader=include_leader,
             leader_exited=leader_exited,
+            **kwargs,
         )
 
     monkeypatch.setattr(launcher, "_cleanup_descendant_process_group", spy_descendant_cleanup)
@@ -1146,6 +1147,148 @@ def test_provisional_empty_proc_scan_does_not_skip_sigkill_for_forked_replacemen
         assert result.cleanup_evidence is not None
         assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
         assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_leased_timeout_preserves_supervisor_window_to_kill_sigterm_ignoring_executor(tmp_path):
+    """For leased launches, cleanup must give lease_supervisor its full 1 s escalation +
+    reaping window before falling back to SIGKILLing the supervisor, so a SIGTERM-ignoring
+    executor running in a separate session is killed and reaped."""
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux lease_supervisor test")
+    import fcntl
+    import os
+    from types import SimpleNamespace
+
+    marker = tmp_path / "leased_executor.pid"
+    script = (
+        "import os, signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"open({str(marker)!r}, 'w').write(str(os.getpid()))\n"
+        "print('executor-ready', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    fd = os.open(tmp_path / "lease", os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    authority = SimpleNamespace(fileno=lambda: fd, generation="synthetic", identity=None)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.4,
+            lease_authority=authority,
+        )
+        assert result.timed_out is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM"]
+        assert result.cleanup_evidence["result"] == "terminated"
+        exec_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(exec_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(exec_pid)
+    finally:
+        os.close(fd)
+        _kill_pid_best_effort(marker)
+
+
+def test_second_interrupt_during_codex_usage_drain_invalidates_usage_observer(tmp_path, monkeypatch):
+    """If a second KeyboardInterrupt aborts the Codex usage post-exit drain after a valid
+    turn.completed record, drain_incomplete=True must invalidate the usage observer."""
+    observer = launcher._CodexUsageCollector()
+    script = (
+        "import json, time\n"
+        "print(json.dumps({'type': 'thread.started', 'thread_id': 't1'}), flush=True)\n"
+        "print(json.dumps({'type': 'turn.started'}), flush=True)\n"
+        "print(json.dumps({'type': 'turn.completed', 'usage': {"
+        "'input_tokens': 10, 'cached_input_tokens': 2, 'output_tokens': 5}}), flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    orig_get = launcher.Queue.get
+    saw_turn = False
+    interrupts = 0
+
+    def interrupting_get(self, *args, **kwargs):
+        nonlocal saw_turn, interrupts
+        if saw_turn and interrupts < 2:
+            interrupts += 1
+            raise KeyboardInterrupt
+        item = orig_get(self, *args, **kwargs)
+        if isinstance(item, tuple) and len(item) == 3 and "turn.completed" in str(item[2]):
+            saw_turn = True
+        return item
+
+    monkeypatch.setattr(launcher.Queue, "get", interrupting_get)
+    result = launcher.launch(
+        _child(script),
+        log_path=tmp_path / "run" / "output.log",
+        timeout_seconds=10.0,
+        _codex_usage_observer=observer,
+    )
+    assert interrupts == 2
+    assert result.interrupted is True
+    assert result.drain_incomplete is True
+    assert observer.diagnostics()["usage_valid"] is False
+    assert observer.failure_reason == "incomplete_drain"
+
+
+def test_interrupt_during_post_exit_broken_pipe_unwind_still_cleans_up_and_reaps(tmp_path, monkeypatch):
+    """A KeyboardInterrupt during exception unwind after a confirmed post-exit BrokenPipeError
+    must reuse the recorded exit state, still clean up the descendant, and still reap."""
+    marker = tmp_path / "unwind_interrupt_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('first-line', flush=True)\n"
+        "print('post-exit-line', flush=True)\n"
+    )
+    orig_print = print
+    orig_cleanup = launcher._cleanup_descendant_process_group
+    broken_raised = False
+    unwind_interrupted = False
+
+    def broken_on_second(*args, **kwargs):
+        nonlocal broken_raised
+        if args and "post-exit-line" in str(args[0]):
+            broken_raised = True
+            raise BrokenPipeError("stdout closed during post-exit drain")
+        return orig_print(*args, **kwargs)
+
+    def interrupt_once_in_unwind(*args, **kwargs):
+        nonlocal unwind_interrupted
+        if broken_raised and not unwind_interrupted:
+            unwind_interrupted = True
+            raise KeyboardInterrupt
+        return orig_cleanup(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", broken_on_second)
+    monkeypatch.setattr(launcher, "_cleanup_descendant_process_group", interrupt_once_in_unwind)
+    try:
+        with pytest.raises(BrokenPipeError):
+            launcher.launch(
+                _child(script),
+                log_path=tmp_path / "run" / "output.log",
+                stream_output=True,
+                timeout_seconds=10.0,
+            )
+        assert broken_raised is True
+        assert unwind_interrupted is True
         grandchild_pid = int(marker.read_text().strip())
         deadline = time.monotonic() + 1.0
         while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
