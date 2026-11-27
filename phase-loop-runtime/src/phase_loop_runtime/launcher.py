@@ -3281,15 +3281,17 @@ def launch(
                 _, writable, _ = select.select([], [fd], [], 0.0)
                 return bool(writable)
 
-            def _stream_live_text(text: str) -> None:
+            def _stream_live_text(text: str, *, deadline: float | None = None) -> None:
                 """Best-effort non-blocking live display on real pipes/sockets/ttys.
                 Never calls sys.stdout.flush() (which can block on pre-buffered data),
                 never delays process polling or log capture, uses poll() so fds >= 1024
-                work cleanly, performs non-blocking os.write() so a competing writer cannot
-                block between readiness check and write, and retries on each subsequent
-                record so live output resumes once backpressure clears. BrokenPipeError
-                still propagates synchronously."""
+                work cleanly, uses non-blocking lock acquisition and non-blocking
+                os.write() so competing or concurrent writers cannot block or race on
+                fd blocking mode, and retries on each subsequent record so live output
+                resumes once backpressure clears. BrokenPipeError still propagates."""
                 if not stream_output or not text:
+                    return
+                if deadline is not None and time.monotonic() >= deadline:
                     return
                 stdout_fd = _stream_stdout_fd()
                 if stdout_fd is None:
@@ -3300,37 +3302,39 @@ def launch(
                 raw = text.encode(encoding, errors=errors)
                 if not raw:
                     return
-                with _LIVE_STDOUT_LOCK:
+                if not _LIVE_STDOUT_LOCK.acquire(blocking=False):
+                    return
+                restore_blocking = False
+                try:
                     if not _fd_ready_for_write(stdout_fd):
                         return
-                    was_blocking = False
-                    changed_blocking = False
                     if hasattr(os, "get_blocking") and hasattr(os, "set_blocking"):
                         try:
-                            was_blocking = os.get_blocking(stdout_fd)
-                            if was_blocking:
+                            if os.get_blocking(stdout_fd):
+                                restore_blocking = True
                                 os.set_blocking(stdout_fd, False)
-                                changed_blocking = True
+                        except OSError:
+                            restore_blocking = False
+                    offset = 0
+                    while offset < len(raw):
+                        if deadline is not None and time.monotonic() >= deadline:
+                            return
+                        if offset > 0 and not _fd_ready_for_write(stdout_fd):
+                            return
+                        try:
+                            written = os.write(stdout_fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
+                        except BlockingIOError:
+                            return
+                        if written <= 0:
+                            return
+                        offset += written
+                finally:
+                    if restore_blocking:
+                        try:
+                            os.set_blocking(stdout_fd, True)
                         except OSError:
                             pass
-                    try:
-                        offset = 0
-                        while offset < len(raw):
-                            if offset > 0 and not _fd_ready_for_write(stdout_fd):
-                                return
-                            try:
-                                written = os.write(stdout_fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
-                            except BlockingIOError:
-                                return
-                            if written <= 0:
-                                return
-                            offset += written
-                    finally:
-                        if changed_blocking:
-                            try:
-                                os.set_blocking(stdout_fd, True)
-                            except OSError:
-                                pass
+                    _LIVE_STDOUT_LOCK.release()
 
             def _sink_worker() -> None:
                 assert sink_queue is not None
@@ -3392,7 +3396,7 @@ def launch(
                 if err_box:
                     raise err_box[0]
                 if stream_output and not call_print_in_worker:
-                    _stream_live_text(text)
+                    _stream_live_text(text, deadline=deadline)
                 return True
 
             def consume(record, *, deadline: float | None = None) -> bool:

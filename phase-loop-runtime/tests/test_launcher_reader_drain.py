@@ -2088,8 +2088,9 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         if w2 >= 0:
             os.close(w2)
 
-    # Part 3: two concurrent launches sharing a 4 KiB stdout pipe serialize non-blocking mode
-    # toggles so neither restores blocking mode before the other's os.write().
+    # Part 3: while launch 1 is paused inside os.write() holding the live stdout lock,
+    # launch 2 finishes within its 0.15 s budget without waiting on launch 1 or racing on
+    # fd blocking mode, and Ctrl-C right after os.set_blocking(False) still restores blocking.
     report3 = tmp_path / "concurrent.json"
     driver3 = (
         "import json, os, sys, threading, time\n"
@@ -2098,30 +2099,61 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         "stdout_fd = sys.stdout.fileno()\n"
         "orig_write = os.write\n"
         "t1_in_write = threading.Event()\n"
-        "release_t1 = threading.Event()\n"
-        "seen_nonblocking = []\n"
+        "t2_done = threading.Event()\n"
+        "t1_tid = None\n"
+        "t2_saw_write = False\n"
         "def spy_write(fd, data):\n"
+        "    global t2_saw_write\n"
         "    if fd == stdout_fd:\n"
-        "        seen_nonblocking.append(not os.get_blocking(fd))\n"
-        "        if not t1_in_write.is_set():\n"
+        "        if threading.get_ident() == t1_tid and not t1_in_write.is_set():\n"
         "            t1_in_write.set()\n"
-        "            release_t1.wait(timeout=0.05)\n"
+        "            t2_done.wait(timeout=2.0)\n"
+        "        elif threading.get_ident() != t1_tid:\n"
+        "            t2_saw_write = True\n"
         "    return orig_write(fd, data)\n"
         "os.write = spy_write\n"
         "results = {}\n"
-        "def run_one(name, payload):\n"
+        "def run_t1():\n"
+        "    global t1_tid\n"
+        "    t1_tid = threading.get_ident()\n"
+        f"    res = launcher.launch([sys.executable, '-c', \"print('A' * 1024, flush=True)\"], log_path=Path({str(tmp_path)!r}) / 't1.log', stream_output=True, timeout_seconds=5.0)\n"
+        "    results['t1'] = (res.returncode, len(res.output))\n"
+        "def run_t2():\n"
         "    t0 = time.monotonic()\n"
-        f"    res = launcher.launch([sys.executable, '-c', f'print({{payload!r}}, flush=True)'], log_path=Path({str(tmp_path)!r}) / f'{{name}}.log', stream_output=True, timeout_seconds=0.3)\n"
-        "    results[name] = (res.returncode, time.monotonic() - t0)\n"
-        "th1 = threading.Thread(target=run_one, args=('t1', 'A' * 4096))\n"
-        "th2 = threading.Thread(target=run_one, args=('t2', 'B' * 4096))\n"
+        f"    res = launcher.launch([sys.executable, '-c', \"print('B' * 64, flush=True)\"], log_path=Path({str(tmp_path)!r}) / 't2.log', stream_output=True, timeout_seconds=0.15)\n"
+        "    results['t2'] = (res.returncode, time.monotonic() - t0, res.output.strip())\n"
+        "    t2_done.set()\n"
+        "th1 = threading.Thread(target=run_t1)\n"
         "th1.start()\n"
-        "t1_in_write.wait(timeout=2.0)\n"
+        "assert t1_in_write.wait(timeout=2.0)\n"
+        "th2 = threading.Thread(target=run_t2)\n"
         "th2.start()\n"
-        "release_t1.set()\n"
-        "th1.join(timeout=3.0)\n"
-        "th2.join(timeout=3.0)\n"
-        f"Path({str(report3)!r}).write_text(json.dumps({{'results': results, 'all_nonblocking': bool(seen_nonblocking) and all(seen_nonblocking), 'restored_blocking': os.get_blocking(stdout_fd)}}), encoding='utf-8')\n"
+        "assert t2_done.wait(timeout=2.0)\n"
+        "th2.join(timeout=2.0)\n"
+        "th1.join(timeout=2.0)\n"
+        "os.write = orig_write\n"
+        "# Also verify Ctrl-C immediately after os.set_blocking(fd, False) on a fresh writable pipe restores blocking.\n"
+        "cr, cw = os.pipe()\n"
+        "old_stdout = sys.stdout\n"
+        "sys.stdout = os.fdopen(cw, 'w', encoding='utf-8')\n"
+        "orig_set_blocking = os.set_blocking\n"
+        "interrupted_set = False\n"
+        "def interrupt_after_nonblock(fd, flag):\n"
+        "    global interrupted_set\n"
+        "    orig_set_blocking(fd, flag)\n"
+        "    if fd == cw and flag is False and not interrupted_set:\n"
+        "        interrupted_set = True\n"
+        "        raise KeyboardInterrupt\n"
+        "os.set_blocking = interrupt_after_nonblock\n"
+        "try:\n"
+        f"    res_int = launcher.launch([sys.executable, '-c', \"print('ctrlc-line', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'ctrlc.log', stream_output=True, timeout_seconds=2.0)\n"
+        "    restored_ctrlc = os.get_blocking(cw)\n"
+        "finally:\n"
+        "    os.set_blocking = orig_set_blocking\n"
+        "    sys.stdout.close()\n"
+        "    sys.stdout = old_stdout\n"
+        "    os.close(cr)\n"
+        f"Path({str(report3)!r}).write_text(json.dumps({{'results': results, 't2_saw_write': t2_saw_write, 'interrupted_set': interrupted_set, 'res_int_interrupted': res_int.interrupted, 'restored_blocking': os.get_blocking(stdout_fd) and restored_ctrlc}}), encoding='utf-8')\n"
     )
     r3, w3 = os.pipe()
     try:
@@ -2132,15 +2164,19 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         p3 = subprocess.Popen([sys.executable, "-c", driver3], stdout=w3, stderr=subprocess.PIPE, env=env)
         os.close(w3)
         w3 = -1
-        deadline = time.monotonic() + 3.0
+        deadline = time.monotonic() + 4.0
         while not report3.exists() and time.monotonic() < deadline:
             assert p3.poll() is None, p3.stderr.read().decode(errors="replace")
             time.sleep(0.01)
         assert report3.exists(), "concurrent launch blocked on shared 4 KiB stdout pipe"
         data3 = json.loads(report3.read_text(encoding="utf-8"))
-        assert data3["results"]["t1"][0] == 0 and data3["results"]["t1"][1] < 1.0
-        assert data3["results"]["t2"][0] == 0 and data3["results"]["t2"][1] < 1.0
-        assert data3["all_nonblocking"] is True
+        assert data3["results"]["t1"][0] == 0
+        assert data3["results"]["t2"][0] == 0
+        assert data3["results"]["t2"][1] < 0.8
+        assert data3["results"]["t2"][2] == "B" * 64
+        assert data3["t2_saw_write"] is False
+        assert data3["interrupted_set"] is True
+        assert data3["res_int_interrupted"] is True
         assert data3["restored_blocking"] is True
         rflags = fcntl.fcntl(r3, fcntl.F_GETFL)
         fcntl.fcntl(r3, fcntl.F_SETFL, rflags | os.O_NONBLOCK)
