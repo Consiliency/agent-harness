@@ -14,6 +14,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Classify structured error fields inside failed `agy` NDJSON `event="result"` records
+  (when `status != "SUCCESS"` and `response` is empty/absent) into `provider_error_class`
+  on both nonzero native exits and exit-0 `final_result_invalid` failures without
+  scanning `response`/`step_update` prose or retaining raw text (agent-harness#2215).
 - Keep a phase `blocked` with its `runner_verification_failed` blocker when runner-owned
   verification fails closed, instead of letting a child's `complete` closeout overwrite
   the phase status to `complete` (agent-harness#2135).

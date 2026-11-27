@@ -832,6 +832,48 @@ def test_jailed_broker_retains_native_exit_class(monkeypatch, tmp_path, expires_
         assert "PRIVATE_STDERR_SENTINEL" not in retained
 
 
+@pytest.mark.parametrize(("native_rc", "result_fields", "expected"), [
+    (0, {"status": "ERROR", "error": {"code": 429, "message": "RESOURCE_EXHAUSTED PRIVATE_RESULT_SENTINEL"}}, "quota_exhausted"),
+    (1, {"status": "FAILED", "error_code": 401, "error_message": "UNAUTHENTICATED PRIVATE_RESULT_SENTINEL"}, "auth_missing"),
+    (0, {"status": "ERROR", "response": "", "message": "MODEL_NOT_FOUND PRIVATE_RESULT_SENTINEL"}, "model_error"),
+])
+def test_jailed_broker_classifies_failed_ndjson_result_without_retaining_raw_text(
+    monkeypatch, tmp_path, native_rc, result_fields, expected, caplog,
+):
+    seat = _jailed_seat()
+    stdout = json.dumps({
+        "event": "result",
+        "conversation_id": "fixture-session",
+        "result": result_fields,
+    }) + "\n"
+    stderr = "unrecognized diagnostic PRIVATE_STDERR_SENTINEL\n"
+
+    def run(*args, native_run, **kwargs):
+        native_run.update(native_exit_code=native_rc, native_signal=None,
+                          native_stdout_bytes=len(stdout), native_stderr_bytes=len(stderr))
+        return pi._LegRun(native_rc, stdout, stderr)
+
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run)
+    spawned, record = _jailed_gemini_spawn(
+        monkeypatch, tmp_path, prepare=lambda *a, **k: seat, execute=_REAL_EXEC,
+    )
+    assert tuple(spawned)[:2] == ("DEGRADED", "")
+    evidence = spawned.harden_isolation_evidence
+    assert evidence["provider_error_class"] == expected
+    assert evidence["provider_response_bytes"] == 0
+    assert evidence["native_exit_code"] == native_rc
+    leg = pi.PanelLegResult(leg="gemini", status=spawned[0], text=spawned[1],
+                            detail=_spawn_detail(spawned))
+    pi.attach_harden_isolation_evidence(leg, evidence)
+    pi._write_incremental_verdict(tmp_path, 0, leg)
+    raw_verdict = next(tmp_path.glob("leg-*.verdict.json")).read_text()
+    assert json.loads(raw_verdict)["provider_error_class"] == expected
+    for retained in (json.dumps(evidence), json.dumps(record), raw_verdict, caplog.text):
+        assert "PRIVATE_RESULT_SENTINEL" not in retained
+        assert "PRIVATE_STDERR_SENTINEL" not in retained
+
+
 def test_a_launch_that_fails_after_its_gate_opened_stays_failed(monkeypatch, tmp_path):
     """A capped child can exec once its gate opens even when its launcher then raises (the
     caps reaper or witness failing): no spawn was counted, yet the outcome must stay
