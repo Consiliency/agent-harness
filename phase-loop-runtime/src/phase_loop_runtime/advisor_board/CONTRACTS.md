@@ -1416,12 +1416,12 @@ A non-release `agy` image is admitted only by verifying it, never by trusting it
   `final_result_invalid` terminal event, the heartbeat and jailed agy routes also match
   fixed, case-insensitive markers in up to the last 64 KiB per stream
   (agent-harness#2195, agent-harness#2215). Stderr is checked first. If stderr has no
-  match, stdout is checked for structured error fields inside failed NDJSON
+  match, stdout is checked first for structured error fields inside failed NDJSON
   `event="result"` records (only when `status != "SUCCESS"` and `response` is absent,
   null, or a blank string, never scanning `response`, `step_update`, or `tool_info`, and
-  admitting only complete normalized fields within the 64 KiB bound), and on positive
-  exits for plain non-JSON diagnostics, skipping any partial line at the byte boundary.
-  Within each stream, the first matching class in this order wins: `auth_expired`,
+  admitting only complete normalized fields that fit within the 64 KiB bound), and then
+  on positive exits for plain non-JSON diagnostics, skipping any partial line at the byte
+  boundary. Within each pass, the first matching class in this order wins: `auth_expired`,
   `auth_missing`, `quota_exhausted`, `permission_denied`, `timeout`, `network`,
   `model_error`. Opaque provider failures use `unknown`. The broker evidence and
   streamed verdict can retain the label. Matched text and stream excerpts stay in

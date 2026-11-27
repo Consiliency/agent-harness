@@ -18614,7 +18614,7 @@ def _agy_result_error_class(output: str) -> ProviderErrorClass | None:
         encoded = fragment.encode("utf-8", errors="replace")
         sep = 1 if bounded else 0
         if used + sep + len(encoded) > limit:
-            break
+            continue
         if sep:
             bounded.append(b"\n")
         bounded.append(encoded)
