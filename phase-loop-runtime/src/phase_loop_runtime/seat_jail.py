@@ -522,8 +522,8 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "run the review through the CLI executor route"),
     "gemini_credential_near_expiry": (
         "leg refused",
-        "the agy login file is expired or has under 10 minutes left and has not been renewed "
-        "(`agy models`); the seat does not run",
+        "the agy login file could not be verified to have at least 10 minutes of remaining life "
+        "(expired, near expiry, unreadable, or not renewed via `agy models`); the seat does not run",
         "run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`, then re-run: it renews "
         "agy's login file (the store the seat reads, not a desktop keyring) once the login is "
         "close to its expiry; if agy asks you to sign in, run it again without `models`"),

@@ -803,7 +803,8 @@ or `unknown`: `unknown` records a provider or launch measurement the provider-fr
 not perform, never a pass. The checks follow launch order—host, credential, egress, subject and
 authority, jail pass, then vendor admission. `authority_missing` and `authority_invalid` are
 doctor refinements that select LA1-AUTHORITY-PIN; the corresponding seat launch refuses
-`seat_sandbox_refused:identity`. The [team-host administrator checklist](team-host-admin.md)
+`seat_dependency_authority_missing` for missing authority and `seat_sandbox_refused:identity`
+for invalid authority. The [team-host administrator checklist](team-host-admin.md)
 contains every root action, and its renderer is print-only.
 
 The Gemini writable overlay remains `.gemini/config`. Narrowing below that directory is deferred

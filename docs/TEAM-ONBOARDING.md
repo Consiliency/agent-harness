@@ -228,9 +228,11 @@ item; the runtime prints the required root actions but never applies them.
   admission pass.
 
 For a managed release, `authority_missing` and `authority_invalid` select
-LA1-AUTHORITY-PIN. They are diagnostic refinements of the launch refusal
-`seat_sandbox_refused:identity`. Pin production and update authority are governed by contract
-§7; release bytes never establish their own authority.
+LA1-AUTHORITY-PIN. `authority_missing` is a diagnostic refinement of the ordinary launch
+refusal `seat_dependency_authority_missing`, and `authority_invalid` is a diagnostic
+refinement of the security launch refusal `seat_sandbox_refused:identity`. Pin production
+and update authority are governed by contract §7; release bytes never establish their own
+authority.
 
 ## First run in your project
 

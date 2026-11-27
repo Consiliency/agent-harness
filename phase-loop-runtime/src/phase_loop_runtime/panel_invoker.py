@@ -13842,10 +13842,15 @@ def _prepare_jailed_claude(
     subject_refusal = None
     try:
         subject, dependency = _resolved_jail_subject("claude", os.environ)
-    except (FileNotFoundError, ExecutableDependencyError):
+    except (FileNotFoundError, ExecutableDependencyError) as exc:
         # No admissible subject: refused typed at the jail build, after the credential
         # step, exactly where an unresolvable executable has always been refused.
-        subject, dependency, subject_refusal = None, None, "jail_build"
+        subject, dependency = None, None
+        subject_refusal = (
+            "seat_dependency_authority_missing"
+            if isinstance(exc, ExecutableDependencyError) and exc.code == "authority_missing"
+            else _seat_jail.refused("jail_build")
+        )
     _validate_jail_dependency("claude", dependency)
     executable = (Path(dependency.subject_source) if dependency is not None
                   else None if subject is None else subject.subject_path)
@@ -13878,7 +13883,7 @@ def _prepare_jailed_claude(
         try:
             if executable is None:
                 raise _seat_jail.SeatSandboxRefused(
-                    _seat_jail.refused(subject_refusal or "identity"))
+                    subject_refusal or _seat_jail.refused("identity"))
             # ``none`` hands the builder no token at all: no token pipe is created and no
             # descriptor reaches the jail.
             token = (credential.token if credential_mode == "live"
@@ -14384,7 +14389,12 @@ def _prepare_jailed_gemini(
             "gemini", _broker_subscription_env(env),
         )
     except (FileNotFoundError, ExecutableDependencyError) as exc:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
+        code = (
+            "seat_dependency_authority_missing"
+            if isinstance(exc, ExecutableDependencyError) and exc.code == "authority_missing"
+            else _seat_jail.refused("jail_build")
+        )
+        raise _seat_jail.SeatSandboxRefused(code) from exc
     _validate_jail_dependency("gemini", dependency)
     subscription_env = _broker_subscription_env(env)
     subject_path = (Path(dependency.subject_source) if dependency is not None

@@ -251,8 +251,8 @@ def verdict(leg: str, env: Mapping[str, str], *, execute: bool = False) -> Verdi
 - **Agreement (EC-TEAMHOST-5).** For every fixture state:
   - doctor `admits` implies that the real seat preparation admits;
   - doctor `refuses` carries the seat's own refusal code, except for the declared diagnostic
-    refinements `authority_missing` and `authority_invalid`, each of which maps to the seat's
-    `seat_sandbox_refused:identity`;
+    refinements `authority_missing` (which maps to `seat_dependency_authority_missing`) and
+    `authority_invalid` (which maps to `seat_sandbox_refused:identity`);
   - completeness: the test lists every pre-launch refusal code the leg's real preparation can
     return (route steps L1–L8 once JAILCORE lands, plus the leg's own preparation, excluding
     staged-tree and capacity codes), and fails when a code has no fixture row.

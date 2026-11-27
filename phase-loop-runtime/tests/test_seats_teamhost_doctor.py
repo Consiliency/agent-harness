@@ -171,7 +171,7 @@ PRELAUNCH_REFUSAL_CODES = frozenset(
 )
 
 DECLARED_SEAT_CODE_MAP = {
-    "authority_missing": "seat_sandbox_refused:identity",
+    "authority_missing": "seat_dependency_authority_missing",
     "authority_invalid": "seat_sandbox_refused:identity",
 }
 

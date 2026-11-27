@@ -396,3 +396,54 @@ def test_authority_before_host_mutant_breaks_doctor_launch_agreement(tmp_path, m
     assert (doctor.status, doctor.code) == ("refuses", "authority_invalid")
     assert production == "seat_sandbox_unavailable_host"
     assert not _agrees(doctor, production)
+
+
+def test_preparation_preserves_missing_authority_notice_for_claude_and_gemini(
+    tmp_path, monkeypatch,
+):
+    """If authority disappears between route admission and launch preparation, Claude and
+    Gemini preparation preserve ``seat_dependency_authority_missing`` rather than falling
+    back to generic ``seat_sandbox_refused:jail_build`` (agent-harness#2109)."""
+    from phase_loop_runtime import panel_invoker as pi
+
+    def missing_authority(*_args, **_kwargs):
+        raise ExecutableDependencyError("authority_missing")
+
+    monkeypatch.setattr(pi, "_resolved_jail_subject", missing_authority)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as gem_exc:
+        pi._prepare_jailed_gemini(
+            tmp_path / "review",
+            tmp_path / "seat-gemini",
+            None,
+            0,
+            0,
+            ("artifact", "instructions"),
+            SimpleNamespace(proxy_url="http://127.0.0.1:3128", private_proxy_token=b"fixture"),
+            env={"HOME": str(tmp_path)},
+        )
+    assert gem_exc.value.code == "seat_dependency_authority_missing"
+
+    review_dir = tmp_path / "review-claude"
+    tree = review_dir / seat_jail.HOST_TREE_DIRNAME
+    tree.mkdir(parents=True)
+    tree_fd = seat_jail.open_dir_nofollow(tree)
+    try:
+        digest = seat_jail.tree_manifest_sha256_at(tree_fd)
+    finally:
+        os.close(tree_fd)
+    monkeypatch.setattr(
+        pi._seat_credentials,
+        "resolve_claude_seat_credential",
+        lambda *_a, **_k: SimpleNamespace(token=b"fixture-token", notices=()),
+    )
+    with pytest.raises(seat_jail.SeatSandboxRefused) as claude_exc:
+        pi._prepare_jailed_claude(
+            review_dir,
+            tmp_path / "seat-claude",
+            SimpleNamespace(staged_tree_sha256=digest),
+            1000,
+            60,
+            ("artifact", "instructions"),
+            transport="tui",
+        )
+    assert claude_exc.value.code == "seat_dependency_authority_missing"
