@@ -1705,9 +1705,9 @@ def test_writer_closing_at_drain_boundary_still_collects_final_partial_line(tmp_
 
 
 def test_real_full_stdout_pipe_bounds_drain_and_exits_cleanly_without_abort(tmp_path):
-    """On a real full OS stdout pipe, post-exit streaming must stop at the drain deadline
-    without leaving a background thread holding sys.stdout's BufferedWriter lock, so the
-    caller can continue writing once drained and interpreter shutdown exits 0 cleanly."""
+    """On a real full OS stdout pipe, live streaming must not block exit detection, drop
+    captured output/log lines, block quiet heartbeat timeout cleanup, or leave sys.stdout's
+    BufferedWriter lock held."""
     import fcntl
     import json
     import os
@@ -1715,20 +1715,33 @@ def test_real_full_stdout_pipe_bounds_drain_and_exits_cleanly_without_abort(tmp_
     import subprocess
 
     report_path = tmp_path / "report.json"
+    log_path = tmp_path / "run" / "output.log"
+    hb_path = tmp_path / "run" / "heartbeat.json"
     driver = (
         "import json, os, sys, time\n"
         "from pathlib import Path\n"
         "from phase_loop_runtime import launcher\n"
-        f"log_path = Path({str(tmp_path / 'run' / 'output.log')!r})\n"
+        f"log_path = Path({str(log_path)!r})\n"
+        f"hb_path = Path({str(hb_path)!r})\n"
         f"report_path = Path({str(report_path)!r})\n"
-        "child_cmd = [sys.executable, '-c', \"print('x' * 4096, flush=True)\"]\n"
-        "started = time.monotonic()\n"
-        "res = launcher.launch(child_cmd, log_path=log_path, stream_output=True, timeout_seconds=0.25)\n"
-        "elapsed = time.monotonic() - started\n"
+        "# Scenario 1: child prints first, waits 100ms, prints last, exits with 1.5s budget.\n"
+        "child1 = [sys.executable, '-c', \"import time; print('first', flush=True); time.sleep(0.1); print('last', flush=True)\"]\n"
+        "t0 = time.monotonic()\n"
+        "res1 = launcher.launch(child1, log_path=log_path, stream_output=True, timeout_seconds=1.5)\n"
+        "el1 = time.monotonic() - t0\n"
+        "# Scenario 2: quiet child with heartbeat emission and 0.25s timeout.\n"
+        "child2 = [sys.executable, '-c', 'import time; time.sleep(30)']\n"
+        "t1 = time.monotonic()\n"
+        "res2 = launcher.launch(child2, log_path=log_path.with_name('quiet.log'), heartbeat_path=hb_path, heartbeat_interval_seconds=0.05, quiet_warning_seconds=0.0, quiet_blocker_seconds=10.0, stream_output=True, timeout_seconds=0.25)\n"
+        "el2 = time.monotonic() - t1\n"
         "report_path.write_text(json.dumps({\n"
-        "    'returncode': res.returncode,\n"
-        "    'drain_incomplete': res.drain_incomplete,\n"
-        "    'elapsed': elapsed,\n"
+        "    'rc1': res1.returncode,\n"
+        "    'out1': res1.output,\n"
+        "    'log1': log_path.read_text(encoding='utf-8'),\n"
+        "    'drain1': res1.drain_incomplete,\n"
+        "    'el1': el1,\n"
+        "    'timed_out2': res2.timed_out,\n"
+        "    'el2': el2,\n"
         "}), encoding='utf-8')\n"
         "print('summary-after-launch', flush=True)\n"
     )
@@ -1747,6 +1760,7 @@ def test_real_full_stdout_pipe_bounds_drain_and_exits_cleanly_without_abort(tmp_
         fcntl.fcntl(write_fd, fcntl.F_SETFL, flags)
 
         env = dict(os.environ)
+        env.pop("PYTHONUNBUFFERED", None)
         env["PYTHONPATH"] = os.pathsep.join(sys.path)
         proc = subprocess.Popen(
             [sys.executable, "-c", driver],
@@ -1757,16 +1771,20 @@ def test_real_full_stdout_pipe_bounds_drain_and_exits_cleanly_without_abort(tmp_
         os.close(write_fd)
         write_fd = -1
 
-        # Wait until launch() finishes and writes its report while stdout pipe is STILL FULL.
+        # Wait until BOTH launches finish and write their report while stdout pipe is STILL FULL.
         deadline = time.monotonic() + 3.0
         while not report_path.exists() and time.monotonic() < deadline:
             assert proc.poll() is None, proc.stderr.read().decode(errors="replace")
             time.sleep(0.02)
         assert report_path.exists(), "launch() remained blocked on the full stdout pipe"
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        assert report["returncode"] == 0
-        assert report["drain_incomplete"] is True
-        assert report["elapsed"] < 1.2
+        assert report["rc1"] == 0
+        assert report["drain1"] is False
+        assert report["out1"].splitlines() == ["first", "last"]
+        assert report["log1"].splitlines() == ["first", "last"]
+        assert report["el1"] < 0.9
+        assert report["timed_out2"] is True
+        assert report["el2"] < 1.2
 
         # Now drain the pipe so the driver's post-launch print() and interpreter shutdown finish.
         chunks = []
@@ -1790,6 +1808,105 @@ def test_real_full_stdout_pipe_bounds_drain_and_exits_cleanly_without_abort(tmp_
         os.close(read_fd)
         if write_fd >= 0:
             os.close(write_fd)
+
+
+def test_prebuffered_stdout_with_4k_pipe_does_not_block_on_flush(tmp_path):
+    """If the caller already has >4 KiB buffered in Python's sys.stdout over an empty 4 KiB
+    OS pipe, live streaming must not call sys.stdout.flush() and block past the deadline."""
+    import fcntl
+    import json
+    import os
+    import select
+    import subprocess
+
+    if not sys.platform.startswith("linux") or not hasattr(fcntl, "F_SETPIPE_SZ"):
+        pytest.skip("Linux F_SETPIPE_SZ test")
+    report_path = tmp_path / "prebuf_report.json"
+    driver = (
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "from phase_loop_runtime import launcher\n"
+        "sys.stdout.write('B' * 6000)\n"
+        "t0 = time.monotonic()\n"
+        f"res = launcher.launch([sys.executable, '-c', \"print('ok-line', flush=True)\"], log_path=Path({str(tmp_path / 'prebuf.log')!r}), stream_output=True, timeout_seconds=0.25)\n"
+        "el = time.monotonic() - t0\n"
+        f"Path({str(report_path)!r}).write_text(json.dumps({{'rc': res.returncode, 'out': res.output, 'el': el}}), encoding='utf-8')\n"
+    )
+    read_fd, write_fd = os.pipe()
+    try:
+        fcntl.fcntl(write_fd, fcntl.F_SETPIPE_SZ, 4096)
+        env = dict(os.environ)
+        env.pop("PYTHONUNBUFFERED", None)
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", driver],
+            stdout=write_fd,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        os.close(write_fd)
+        write_fd = -1
+
+        deadline = time.monotonic() + 3.0
+        while not report_path.exists() and time.monotonic() < deadline:
+            assert proc.poll() is None, proc.stderr.read().decode(errors="replace")
+            time.sleep(0.02)
+        assert report_path.exists(), "launch() blocked flushing pre-buffered sys.stdout"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["rc"] == 0
+        assert "ok-line" in report["out"]
+        assert report["el"] < 0.8
+
+        rflags = fcntl.fcntl(read_fd, fcntl.F_GETFL)
+        fcntl.fcntl(read_fd, fcntl.F_SETFL, rflags | os.O_NONBLOCK)
+        end = time.monotonic() + 3.0
+        while time.monotonic() < end:
+            ready, _, _ = select.select([read_fd], [], [], 0.05)
+            if ready:
+                if not os.read(read_fd, 65536):
+                    break
+            elif proc.poll() is not None:
+                break
+        assert proc.wait(timeout=3.0) == 0, proc.stderr.read().decode(errors="replace")
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+
+
+def test_stream_output_handles_high_numbered_stdout_pipe_fd(tmp_path):
+    """Live streaming on a writable stdout pipe with fd >= 1024 must use poll() rather
+    than select.select() so FD_SETSIZE does not raise ValueError."""
+    import os
+    import resource
+    import subprocess
+
+    soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft <= 1025:
+        pytest.skip("RLIMIT_NOFILE too low for fd >= 1024 probe")
+    driver = (
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "from phase_loop_runtime import launcher\n"
+        "r_fd, w_fd = os.pipe()\n"
+        "os.dup2(w_fd, 1024)\n"
+        "os.close(w_fd)\n"
+        "old_stdout = sys.stdout\n"
+        "sys.stdout = os.fdopen(1024, 'w', encoding='utf-8')\n"
+        "try:\n"
+        f"    res = launcher.launch([sys.executable, '-c', \"print('high-fd-ok', flush=True)\"], log_path=Path({str(tmp_path / 'hi.log')!r}), stream_output=True, timeout_seconds=5.0)\n"
+        "    assert res.returncode == 0\n"
+        "    assert 'high-fd-ok' in res.output\n"
+        "    assert b'high-fd-ok' in os.read(r_fd, 4096)\n"
+        "finally:\n"
+        "    sys.stdout.close()\n"
+        "    sys.stdout = old_stdout\n"
+        "    os.close(r_fd)\n"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    completed = subprocess.run([sys.executable, "-c", driver], env=env, capture_output=True, text=True, timeout=10)
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_first_record_dequeued_after_leader_exit_uses_bounded_drain(tmp_path, monkeypatch):

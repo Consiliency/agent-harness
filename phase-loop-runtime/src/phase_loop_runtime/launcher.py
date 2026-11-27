@@ -3141,6 +3141,7 @@ def launch(
         sink_thread: threading.Thread | None = None
         sink_close_on_exit = threading.Event()
         sink_stalled = False
+        stream_stalled = False
         try:
             popen_kwargs: dict[str, Any] = {
                 "text": _codex_usage_observer is None,
@@ -3271,33 +3272,44 @@ def launch(
                     return fd
                 return None
 
-            def _stream_bounded_to_fd(fd: int, text: str, deadline: float) -> bool:
-                nonlocal sink_stalled
+            def _fd_ready_for_write(fd: int) -> bool:
+                if hasattr(select, "poll"):
+                    poller = select.poll()
+                    poller.register(fd, select.POLLOUT)
+                    events = poller.poll(0)
+                    return bool(events)
+                _, writable, _ = select.select([], [fd], [], 0.0)
+                return bool(writable)
+
+            def _stream_live_text(text: str) -> None:
+                """Best-effort non-blocking live display on real pipes/sockets/ttys.
+                Never calls sys.stdout.flush() (which can block on pre-buffered data),
+                never delays process polling or log capture, and uses poll() so fds >= 1024
+                work cleanly. BrokenPipeError still propagates synchronously."""
+                nonlocal stream_stalled
+                if not stream_output or not text:
+                    return
+                stdout_fd = _stream_stdout_fd()
+                if stdout_fd is None:
+                    print(text, end="", flush=True)
+                    return
+                if stream_stalled:
+                    return
                 encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
                 errors = getattr(sys.stdout, "errors", None) or "replace"
                 raw = text.encode(encoding, errors=errors)
                 if not raw:
-                    return True
-                flushed = False
+                    return
                 offset = 0
                 while offset < len(raw):
-                    wait_left = deadline - time.monotonic()
-                    if wait_left <= 0:
-                        sink_stalled = True
-                        return False
-                    _, writable, _ = select.select([], [fd], [], wait_left)
-                    if not writable:
-                        sink_stalled = True
-                        return False
-                    if not flushed:
-                        sys.stdout.flush()
-                        flushed = True
-                    written = os.write(fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
+                    if not _fd_ready_for_write(stdout_fd):
+                        stream_stalled = True
+                        return
+                    written = os.write(stdout_fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
                     if written <= 0:
-                        sink_stalled = True
-                        return False
+                        stream_stalled = True
+                        return
                     offset += written
-                return True
 
             def _sink_worker() -> None:
                 assert sink_queue is not None
@@ -3328,19 +3340,7 @@ def launch(
                 if deadline is None:
                     log.write(text)
                     log.flush()
-                    if stream_output:
-                        stdout_fd = (
-                            _stream_stdout_fd()
-                            if action != "review" and timeout_seconds is not None
-                            else None
-                        )
-                        if stdout_fd is not None:
-                            if not sink_stalled:
-                                _stream_bounded_to_fd(
-                                    stdout_fd, text, started_monotonic + timeout_seconds,
-                                )
-                        else:
-                            print(text, end="", flush=True)
+                    _stream_live_text(text)
                     return True
                 if sink_stalled:
                     return False
@@ -3350,7 +3350,6 @@ def launch(
                 # Never run stock print() against a real OS pipe/socket/tty on a daemon
                 # thread (which would hold sys.stdout's BufferedWriter lock across a full
                 # pipe write and abort subsequent writes or interpreter shutdown).
-                stdout_fd = _stream_stdout_fd() if stream_output else None
                 call_print_in_worker = stream_output and print is not _BUILTIN_PRINT
                 if sink_thread is None:
                     sink_queue = SimpleQueue()
@@ -3372,11 +3371,7 @@ def launch(
                 if err_box:
                     raise err_box[0]
                 if stream_output and not call_print_in_worker:
-                    if stdout_fd is not None:
-                        return _stream_bounded_to_fd(stdout_fd, text, deadline)
-                    if deadline - time.monotonic() <= 0:
-                        return False
-                    print(text, end="", flush=True)
+                    _stream_live_text(text)
                 return True
 
             def consume(record, *, deadline: float | None = None) -> bool:
@@ -3562,13 +3557,14 @@ def launch(
                             last_heartbeat_summary = heartbeat
                             write_run_heartbeat(heartbeat_path, heartbeat)
                             if stream_output and heartbeat.get("quiet_level") != "active":
-                                print(
-                                    "heartbeat:",
-                                    f"pid={heartbeat.get('pid')}",
-                                    f"elapsed={heartbeat.get('elapsed_seconds')}s",
-                                    f"quiet={heartbeat.get('seconds_since_log_update')}s",
-                                    f"level={heartbeat.get('quiet_level')}",
-                                    flush=True,
+                                _stream_live_text(
+                                    " ".join((
+                                        "heartbeat:",
+                                        f"pid={heartbeat.get('pid')}",
+                                        f"elapsed={heartbeat.get('elapsed_seconds')}s",
+                                        f"quiet={heartbeat.get('seconds_since_log_update')}s",
+                                        f"level={heartbeat.get('quiet_level')}",
+                                    )) + "\n"
                                 )
                             last_heartbeat = now
                             if action != "review" and heartbeat.get("stalled_suspect") and not _child_exited_no_reap(process)[0]:
