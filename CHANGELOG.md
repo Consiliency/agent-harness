@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed
+
+- `test_jevdrill_usage::test_probe_descendant_cleanup_and_deadline` now accepts Linux
+  dead states (`X`/`x`) and vanished `/proc/<pid>/stat` entries alongside `Z`, removing
+  the reaper-timing flake under hosted CI load (agent-harness#2153).
+
 ## [0.7.47] - 2026-11-26
 
 ### Changed

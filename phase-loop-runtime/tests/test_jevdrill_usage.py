@@ -234,6 +234,16 @@ def test_capture_structural_exclusions(tmp_path, monkeypatch, case):
     assert result.jevdrill_usage is None
 
 
+def _proc_stat_state(path):
+    """Return the Linux ``/proc/<pid>/stat`` state code, or ``None`` once reaped."""
+    try:
+        raw = path.read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    tail = raw.rpartition(")")[2].split()
+    return tail[0] if tail else None
+
+
 def test_probe_descendant_cleanup_and_deadline(tmp_path, monkeypatch):
     marker = tmp_path / "descendant"
     probe = "pid=os.fork(); (Path(" + repr(str(marker)) + ").write_text(str(pid)) if pid else None); time.sleep(5); sys.exit(0)"
@@ -251,10 +261,14 @@ def test_probe_descendant_cleanup_and_deadline(tmp_path, monkeypatch):
     assert time.monotonic() - started < 1
     pid = int(marker.read_text())
     stat = __import__("pathlib").Path("/proc") / str(pid) / "stat"
-    deadline = time.monotonic() + .3
-    while stat.exists() and stat.read_text().split()[2] != "Z" and time.monotonic() < deadline:
+    deadline = time.monotonic() + 1.0
+    # Linux /proc/<pid>/stat can report Z (zombie) or X/x (dead) while reaping, or vanish
+    # outright; all prove the descendant exited (agent-harness#2153).
+    state = _proc_stat_state(stat)
+    while state not in (None, "Z", "X", "x") and time.monotonic() < deadline:
         time.sleep(.01)
-    assert not stat.exists() or stat.read_text().split()[2] == "Z"
+        state = _proc_stat_state(stat)
+    assert state in (None, "Z", "X", "x")
 
 
 @pytest.mark.parametrize("stream", [1, 2])
