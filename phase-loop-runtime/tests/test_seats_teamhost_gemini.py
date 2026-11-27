@@ -1457,3 +1457,32 @@ def test_verdict_refusal_reasons_hardening_r5(tmp_path, monkeypatch):
         )
     finally:
         store.host_dir.chmod(0o700)
+
+    # r9 P2: Hold search ValueError (e.g. 5000-digit version component in parse_version) ->
+    # admission_error in BOTH doctor and execute modes (never aborts doctor reporting).
+    huge_ver_bytes = b"#!/bin/sh\necho huge-ver\n"
+    huge_ver_path = _subject(tmp_path, "agy-huge-ver", huge_ver_bytes)
+    huge_ver_digest = sha256(huge_ver_bytes).hexdigest()
+    huge_asset = SimpleNamespace(
+        name=HOST.asset, version="1.0." + "9" * 5000, digest="sha256:" + "2" * 64
+    )
+    store.put_provenance(
+        SimpleNamespace(image_sha256=huge_ver_digest, platform=HOST.name, asset=huge_asset),
+        q.agy_profile_digest(),
+    )
+    huge_img = gh.VerifiedImage.from_bytes(huge_ver_bytes, huge_ver_path)
+    try:
+        agy_hold.retain(huge_img, store, cache_version=lambda _d, _v: (1, 0, 1))
+    finally:
+        huge_img.close()
+    cfg_file.unlink(missing_ok=True)
+    (held_dir / sha256(lkg_bytes).hexdigest()).unlink(missing_ok=True)
+    try:
+        assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+    finally:
+        (held_dir / huge_ver_digest).unlink(missing_ok=True)

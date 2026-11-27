@@ -1883,6 +1883,8 @@ def _doctor_hold_fault(env, *, subject_sha256: str | None, store: Store) -> Verd
         if hold_faults and hold_faults[0] in VERDICT_REFUSAL_REASONS:
             return hold_faults[0]
         return None
+    except (OSError, ValueError, RuntimeError):
+        return "admission_error"
     finally:
         _HOLD_FAULT_STATE.faults = prev_faults
         agy_hold._SEARCH_FAULT_STATE.faults = prev_search_faults
