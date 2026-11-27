@@ -1105,3 +1105,137 @@ def test_verdict_refusal_reasons_hardening_r2(tmp_path, monkeypatch):
     multi = agy_integrity.AgyImageUnqualified("a", "b", reason="store_unsafe")
     assert multi.args == ("a", "b")
     assert multi.reason == "store_unsafe"
+
+
+def test_verdict_refusal_reasons_hardening_r3(tmp_path, monkeypatch):
+    """Regression coverage for r2 review findings (quiescence, LKG, hold faults, pidfd, closed LKG)."""
+    import errno
+    from phase_loop_runtime import agy_hold
+    from phase_loop_runtime.advisor_board import config as board_config
+
+    lkg_bytes = b"#!/bin/sh\necho lkg\n"
+    lkg_path = _subject(tmp_path, "agy-lkg", lkg_bytes)
+    unqualified_path = _subject(tmp_path, "agy-unqualified", b"#!/bin/sh\necho other\n")
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {})
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setattr(agy_hold, "_WALK_ROOT", tmp_path)
+    monkeypatch.setattr(agy_hold, "VENDOR_STORES", ())
+    store = _seed(lkg_bytes)
+
+    # P1 (quiescence propagation): ProviderProcessGroupQuiescenceError during LKG help
+    # must propagate without calling the hold.
+    with monkeypatch.context() as ctx:
+        hold_called = []
+        ctx.setattr(
+            q, "_LAST_KNOWN_GOOD_PROVIDER",
+            lambda: gh.VerifiedImage.from_bytes(lkg_bytes, lkg_path),
+        )
+        ctx.setattr(
+            q, "measure_help",
+            lambda *_a, **_kw: (_ for _ in ()).throw(
+                panel_invoker.ProviderProcessGroupQuiescenceError("quiescence_timeout")
+            ),
+        )
+        ctx.setattr(
+            q, "admit_held",
+            lambda *_a, **_kw: hold_called.append(True) or None,
+        )
+        verdict = q.admission_verdict(env, unqualified_path, execute=True)
+        assert verdict.status == "refuses"
+        assert verdict.code != "agy_image_unqualified"
+        assert hold_called == []
+
+    # P1 (invalid failed entry must not block an otherwise qualified LKG image)
+    store.put_failed(
+        sha256(lkg_bytes).hexdigest(),
+        sha256(HELP).hexdigest(),
+        HOST,
+        q.agy_profile_digest(),
+        "completion",
+        "old_failure",
+    )
+    failed_files = list(store.host_dir.glob("failed-*.json"))
+    assert len(failed_files) == 1
+    failed_files[0].chmod(0o644)
+    try:
+        with monkeypatch.context() as ctx:
+            ctx.setattr(agy_hold, "hold_enabled", lambda: False)
+            ctx.setattr(
+                q, "_LAST_KNOWN_GOOD_PROVIDER",
+                lambda: gh.VerifiedImage.from_bytes(lkg_bytes, lkg_path),
+            )
+            ctx.setattr(q, "measure_help", lambda *_a, **_kw: HELP)
+            assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+                "unknown", None, "launch_measurement"
+            )
+            assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+                "admits", None, None
+            )
+    finally:
+        failed_files[0].chmod(0o600)
+        store.remove(("failed",))
+
+    # P1 (hold candidate help EIO -> admission_error, not no_qualification_record)
+    held_img = gh.VerifiedImage.from_bytes(lkg_bytes, lkg_path)
+    try:
+        agy_hold.retain(held_img, store, cache_version=lambda _d, _v: (9, 9, 9))
+    finally:
+        held_img.close()
+    with monkeypatch.context() as ctx:
+        ctx.setattr(q, "measure_help", lambda *_a, **_kw: HELP)
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "admits", None, None
+        )
+    with monkeypatch.context() as ctx:
+        ctx.setattr(
+            q, "measure_help",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError(errno.EIO, "hold help EIO")),
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    # P1 (transient single-read hold config EIO -> admission_error on first read)
+    with monkeypatch.context() as ctx:
+        reads = iter([OSError(errno.EIO, "transient hold config EIO"), True])
+
+        def _flaky_load_agy_hold(*, path=None):
+            item = next(reads)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        ctx.setattr(board_config, "load_agy_hold", _flaky_load_agy_hold)
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+
+    # P2 (doctor mode preserves admits on release-qualified subject even if pidfd probe fails)
+    release_bytes = b"#!/bin/sh\necho release\n"
+    release_path = _subject(tmp_path, "agy-release", release_bytes)
+    with monkeypatch.context() as ctx:
+        ctx.setattr(gh, "QUALIFIED_IMAGES", {sha256(release_bytes).hexdigest(): "e" * 64})
+        ctx.setattr(
+            gh, "_local_capabilities",
+            lambda: (_ for _ in ()).throw(ValueError(gh._CAPABILITY)),
+        )
+        assert q.admission_verdict(env, release_path, execute=False) == q.AgyVerdict(
+            "admits", None, None
+        )
+
+    # P2 (closed VerifiedImage from LKG provider -> admission_error in both modes)
+    def _closed_lkg():
+        closed = gh.VerifiedImage.from_bytes(lkg_bytes, lkg_path)
+        closed.close()
+        return closed
+
+    with monkeypatch.context() as ctx:
+        ctx.setattr(agy_hold, "hold_enabled", lambda: False)
+        ctx.setattr(q, "_LAST_KNOWN_GOOD_PROVIDER", _closed_lkg)
+        assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "admission_error"
+        )

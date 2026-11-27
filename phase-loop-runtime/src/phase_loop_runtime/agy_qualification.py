@@ -1747,6 +1747,14 @@ LkgProvider = Callable[[], gh.VerifiedImage | None]
 _LAST_KNOWN_GOOD_PROVIDER: LkgProvider | None = None
 _REQUALIFIED: set[tuple[str, str, str]] = set()
 _REQUALIFIED_LOCK = threading.Lock()
+_HOLD_FAULT_STATE = threading.local()
+
+
+def _record_hold_fault(reason: str) -> None:
+    """Record a transient/local fault observed during hold search for the current thread."""
+    faults = getattr(_HOLD_FAULT_STATE, "faults", None)
+    if faults is not None and reason in VERDICT_REFUSAL_REASONS:
+        faults.append(reason)
 
 
 def register_last_known_good(provider: LkgProvider) -> None:
@@ -1787,8 +1795,11 @@ def _admit_last_known_good(env, *, store=None, faults: list[str] | None = None):
     if image is None:
         return None
     admitted = False
+    store_fault = False
     try:
         if not isinstance(image, gh.VerifiedImage) or image.fd is None:
+            if faults is not None:
+                faults.append("admission_error")
             return None
         descriptor = image.reopen()
         try:
@@ -1807,35 +1818,33 @@ def _admit_last_known_good(env, *, store=None, faults: list[str] | None = None):
         host = _host()
         profile_digest = agy_profile_digest()
         failed_state, _ = store._failed_entry(image.sha256, host, profile_digest)
-        if failed_state == "invalid":
-            if faults is not None:
-                faults.append("store_unsafe")
-            return None
         if failed_state == "valid":
             return None
+        if failed_state == "invalid":
+            store_fault = True
         prov_state, _ = store._provenance_entry(image.sha256, host, profile_digest)
         if prov_state == "invalid":
-            if faults is not None:
-                faults.append("store_unsafe")
-            return None
+            store_fault = True
         if prov_state != "valid":
+            if store_fault and faults is not None:
+                faults.append("store_unsafe")
             return None
         help_sha256 = sha256(measure_help(image, env, profile_digest)).hexdigest()
         qual_state, _ = store._qualified_entry(image.sha256, help_sha256, host, profile_digest)
         if qual_state == "invalid":
-            if faults is not None:
-                faults.append("store_unsafe")
-            return None
+            store_fault = True
         if qual_state != "valid":
+            if store_fault and faults is not None:
+                faults.append("store_unsafe")
             return None
         admitted = True
         return gh.Admission(image, help_sha256, "locally_qualified", image.path, source="lkg")
-    except (OSError, ValueError, gh.AgyCanaryEvidenceError):
+    except (OSError, ValueError):
         if faults is not None:
             faults.append("admission_error")
         return None
     finally:
-        if not admitted:
+        if not admitted and isinstance(image, gh.VerifiedImage):
             image.close()
 
 
@@ -1858,12 +1867,6 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
         else:
             image.close()
             return AgyVerdict("admits", None, None)
-    if sys.platform != "linux":
-        return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
-    try:
-        gh._local_capabilities()
-    except (OSError, gh.AgyCanaryEvidenceError, ValueError):
-        return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
     try:
         data = gh._read_image(path)
     except (OSError, ValueError, gh.AgyCanaryEvidenceError):
@@ -1878,6 +1881,12 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
 
     def _refuse(reason: VerdictReason) -> AgyVerdict:
         if reason in _UNQUALIFIED_VERDICT_REASONS:
+            if sys.platform != "linux":
+                return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
+            try:
+                gh._local_capabilities()
+            except (OSError, gh.AgyCanaryEvidenceError, ValueError):
+                return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
             from . import agy_hold
 
             resolved = Path(os.path.realpath(path))
@@ -1901,20 +1910,21 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
     if store_state != "ok":
         return _refuse("no_qualification_record")
     profile_digest = agy_profile_digest()
+    store_fault = False
     failed_state, _ = store._failed_entry(image_sha256, host, profile_digest)
     if failed_state == "valid":
         return _refuse("qualification_failed")
     if failed_state == "invalid":
-        return AgyVerdict("refuses", "agy_image_unqualified", "store_unsafe")
+        store_fault = True
     prov_state, _ = store._provenance_entry(image_sha256, host, profile_digest)
     if prov_state == "valid":
         return AgyVerdict("unknown", None, "launch_measurement")
     if prov_state == "invalid":
-        return AgyVerdict("refuses", "agy_image_unqualified", "store_unsafe")
+        store_fault = True
     lkg_state = _last_known_good_status(store, host, profile_digest)
     if lkg_state == "recorded":
         return AgyVerdict("unknown", None, "launch_measurement")
-    if lkg_state == "store_unsafe":
+    if store_fault or lkg_state == "store_unsafe":
         return AgyVerdict("refuses", "agy_image_unqualified", "store_unsafe")
     if lkg_state == "admission_error":
         return AgyVerdict("refuses", "agy_image_unqualified", "admission_error")
@@ -1931,20 +1941,24 @@ def _last_known_good_status(store, host, profile_digest) -> Literal[
         return "admission_error"
     if image is None:
         return "absent"
+    store_fault = False
     try:
         if not isinstance(image, gh.VerifiedImage) or image.fd is None:
-            return "absent"
+            return "admission_error"
         failed_state, _ = store._failed_entry(image.sha256, host, profile_digest)
-        if failed_state == "invalid":
-            return "store_unsafe"
         if failed_state == "valid":
             return "absent"
+        if failed_state == "invalid":
+            store_fault = True
         prov_state, _ = store._provenance_entry(image.sha256, host, profile_digest)
-        if prov_state == "invalid":
+        if prov_state == "valid":
+            return "recorded"
+        if store_fault or prov_state == "invalid":
             return "store_unsafe"
-        return "recorded" if prov_state == "valid" else "absent"
+        return "absent"
     finally:
-        image.close()
+        if isinstance(image, gh.VerifiedImage):
+            image.close()
 
 
 def _last_known_good_recorded(store, host, profile_digest):
@@ -2433,8 +2447,9 @@ def _hold_or_refuse(env, refused, resolved, *, store, cancel_event, path=None):
     names = (resolved,) if path is None else (path, resolved)
     if _names_managed_release(*names):
         raise refusal from refusal.__cause__
-    if not agy_hold.hold_enabled():
-        if (agy_hold._hold_config_error()
+    hold_state = agy_hold._hold_enabled_state()
+    if hold_state != "enabled":
+        if (hold_state == "error"
                 and getattr(refusal, "_verdict_reason", None) in _UNQUALIFIED_VERDICT_REASONS):
             _with_verdict_reason(refusal, "admission_error")
         raise refusal from refusal.__cause__
@@ -2444,12 +2459,18 @@ def _hold_or_refuse(env, refused, resolved, *, store, cancel_event, path=None):
         if getattr(refusal, "_verdict_reason", None) in _UNQUALIFIED_VERDICT_REASONS:
             _with_verdict_reason(refusal, "host_unknown")
         raise refusal from refusal.__cause__
-    admission = admit_held(env, reason=refused.reason, subject_sha256=refused.subject_sha256,
-                           store=store, cancel_event=cancel_event)
+    prev_faults = getattr(_HOLD_FAULT_STATE, "faults", None)
+    hold_faults: list[str] = []
+    _HOLD_FAULT_STATE.faults = hold_faults
+    try:
+        admission = admit_held(env, reason=refused.reason, subject_sha256=refused.subject_sha256,
+                               store=store, cancel_event=cancel_event)
+    finally:
+        _HOLD_FAULT_STATE.faults = prev_faults
     if admission is None:
-        if (agy_hold._hold_config_error()
+        if (hold_faults
                 and getattr(refusal, "_verdict_reason", None) in _UNQUALIFIED_VERDICT_REASONS):
-            _with_verdict_reason(refusal, "admission_error")
+            _with_verdict_reason(refusal, hold_faults[0])
         raise refusal from refusal.__cause__
     return admission
 
@@ -2476,10 +2497,12 @@ def _held_help(image, env, profile_digest, cancel_event=None):
             raise
         if _cancelled(cancel_event):
             raise ValueError(CANCELLED) from exc
+        _record_hold_fault("admission_error")
         return None
     except (OSError, RuntimeError) as exc:
         if _cancelled(cancel_event):
             raise ValueError(CANCELLED) from exc
+        _record_hold_fault("admission_error")
         return None
     if _cancelled(cancel_event):
         raise ValueError(CANCELLED)
@@ -2494,28 +2517,42 @@ def _hold_predicates(env, *, subject_sha256, store, measure, cancel_event=None):
     hold cannot run (the deny list is unreadable)."""
     from . import agy_hold
 
-    deny = agy_hold.hold_deny()
-    if deny is None:
+    deny_state, deny = agy_hold._hold_deny_state()
+    if deny is None or deny_state == "error":
+        _record_hold_fault("admission_error")
         return None
     excluded = frozenset(deny | ({subject_sha256} if subject_sha256 else set()))
-    store_ok = store.status() == "ok"
+    store_state = store.status()
+    store_ok = store_state == "ok"
+    if store_state == "unsafe" or (store_state == "absent" and store._has_orphaned_entries()):
+        _record_hold_fault("store_unsafe")
     try:
         host = _host()
     except ValueError:
         host = None
-    local = store_ok and host is not None and self_qualification_enabled()
+        _record_hold_fault("host_unknown")
+    cfg_state = _self_qualification_config_state()
+    if cfg_state == "error":
+        _record_hold_fault("admission_error")
+    local = store_ok and host is not None and cfg_state == "enabled"
     profile_digest = agy_profile_digest()
 
     def cache_version(digest, member_version):
         if digest in excluded:
             return None
-        if store_ok and host is not None and store.get_failed(digest, host, profile_digest) is not None:
-            return None
+        if store_ok and host is not None:
+            failed_state, _ = store._failed_entry(digest, host, profile_digest)
+            if failed_state == "valid":
+                return None
+            if failed_state == "invalid":
+                _record_hold_fault("store_unsafe")
         if member_version is not None:
             return member_version
         if not store_ok or host is None:
             return None
-        payload = store.get_provenance(digest, host, profile_digest)
+        prov_state, payload = store._provenance_entry(digest, host, profile_digest)
+        if prov_state == "invalid":
+            _record_hold_fault("store_unsafe")
         return agy_hold.parse_version(payload.get("release_version")) if payload else None
 
     def predicate(image, candidate):
@@ -2526,14 +2563,25 @@ def _hold_predicates(env, *, subject_sha256, store, measure, cancel_event=None):
             return gh.QUALIFIED_IMAGES[digest], "release_qualified"
         if not local:
             return None
-        if store.get_failed(digest, host, profile_digest) is not None:
+        failed_state, _ = store._failed_entry(digest, host, profile_digest)
+        if failed_state == "valid":
             return None
-        if store.get_provenance(digest, host, profile_digest) is None:
+        if failed_state == "invalid":
+            _record_hold_fault("store_unsafe")
+        prov_state, _ = store._provenance_entry(digest, host, profile_digest)
+        if prov_state == "invalid":
+            _record_hold_fault("store_unsafe")
+        if prov_state != "valid":
             return None  # never executed, not even for --help, before this (F5)
         if not measure:
             return None, "locally_qualified"
         help_sha256 = _held_help(image, env, profile_digest, cancel_event)
-        if help_sha256 is None or store.get_qualified(digest, help_sha256, host, profile_digest) is None:
+        if help_sha256 is None:
+            return None
+        qual_state, _ = store._qualified_entry(digest, help_sha256, host, profile_digest)
+        if qual_state == "invalid":
+            _record_hold_fault("store_unsafe")
+        if qual_state != "valid":
             return None
         return help_sha256, "locally_qualified"
 

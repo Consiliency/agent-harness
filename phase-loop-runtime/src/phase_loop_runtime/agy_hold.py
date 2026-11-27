@@ -133,19 +133,42 @@ _DEFAULT_HOLD_ENABLED = hold_enabled
 _DEFAULT_HOLD_DENY = hold_deny
 
 
+def _hold_enabled_state() -> Literal["enabled", "disabled", "error"]:
+    """Single-pass read distinguishing explicit ``hold = false`` from a config read/parse fault."""
+    if hold_enabled is not _DEFAULT_HOLD_ENABLED:
+        try:
+            return "enabled" if hold_enabled() else "disabled"
+        except Exception:  # noqa: BLE001
+            return "error"
+    from .advisor_board.config import load_agy_hold
+    try:
+        return "enabled" if load_agy_hold() is True else "disabled"
+    except Exception:  # noqa: BLE001
+        return "error"
+
+
+def _hold_deny_state() -> tuple[Literal["ok", "error"], frozenset[str] | None]:
+    """Single-pass read of ``[agy] hold_deny`` distinguishing a valid list from a config fault."""
+    if hold_deny is not _DEFAULT_HOLD_DENY:
+        try:
+            value = hold_deny()
+        except Exception:  # noqa: BLE001
+            return "error", None
+        return ("error", None) if value is None else ("ok", value)
+    from .advisor_board.config import load_agy_hold_deny
+    try:
+        return "ok", frozenset(load_agy_hold_deny())
+    except Exception:  # noqa: BLE001
+        return "error", None
+
+
 def _hold_config_error() -> bool:
     """Whether reading ``[agy] hold`` or ``[agy] hold_deny`` fails."""
-    from .advisor_board.config import load_agy_hold, load_agy_hold_deny
-    if hold_enabled is _DEFAULT_HOLD_ENABLED:
-        try:
-            load_agy_hold()
-        except Exception:  # noqa: BLE001
-            return True
-    if hold_deny is _DEFAULT_HOLD_DENY:
-        try:
-            load_agy_hold_deny()
-        except Exception:  # noqa: BLE001
-            return True
+    state = _hold_enabled_state()
+    if state == "error":
+        return True
+    if state == "enabled":
+        return _hold_deny_state()[0] == "error"
     return False
 
 
