@@ -731,3 +731,74 @@ def test_managed_image_requires_grok_no_projection_profile(managed_grok):
     with pytest.raises(ExecutableDependencyError) as refused:
         seat_subject.open_managed_authority(subject)
     assert refused.value.code == "authority_missing"
+
+
+def test_managed_claude_subject_reads_package_json_version_without_executing(
+    managed_fs, tmp_path, monkeypatch
+):
+    import subprocess
+
+    _root, releases, pin = managed_fs
+    release, native = _release(releases)
+    pkg = native.parent / "package.json"
+    pkg.write_text(
+        json.dumps({"name": "@anthropic-ai/claude-code-linux-x64", "version": "2.1.331"}),
+        encoding="utf-8",
+    )
+    pkg.chmod(0o644)
+    door = _frontdoor(tmp_path / "bin", release, native)
+    _pin(pin, release.name)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: pytest.fail("must not execute claude binary")
+    )
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda *a, **k: pytest.fail("must not spawn claude binary")
+    )
+
+    subject = _resolve(door.parent)
+
+    assert subject.source == "managed_release"
+    assert subject.provider_version == "2.1.331"
+
+
+@pytest.mark.parametrize("case", ["missing", "symlink", "malformed", "invalid_value", "oversized"])
+def test_claude_subject_version_falls_back_to_unknown_without_failing(
+    managed_fs, tmp_path, case
+):
+    _root, releases, pin = managed_fs
+    release, native = _release(releases, release_id=f"rel-{case}")
+    pkg = native.parent / "package.json"
+    if case == "symlink":
+        target = tmp_path / "external-package.json"
+        target.write_text('{"version": "2.1.331"}', encoding="utf-8")
+        pkg.symlink_to(target)
+    elif case == "malformed":
+        pkg.write_text("{not-json", encoding="utf-8")
+        pkg.chmod(0o644)
+    elif case == "invalid_value":
+        pkg.write_text(json.dumps({"version": "2.1.331 private-secret"}), encoding="utf-8")
+        pkg.chmod(0o644)
+    elif case == "oversized":
+        pkg.write_text('{"version": "2.1.331", "pad": "' + ("x" * 70_000) + '"}', encoding="utf-8")
+        pkg.chmod(0o644)
+    door = _frontdoor(tmp_path / f"bin-{case}", release, native)
+    _pin(pin, release.name)
+
+    subject = _resolve(door.parent)
+
+    assert subject.source == "managed_release"
+    assert subject.provider_version == "unknown"
+
+
+def test_standalone_claude_subject_reads_parent_package_json_for_bin_layout(
+    managed_fs, tmp_path
+):
+    _root, _releases, _pin_path = managed_fs
+    pkg_root = tmp_path / "claude-pkg"
+    exe = _exe(pkg_root / "bin/claude", b"standalone")
+    (pkg_root / "package.json").write_text('{"version": "2.1.330-rc.1"}', encoding="utf-8")
+
+    subject = seat_subject.resolve_seat_subject("claude", {"PATH": str(exe.parent)})
+
+    assert subject.source == "standalone"
+    assert subject.provider_version == "2.1.330-rc.1"

@@ -44,6 +44,8 @@ _MANAGED_POLICY_ID = "phase-loop-seat"
 _MANAGED_POLICY_VERSION = "1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _LEG = re.compile(r"^[a-z][a-z0-9-]*$")
+_CLAUDE_CODE_VERSION = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,31})?")
+_PACKAGE_JSON_MAX_BYTES = 65_536
 _FRONTDOOR_PREFIX = "exec /usr/bin/python3 -I "
 _SHELL_WRAPPER_EXPORT = re.compile(
     r'export [A-Z_][A-Z0-9_]*=(?:[A-Za-z0-9._/:@+-]|"\$PATH")*'
@@ -73,6 +75,57 @@ class SeatSubject:
     release_id: str | None
     requirement: DependencyRequirement | None
     binary_sha256: str | None = None
+    provider_version: str | None = None
+
+
+def normalize_claude_code_version(value: object) -> str:
+    """Validate a content-free Claude Code version string, falling back to ``unknown``."""
+    if type(value) is str and _CLAUDE_CODE_VERSION.fullmatch(value):
+        return value
+    return "unknown"
+
+
+def _read_package_json(path: Path, *, managed: bool) -> bytes:
+    if managed:
+        descriptor = _open_managed_file(path)
+        try:
+            return _read_stable(descriptor, _PACKAGE_JSON_MAX_BYTES, code="package_metadata")
+        finally:
+            os.close(descriptor)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _PACKAGE_JSON_MAX_BYTES:
+            raise OSError("unusable package.json")
+        raw = os.read(descriptor, _PACKAGE_JSON_MAX_BYTES + 1)
+        if len(raw) > _PACKAGE_JSON_MAX_BYTES:
+            raise OSError("oversized package.json")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def claude_code_version_for_subject(path: Path | None, *, managed: bool = False) -> str:
+    """Read the Claude Code version from sibling ``package.json`` metadata without executing
+    the binary (agent-harness#2170). Returns ``unknown`` whenever unavailable or invalid."""
+    if path is None:
+        return "unknown"
+    selected = Path(path)
+    candidates = [selected.parent / "package.json"]
+    if selected.parent.name == "bin":
+        candidates.append(selected.parent.parent / "package.json")
+    for candidate in candidates:
+        try:
+            raw = _read_package_json(candidate, managed=managed)
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, ExecutableDependencyError, UnicodeDecodeError, ValueError, TypeError, RecursionError):
+            continue
+        if isinstance(data, dict):
+            version = normalize_claude_code_version(data.get("version"))
+            if version != "unknown":
+                return version
+    return "unknown"
 
 
 def register_provider_executable(leg: str, executable: str) -> None:
@@ -187,7 +240,8 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
         raise ExecutableDependencyError("subject_mismatch", "standalone provider") from exc
     if harness != leg or _names_managed_root(path):
         raise ExecutableDependencyError("subject_mismatch", "provider")
-    return SeatSubject(leg, "standalone", path, None, None)
+    version = claude_code_version_for_subject(path, managed=False) if leg == "claude" else None
+    return SeatSubject(leg, "standalone", path, None, None, provider_version=version)
 
 
 def managed_grok_image_digest(path: Path) -> str:
@@ -349,7 +403,8 @@ def _managed_subject(leg: str, target: Path) -> SeatSubject:
         policy_version=_MANAGED_POLICY_VERSION,
         base_profile_sha256=pin["base_profile_sha256"],
     )
-    return SeatSubject(leg, "managed_release", selected, release_id, requirement)
+    version = claude_code_version_for_subject(selected, managed=True) if leg == "claude" else None
+    return SeatSubject(leg, "managed_release", selected, release_id, requirement, provider_version=version)
 
 
 def _names_managed_root(path: Path) -> bool:
@@ -618,7 +673,9 @@ __all__ = [
     "MANAGED_RELEASES_ROOT",
     "SeatSubject",
     "SubjectSource",
+    "claude_code_version_for_subject",
     "deployment_kind",
+    "normalize_claude_code_version",
     "open_managed_authority",
     "register_provider_executable",
     "resolve_seat_subject",
