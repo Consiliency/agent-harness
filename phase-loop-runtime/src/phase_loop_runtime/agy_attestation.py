@@ -49,6 +49,11 @@ _CHUNK_BYTES = 1024 * 1024
 # What ``_read_json`` returns for its ``absent_status``. JSON ``null`` decodes to ``None``, so
 # absence needs a value no document can be.
 _ABSENT = object()
+# Keep the real _Transport class and default _trust_context so monkeypatching
+# agy_provenance._Transport or agy_provenance._trust_context in tests never breaks
+# isinstance() or dynamic trust lookup inside _opener_for().
+_PROVENANCE_TRANSPORT = _provenance._Transport
+_PROVENANCE_TRUST_CONTEXT = _provenance._trust_context
 
 
 def _clean(url) -> bool:
@@ -118,6 +123,33 @@ def _read_json(transport, url: str, *, limit: int, accept: str, absent_status=No
         raise ProvenanceError(UNAVAILABLE) from exc
 
 
+def _opener_for(transport):
+    """Return an attestation-compatible opener from ``transport``.
+
+    A ``None`` transport uses the default ``_Opener()``. An ``agy_provenance._Transport``
+    whose ``open`` is not overridden is adapted into an ``_Opener`` carrying the same
+    ``connection``, ``context_factory`` and ``timeout`` so 404 responses stay readable and
+    3xx redirects stay refused while all requests stay on the caller's channel. Any custom
+    transport (or ``_Transport`` subclass overriding ``open``) is used directly.
+    """
+    if transport is None:
+        return _Opener()
+    if (isinstance(transport, _PROVENANCE_TRANSPORT)
+            and type(transport).open is _PROVENANCE_TRANSPORT.open
+            and "open" not in getattr(transport, "__dict__", ())):
+        context_factory = (
+            None
+            if transport.context_factory is _PROVENANCE_TRUST_CONTEXT
+            else transport.context_factory
+        )
+        return _Opener(
+            connection=transport.connection,
+            context_factory=context_factory,
+            timeout=transport.timeout,
+        )
+    return transport
+
+
 def attestation_status(asset: ReleaseAsset, transport=None) -> str:
     """``absent`` or ``present_unverified`` for the asset's archive digest; never verified.
 
@@ -126,7 +158,7 @@ def attestation_status(asset: ReleaseAsset, transport=None) -> str:
     status, an oversized or unparseable body and a network error all refuse ``unavailable``:
     an empty list is not a documented answer, so it is not read as ``absent``.
     """
-    transport = transport or _Opener()
+    transport = _opener_for(transport)
     url = f"https://{_provenance.API_HOST}/repos/{_provenance.REPO}/attestations/sha256:{asset.digest}"
     document = _read_json(transport, url, limit=_provenance.MAX_LISTING_BYTES,
                           accept="application/vnd.github+json", absent_status=404)
@@ -225,7 +257,7 @@ def second_channel_status(asset: ReleaseAsset, member_sha256: str, *, host, tran
     """
     if host.name != MANIFEST_PLATFORM:
         return "not_listed"
-    transport = transport or _Opener()
+    transport = _opener_for(transport)
     manifest = _read_manifest(transport)
     if manifest["version"] != asset.version:
         return "not_listed"

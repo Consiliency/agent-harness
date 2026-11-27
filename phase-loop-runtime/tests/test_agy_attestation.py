@@ -447,3 +447,33 @@ def test_the_opener_refuses_control_and_non_ascii_characters_before_parsing(url)
     with pytest.raises(prov.ProvenanceError, match=prov.UNAVAILABLE):
         _opener(server).open(url, accept="*/*")
     assert server.connections == []
+
+
+def test_provenance_transport_is_adapted_for_attestation_and_second_channel():
+    """agent-harness#2043: a real agy_provenance._Transport passed directly uses its connection,
+    context_factory and timeout while keeping _Opener's 404 and no-redirect semantics."""
+    pkg = b"google package bytes"
+    asset = _asset(pkg)
+    manifest_url = f"{att.MANIFEST_DOWNLOAD_PREFIX}{asset.version}-1/linux-x64/cli_linux_x64.tar.gz"
+    manifest = {"version": asset.version, "url": manifest_url, "sha512": sha512(pkg).hexdigest()}
+    server = _Server({
+        (prov.API_HOST, _attestation_target(asset)): (404, b""),
+        (att.MANIFEST_HOST, att.MANIFEST_PATH): (200, json.dumps(manifest).encode()),
+        (att.PACKAGE_HOST, urlsplit(manifest_url).path): (200, pkg),
+    })
+    transport = prov._Transport(connection=server, context_factory=lambda: "pinned-context", timeout=23)
+    assert att.attestation_status(asset, transport=transport) == "absent"
+    assert att.second_channel_status(asset, sha256(b"member").hexdigest(), host=LINUX_X64, transport=transport) == "match"
+    assert all(ctx == "pinned-context" for _host, _port, ctx in server.connections)
+    assert len(server.requests) == 4
+
+
+def test_adapted_default_transport_keeps_dynamic_trust_context_lookup(monkeypatch):
+    """agent-harness#2043: adapting a default-context _Transport preserves _Opener's dynamic
+    lookup of agy_provenance._trust_context."""
+    asset = _asset(b"archive")
+    server = _Server({(prov.API_HOST, _attestation_target(asset)): (404, b"")})
+    transport = prov._Transport(connection=server, timeout=11)
+    monkeypatch.setattr(prov, "_trust_context", lambda: "dynamic-trust-context")
+    assert att.attestation_status(asset, transport=transport) == "absent"
+    assert [ctx for _host, _port, ctx in server.connections] == ["dynamic-trust-context"]
