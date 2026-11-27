@@ -20,7 +20,7 @@ import urllib.parse
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Queue, SimpleQueue
 from typing import Any, Callable, Mapping
 
 from .capability_registry import capability_registry
@@ -3131,7 +3131,12 @@ def launch(
         started_at = _utc_now()
         started_monotonic = time.monotonic()
 
-        with log_path.open("w", encoding="utf-8") as log:
+        log = log_path.open("w", encoding="utf-8")
+        sink_queue: SimpleQueue[Any] | None = None
+        sink_thread: threading.Thread | None = None
+        sink_close_on_exit = threading.Event()
+        sink_stalled = False
+        try:
             popen_kwargs: dict[str, Any] = {
                 "text": _codex_usage_observer is None,
                 "stdin": subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
@@ -3249,7 +3254,65 @@ def launch(
                     return pipe_eof.is_set() or _pipe_writers_closed(process.stdout)
                 return reader_eof or _pipe_writers_closed(process.stdout)
 
-            def consume(record):
+            def _sink_worker() -> None:
+                assert sink_queue is not None
+                try:
+                    while True:
+                        item = sink_queue.get()
+                        if item is None:
+                            return
+                        text, done, err_box = item
+                        try:
+                            log.write(text)
+                            log.flush()
+                            if stream_output:
+                                print(text, end="", flush=True)
+                        except BaseException as exc:
+                            err_box.append(exc)
+                        finally:
+                            done.set()
+                finally:
+                    if sink_close_on_exit.is_set():
+                        try:
+                            log.close()
+                        except OSError:
+                            pass
+
+            def _write_sinks(text: str, deadline: float | None) -> bool:
+                nonlocal sink_queue, sink_thread, sink_stalled
+                if deadline is None:
+                    log.write(text)
+                    log.flush()
+                    if stream_output:
+                        print(text, end="", flush=True)
+                    return True
+                if sink_stalled:
+                    return False
+                wait_left = deadline - time.monotonic()
+                if wait_left <= 0:
+                    return False
+                if sink_thread is None:
+                    sink_queue = SimpleQueue()
+                    sink_thread = threading.Thread(target=_sink_worker, daemon=True)
+                    sink_thread.start()
+                assert sink_queue is not None
+                done = threading.Event()
+                err_box: list[BaseException] = []
+                sink_queue.put((text, done, err_box))
+                try:
+                    finished = done.wait(timeout=wait_left)
+                except BaseException:
+                    if not done.is_set():
+                        sink_stalled = True
+                    raise
+                if not finished:
+                    sink_stalled = True
+                    return False
+                if err_box:
+                    raise err_box[0]
+                return True
+
+            def consume(record, *, deadline: float | None = None) -> bool:
                 if _codex_usage_observer is None:
                     rendered = record
                 else:
@@ -3259,19 +3322,19 @@ def launch(
                 # (agent-harness#1282).
                 if rendered:
                     rendered = redact_seat(rendered)
+                    if deadline is not None and (sink_stalled or deadline - time.monotonic() <= 0):
+                        return False
+                    if not _write_sinks(rendered, deadline):
+                        return False
+                    output_parts.append(rendered)
                 if _codex_usage_observer is not None:
                     if kind == "eof":
                         streams_done.add(name)
                     elif kind == "error":
                         _codex_usage_observer.invalidate("reader_failure")
-                    elif name == "stdout":
+                    elif name == "stdout" and rendered:
                         _codex_usage_observer.observe(rendered)
-                if rendered:
-                    output_parts.append(rendered)
-                    log.write(rendered)
-                    log.flush()
-                    if stream_output:
-                        print(rendered, end="", flush=True)
+                return True
             def post_exit_deadline() -> float:
                 now_ts = time.monotonic()
                 bound = now_ts + 1.0
@@ -3288,16 +3351,18 @@ def launch(
             def drain(*, deadline_override: float | None = None):
                 deadline = post_exit_deadline() if deadline_override is None else deadline_override
                 try:
-                    while streams_done != {"stdout", "stderr"}:
+                    while streams_done != {"stdout", "stderr"} and not sink_stalled:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             break
                         try:
-                            consume(line_queue.get(timeout=min(0.05, max(0.001, remaining))))
+                            record = line_queue.get(timeout=min(0.05, max(0.001, remaining)))
                         except Empty:
-                            pass
+                            continue
+                        if not consume(record, deadline=deadline):
+                            break
                 finally:
-                    if streams_done != {"stdout", "stderr"}:
+                    if streams_done != {"stdout", "stderr"} or sink_stalled:
                         _codex_usage_observer.invalidate("incomplete_drain")
 
             def drain_plain(*, deadline_override: float | None = None):
@@ -3305,7 +3370,7 @@ def launch(
                 drain_deadline = (
                     post_exit_deadline() if deadline_override is None else deadline_override
                 )
-                while not reader_eof:
+                while not reader_eof and not sink_stalled:
                     remaining = drain_deadline - time.monotonic()
                     if remaining <= 0:
                         break
@@ -3315,8 +3380,8 @@ def launch(
                         break
                     if line is None:
                         reader_eof = True
-                    else:
-                        consume(line)
+                    elif not consume(line, deadline=drain_deadline):
+                        break
             last_heartbeat = 0.0
             timed_out = False
             interrupted = False
@@ -3373,6 +3438,7 @@ def launch(
 
             exited_now = False
             loop_completed = False
+            writers_closed_before_drain = False
             try:
                 while True:
                     try:
@@ -3444,16 +3510,18 @@ def launch(
                         exited_now, unreaped_now = _child_exited_no_reap(process)
                         if exited_now:
                             leader_unreaped = unreaped_now
+                            writers_closed_before_drain = pipe_writers_all_closed()
                             if _codex_usage_observer is not None:
                                 drain()
-                                drain_incomplete = streams_done != {"stdout", "stderr"}
+                                drain_incomplete = streams_done != {"stdout", "stderr"} or sink_stalled
                                 break
                             # The child has exited, but its last lines may still be in the
                             # pipe or the reader. Collect until the reader's EOF sentinel,
                             # bounded by the launch's own deadline (and at most 1 s): the
-                            # budget is checked before each dequeue (agent-harness#2129).
+                            # budget is checked before each dequeue and sink write
+                            # (agent-harness#2129).
                             drain_plain()
-                            drain_incomplete = not reader_eof
+                            drain_incomplete = (not reader_eof) or sink_stalled
                             break
                     except KeyboardInterrupt:
                         interrupted = True
@@ -3461,15 +3529,16 @@ def launch(
                         try:
                             if _codex_usage_observer is not None:
                                 drain()
-                                drain_incomplete = streams_done != {"stdout", "stderr"}
+                                drain_incomplete = streams_done != {"stdout", "stderr"} or sink_stalled
                             else:
                                 drain_plain()
-                                drain_incomplete = not reader_eof
+                                drain_incomplete = (not reader_eof) or sink_stalled
                         except KeyboardInterrupt:
                             drain_incomplete = True
                             if _codex_usage_observer is not None:
                                 _codex_usage_observer.invalidate("incomplete_drain")
                         break
+                descendant_cleanup = None
                 if (
                     drain_incomplete
                     and not pipe_writers_all_closed()
@@ -3488,17 +3557,27 @@ def launch(
                             cleanup_evidence = descendant_cleanup
                         else:
                             cleanup_evidence["post_exit_descendant_cleanup"] = descendant_cleanup
-                        # Closing the inherited pipe writer lets the reader enqueue any final
-                        # partial/unterminated line; collect it within a brief bounded window
-                        # while keeping drain_incomplete=True to record descendant cleanup.
-                        final_deadline = time.monotonic() + 0.1
-                        try:
-                            if _codex_usage_observer is not None:
-                                drain(deadline_override=final_deadline)
-                            else:
-                                drain_plain(deadline_override=final_deadline)
-                        except KeyboardInterrupt:
-                            interrupted = True
+                if (
+                    drain_incomplete
+                    and not interrupted
+                    and not sink_stalled
+                    and (
+                        descendant_cleanup is not None
+                        or (not writers_closed_before_drain and pipe_writers_all_closed())
+                    )
+                ):
+                    # Closing the inherited pipe writer (either via descendant cleanup or
+                    # naturally at the drain boundary) lets the reader enqueue any final
+                    # partial/unterminated line; collect it within a brief bounded window
+                    # while keeping drain_incomplete=True.
+                    final_deadline = time.monotonic() + 0.1
+                    try:
+                        if _codex_usage_observer is not None:
+                            drain(deadline_override=final_deadline)
+                        else:
+                            drain_plain(deadline_override=final_deadline)
+                    except KeyboardInterrupt:
+                        interrupted = True
                 loop_completed = True
             finally:
                 # If an unexpected error (e.g., BrokenPipeError in consume()) or an early
@@ -3559,6 +3638,21 @@ def launch(
                 # executor never ran (see lease_supervisor's handshake); that is a
                 # failed launch, never an executor exit status.
                 raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
+        finally:
+            if sink_thread is not None:
+                assert sink_queue is not None
+                sink_close_on_exit.set()
+                sink_queue.put(None)
+                if not sink_stalled:
+                    try:
+                        sink_thread.join(timeout=1.0)
+                    except KeyboardInterrupt:
+                        pass
+            if sink_thread is None or not sink_thread.is_alive():
+                try:
+                    log.close()
+                except OSError:
+                    pass
         heartbeat_summary = None
         if heartbeat_path is not None:
             heartbeat_summary = run_heartbeat_summary(

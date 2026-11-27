@@ -1568,3 +1568,137 @@ def test_unterminated_final_line_with_inherited_writer_is_collected_after_cleanu
         assert not _proc_alive(grandchild_pid)
     finally:
         _kill_pid_best_effort(marker)
+
+
+def test_single_blocked_drain_write_respects_deadline_and_cleans_up_descendant(tmp_path, monkeypatch):
+    """A single blocked output write during post-exit drain must not overrun the drain
+    deadline or delay descendant process-group cleanup."""
+    marker = tmp_path / "blocked_write_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('post-exit-blocked', flush=True)\n"
+    )
+    orig_print = print
+    orig_no_reap = launcher._child_exited_no_reap
+    leader_observed_exited = False
+    release_block = threading.Event()
+    blocked_entered = threading.Event()
+
+    def tracking_no_reap(proc):
+        nonlocal leader_observed_exited
+        exited, unreaped = orig_no_reap(proc)
+        if exited:
+            leader_observed_exited = True
+        return exited, unreaped
+
+    def blocking_print(*args, **kwargs):
+        if args and "post-exit-blocked" in str(args[0]) and leader_observed_exited:
+            blocked_entered.set()
+            release_block.wait(timeout=3.0)
+        return orig_print(*args, **kwargs)
+
+    # Hold the line in the queue until leader exit is observed so the blocked write
+    # definitely occurs inside post-exit drain rather than the main polling loop.
+    orig_get = launcher.Queue.get
+
+    def hold_until_exit(self, *args, **kwargs):
+        if not leader_observed_exited:
+            raise launcher.Empty
+        return orig_get(self, *args, **kwargs)
+
+    monkeypatch.setattr(launcher, "_child_exited_no_reap", tracking_no_reap)
+    monkeypatch.setattr(launcher.Queue, "get", hold_until_exit)
+    monkeypatch.setattr("builtins.print", blocking_print)
+    try:
+        started = time.monotonic()
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            stream_output=True,
+            timeout_seconds=0.35,
+        )
+        elapsed = time.monotonic() - started
+        assert blocked_entered.is_set()
+        assert result.returncode == 0
+        assert result.drain_incomplete is True
+        assert elapsed < 1.0
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        release_block.set()
+        _kill_pid_best_effort(marker)
+
+
+def test_writer_closing_at_drain_boundary_still_collects_final_partial_line(tmp_path, monkeypatch):
+    """If the initial post-exit drain expires and an inherited pipe writer closes on its own
+    before descendant cleanup runs (so no signal is sent), a bounded final collection must
+    still capture the final unterminated partial line in output and the log."""
+    close_trigger = tmp_path / "close_writer.flag"
+    ready_flag = tmp_path / "writer_ready.flag"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"ready_flag = {str(ready_flag)!r}\n"
+        f"close_trigger = {str(close_trigger)!r}\n"
+        "child_code = (\n"
+        "    'import os, time\\n'\n"
+        "    f'open({ready_flag!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'deadline = time.monotonic() + 5.0\\n'\n"
+        "    f'while not os.path.exists({close_trigger!r}) and time.monotonic() < deadline:\\n'\n"
+        "    '    time.sleep(0.005)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(ready_flag) or os.path.getsize(ready_flag) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.005)\n"
+        "sys.stdout.write('first-line\\nboundary-partial')\n"
+        "sys.stdout.flush()\n"
+    )
+    orig_writers_closed = launcher._pipe_writers_closed
+    checks = 0
+
+    def close_before_cleanup_check(pipe):
+        nonlocal checks
+        checks += 1
+        # Check 1 runs right before drain_plain() (writers_closed_before_drain) and check 2
+        # runs in post_exit_deadline(); both see the inherited writer open. On check 3 (the
+        # post-drain cleanup guard), release the writer and wait briefly for it to close so
+        # cleanup sees pipe_writers_all_closed() == True and skips signaling.
+        if checks >= 3 and not close_trigger.exists():
+            close_trigger.write_text("close", encoding="utf-8")
+            deadline = time.monotonic() + 1.0
+            while not orig_writers_closed(pipe) and time.monotonic() < deadline:
+                time.sleep(0.005)
+        return orig_writers_closed(pipe)
+
+    monkeypatch.setattr(launcher, "_pipe_writers_closed", close_before_cleanup_check)
+    log_path = tmp_path / "run" / "output.log"
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=log_path,
+            timeout_seconds=0.35,
+        )
+        assert result.returncode == 0
+        assert result.cleanup_evidence is None
+        assert result.drain_incomplete is True
+        assert "boundary-partial" in result.output
+        assert "boundary-partial" in log_path.read_text(encoding="utf-8")
+    finally:
+        close_trigger.write_text("close", encoding="utf-8")
+        _kill_pid_best_effort(ready_flag)
