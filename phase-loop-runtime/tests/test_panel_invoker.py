@@ -34,9 +34,10 @@ def _host_path_dirs(env_path: str | None = None) -> frozenset[str]:
     raw = os.environ.get("PATH", "") if env_path is None else env_path
     dirs: set[str] = set()
     for source in (raw, os.defpath):
-        for entry in source.split(os.pathsep):
-            if not entry:
-                continue
+        if not source:
+            continue
+        for raw_entry in source.split(os.pathsep):
+            entry = os.getcwd() if raw_entry == "" else raw_entry
             dirs.add(os.path.abspath(entry))
             dirs.add(os.path.realpath(entry))
     return frozenset(dirs)
@@ -59,30 +60,89 @@ def _dir_in_host_dirs(directory: str, host_dirs: frozenset[str]) -> bool:
     )
 
 
+def _walk_path_hops(
+    candidate: Path | str,
+    *,
+    is_dir: bool = False,
+    max_hops: int = 40,
+) -> tuple[set[str], set[str]]:
+    """Resolve ``candidate`` component-by-component, returning touched dirs and leaf basenames."""
+    raw = os.path.abspath(os.fsdecode(candidate))
+    anchor = Path(raw).anchor or os.sep
+    remaining = list(Path(raw).parts[1:])
+    resolved = anchor
+    touched_dirs: set[str] = {resolved}
+    touched_leaf_names: set[str] = set()
+    hops = 0
+
+    while remaining:
+        part = remaining.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            resolved = os.path.dirname(resolved)
+            touched_dirs.add(resolved)
+            continue
+        next_path = os.path.join(resolved, part)
+        is_leaf = not remaining
+        touched_dirs.add(resolved)
+        if not is_leaf or is_dir:
+            touched_dirs.add(next_path)
+        if is_leaf and not is_dir:
+            touched_leaf_names.add(part.lower())
+        if os.path.islink(next_path) and hops < max_hops:
+            hops += 1
+            try:
+                target = os.readlink(next_path)
+            except OSError:
+                resolved = next_path
+                continue
+            target_path = Path(target)
+            if is_leaf and not is_dir and target_path.name:
+                touched_leaf_names.add(target_path.name.lower())
+            if os.path.isabs(target):
+                resolved = target_path.anchor or os.sep
+                touched_dirs.add(resolved)
+                remaining = list(target_path.parts[1:]) + remaining
+            else:
+                remaining = list(target_path.parts) + remaining
+        else:
+            resolved = next_path
+
+    if is_dir:
+        touched_dirs.add(resolved)
+        touched_dirs.add(os.path.realpath(resolved))
+    else:
+        final_real = os.path.realpath(resolved)
+        touched_dirs.add(os.path.dirname(resolved))
+        touched_dirs.add(os.path.dirname(final_real))
+        if os.path.basename(final_real):
+            touched_leaf_names.add(os.path.basename(final_real).lower())
+    return touched_dirs, touched_leaf_names
+
+
 def _path_touches_host_dirs(
     candidate: Path | str,
     host_dirs: frozenset[str],
     *,
-    max_hops: int = 40,
+    is_dir: bool = False,
 ) -> bool:
-    """Return True if ``candidate``, its final target, or any intermediate symlink hop lies in ``host_dirs``."""
-    current = os.path.abspath(os.fsdecode(candidate))
-    seen: set[str] = set()
-    for _ in range(max_hops):
-        if _dir_in_host_dirs(os.path.dirname(current), host_dirs):
-            return True
-        if current in seen or not os.path.islink(current):
-            break
-        seen.add(current)
-        try:
-            target = os.readlink(current)
-        except OSError:
-            break
-        if os.path.isabs(target):
-            current = os.path.normpath(target)
-        else:
-            current = os.path.normpath(os.path.join(os.path.dirname(current), target))
-    return _dir_in_host_dirs(os.path.dirname(os.path.realpath(current)), host_dirs)
+    """Return True if any traversed parent/directory component or symlink hop lies in ``host_dirs``."""
+    touched_dirs, _ = _walk_path_hops(candidate, is_dir=is_dir)
+    return any(_dir_in_host_dirs(directory, host_dirs) for directory in touched_dirs)
+
+
+def _path_links_provider_through_host_dirs(
+    candidate: Path | str,
+    host_dirs: frozenset[str],
+    provider_names: frozenset[str],
+) -> bool:
+    """Return True if ``candidate`` touches ``host_dirs`` and names a provider at any leaf hop."""
+    touched_dirs, touched_leaf_names = _walk_path_hops(candidate, is_dir=False)
+    return bool(
+        (touched_leaf_names & provider_names)
+        and any(_dir_in_host_dirs(directory, host_dirs) for directory in touched_dirs)
+    )
 
 
 def _install_real_path_provider_guard(
@@ -115,44 +175,73 @@ def _install_real_path_provider_guard(
         "_real_shell_wrapper_target",
         pi._shell_wrapper_target,
     )
+    real_native_provider_target = getattr(
+        pi._native_provider_target,
+        "_real_native_provider_target",
+        pi._native_provider_target,
+    )
+    real_frontdoor_target = getattr(
+        pi._frontdoor_target,
+        "_real_frontdoor_target",
+        pi._frontdoor_target,
+    )
 
     def _guarded_which(cmd, mode=os.F_OK | os.X_OK, path=None):
         text = os.fsdecode(cmd)
         basename = Path(text).name.lower()
         provider_names = _provider_executable_names()
-        if basename in provider_names:
-            dirname = os.path.dirname(text)
-            if dirname:
-                if _path_touches_host_dirs(text, blocked_dirs):
-                    pytest.fail(
-                        f"provider executable {text!r} resolved from real PATH during "
-                        "test_panel_invoker (agent-harness#2054)"
-                    )
-            else:
-                effective_path = (
-                    os.environ.get("PATH", os.defpath)
-                    if path is None
-                    else os.fsdecode(path)
+        dirname = os.path.dirname(text)
+        if dirname:
+            if basename in provider_names and _path_touches_host_dirs(text, blocked_dirs):
+                pytest.fail(
+                    f"provider executable {text!r} resolved from real PATH during "
+                    "test_panel_invoker (agent-harness#2054)"
                 )
-                if effective_path:
-                    for raw_entry in effective_path.split(os.pathsep):
-                        entry = os.getcwd() if raw_entry == "" else raw_entry
-                        if _dir_in_host_dirs(entry, blocked_dirs):
-                            pytest.fail(
-                                f"provider executable {text!r} searched in real PATH directory "
-                                f"{entry!r} during test_panel_invoker (agent-harness#2054)"
-                            )
-                        candidate = os.path.join(entry, text)
-                        if os.path.lexists(candidate) and _path_touches_host_dirs(
+            if os.path.lexists(text) and _path_links_provider_through_host_dirs(
+                text, blocked_dirs, provider_names
+            ):
+                pytest.fail(
+                    f"provider executable alias {text!r} resolved through real PATH during "
+                    "test_panel_invoker (agent-harness#2054)"
+                )
+        else:
+            effective_path = (
+                os.environ.get("PATH", os.defpath)
+                if path is None
+                else os.fsdecode(path)
+            )
+            if effective_path:
+                for raw_entry in effective_path.split(os.pathsep):
+                    entry = os.getcwd() if raw_entry == "" else raw_entry
+                    if basename in provider_names and _path_touches_host_dirs(
+                        entry, blocked_dirs, is_dir=True
+                    ):
+                        pytest.fail(
+                            f"provider executable {text!r} searched in real PATH directory "
+                            f"{entry!r} during test_panel_invoker (agent-harness#2054)"
+                        )
+                    candidate = os.path.join(entry, text)
+                    if os.path.lexists(candidate):
+                        if basename in provider_names and _path_touches_host_dirs(
                             candidate, blocked_dirs
                         ):
                             pytest.fail(
                                 f"provider executable {text!r} links through real PATH at "
                                 f"{candidate!r} during test_panel_invoker (agent-harness#2054)"
                             )
+                        if _path_links_provider_through_host_dirs(
+                            candidate, blocked_dirs, provider_names
+                        ):
+                            pytest.fail(
+                                f"provider executable alias {text!r} links through real PATH at "
+                                f"{candidate!r} during test_panel_invoker (agent-harness#2054)"
+                            )
         found = real_which(cmd, mode=mode, path=path)
-        if basename in provider_names and found is not None:
-            if _path_touches_host_dirs(os.fsdecode(found), blocked_dirs):
+        if found is not None:
+            found_text = os.fsdecode(found)
+            if (
+                basename in provider_names and _path_touches_host_dirs(found_text, blocked_dirs)
+            ) or _path_links_provider_through_host_dirs(found_text, blocked_dirs, provider_names):
                 pytest.fail(
                     f"provider executable {text!r} resolved to real PATH binary {found!r} "
                     "during test_panel_invoker (agent-harness#2054)"
@@ -182,7 +271,30 @@ def _install_real_path_provider_guard(
             )
         return subject
 
-    def _guarded_shell_wrapper_target(source, name):
+    def _guarded_native_provider_target(target, provider, *args, **kwargs):
+        if _path_touches_host_dirs(target, blocked_dirs):
+            pytest.fail(
+                f"provider launcher target {target!r} resolved through real PATH during "
+                "test_panel_invoker (agent-harness#2054)"
+            )
+        resolved = real_native_provider_target(target, provider, *args, **kwargs)
+        if resolved is not None and _path_touches_host_dirs(resolved, blocked_dirs):
+            pytest.fail(
+                f"provider launcher target {target!r} resolved to real PATH binary {resolved!r} "
+                "during test_panel_invoker (agent-harness#2054)"
+            )
+        return resolved
+
+    def _guarded_frontdoor_target(line, provider, *args, **kwargs):
+        resolved = real_frontdoor_target(line, provider, *args, **kwargs)
+        if resolved is not None and _path_touches_host_dirs(resolved, blocked_dirs):
+            pytest.fail(
+                f"provider frontdoor target {resolved!r} resolved through real PATH during "
+                "test_panel_invoker (agent-harness#2054)"
+            )
+        return resolved
+
+    def _guarded_shell_wrapper_target(source, name=None):
         target = real_shell_wrapper_target(source, name)
         if target is not None and _path_touches_host_dirs(target, blocked_dirs):
             pytest.fail(
@@ -192,6 +304,12 @@ def _install_real_path_provider_guard(
         return target
 
     def _guarded_provider_source(command, env):
+        cmd_text = os.fsdecode(command)
+        if os.path.dirname(cmd_text) and _path_touches_host_dirs(cmd_text, blocked_dirs):
+            pytest.fail(
+                f"provider source {command!r} resolved through real PATH during "
+                "test_panel_invoker (agent-harness#2054)"
+            )
         harness, source = real_provider_source(command, env)
         if source is not None and _path_touches_host_dirs(source, blocked_dirs):
             pytest.fail(
@@ -203,12 +321,16 @@ def _install_real_path_provider_guard(
     _guarded_which._real_which = real_which
     _guarded_wrapper_lines._real_wrapper_lines = real_wrapper_lines
     _guarded_resolve_subject._real_resolve_seat_subject = real_resolve_subject
+    _guarded_native_provider_target._real_native_provider_target = real_native_provider_target
+    _guarded_frontdoor_target._real_frontdoor_target = real_frontdoor_target
     _guarded_shell_wrapper_target._real_shell_wrapper_target = real_shell_wrapper_target
     _guarded_provider_source._real_seat_provider_source = real_provider_source
 
     monkeypatch.setattr(shutil, "which", _guarded_which)
     monkeypatch.setattr(seat_subject, "_wrapper_lines", _guarded_wrapper_lines)
     monkeypatch.setattr(seat_subject, "resolve_seat_subject", _guarded_resolve_subject)
+    monkeypatch.setattr(pi, "_native_provider_target", _guarded_native_provider_target)
+    monkeypatch.setattr(pi, "_frontdoor_target", _guarded_frontdoor_target)
     monkeypatch.setattr(pi, "_shell_wrapper_target", _guarded_shell_wrapper_target)
     monkeypatch.setattr(pi, "_seat_provider_source", _guarded_provider_source)
 
@@ -270,23 +392,32 @@ def test_real_path_provider_resolution_guard_trips_and_allows_isolated_bin(tmp_p
 def test_real_path_provider_resolution_guard_catches_hops_wrappers_cwd_and_late_registration(
     tmp_path, monkeypatch
 ):
-    """agent-harness#2054: guard catches intermediate symlinks, wrappers, empty PATH entries, and late registrations."""
-    from phase_loop_runtime import seat_subject
+    """agent-harness#2054: guard catches parent/leaf symlink hops, renamed aliases, wrappers, empty PATH entries, and late registrations."""
+    from phase_loop_runtime import panel_invoker as pi, seat_subject
 
     fake_host_bin = tmp_path / "fake-host-bin"
     fake_host_bin.mkdir()
     opt_dir = tmp_path / "opt-agy"
     opt_dir.mkdir()
-    versioned_agy = opt_dir / "agy-image"
+    versioned_agy = opt_dir / "agy"
     versioned_agy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     versioned_agy.chmod(0o700)
     host_hop = fake_host_bin / "agy"
     host_hop.symlink_to(versioned_agy)
 
+    # Parent directory symlink chain: isolated-parent/bin -> fake-host-bin/link -> opt-agy
+    host_dir_link = fake_host_bin / "link"
+    host_dir_link.symlink_to(opt_dir)
+    isolated_parent = tmp_path / "isolated-parent"
+    isolated_parent.mkdir()
+    parent_hop_bin = isolated_parent / "bin"
+    parent_hop_bin.symlink_to(host_dir_link)
+
     isolated_bin = tmp_path / "isolated-bin"
     isolated_bin.mkdir()
-    hop_link = isolated_bin / "agy"
-    hop_link.symlink_to(host_hop)
+    (isolated_bin / "agy").symlink_to(host_hop)
+    (isolated_bin / "renamed-agy").symlink_to(host_hop)
+    (isolated_bin / "renamed-dangling").symlink_to(fake_host_bin / "codex")
 
     dangling_bin = tmp_path / "dangling-bin"
     dangling_bin.mkdir()
@@ -298,26 +429,49 @@ def test_real_path_provider_resolution_guard_catches_hops_wrappers_cwd_and_late_
     wrapper_agy.write_text(f'#!/bin/sh\nexec {host_hop} "$@"\n', encoding="utf-8")
     wrapper_agy.chmod(0o700)
 
+    trailing_cwd = tmp_path / "trailing-cwd"
+    trailing_cwd.mkdir()
+    cwd_agy = trailing_cwd / "agy"
+    cwd_agy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    cwd_agy.chmod(0o700)
+    monkeypatch.chdir(trailing_cwd)
+
     _install_real_path_provider_guard(
         monkeypatch,
-        host_dirs=_host_path_dirs()
+        host_dirs=_host_path_dirs(f"{fake_host_bin}:")
         | {os.path.abspath(fake_host_bin), os.path.realpath(fake_host_bin)},
     )
 
-    # 1. Intermediate symlink hop through a host PATH dir to an image outside PATH.
+    # 1. Intermediate leaf symlink hop through a host PATH dir to an image outside PATH.
     with pytest.raises(pytest.fail.Exception, match="real PATH"):
         shutil.which("agy", path=str(isolated_bin))
-    # 2. Dangling symlink pointing into a host PATH dir (real shutil.which would return None).
+    # 2. Parent-directory symlink chain through a host PATH dir (both which and resolve_seat_subject).
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=str(parent_hop_bin))
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        seat_subject.resolve_seat_subject("gemini", {"PATH": str(parent_hop_bin)})
+    # 3. Renamed symlinks (live and dangling) pointing to a provider through a host PATH dir.
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("renamed-agy", path=str(isolated_bin))
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("renamed-dangling", path=str(isolated_bin))
+    # 4. Dangling symlink pointing into a host PATH dir (real shutil.which would return None).
     with pytest.raises(pytest.fail.Exception, match="real PATH"):
         shutil.which("agy", path=str(dangling_bin))
-    # 3. Temporary shell launcher exec-ing a host PATH entry via resolve_seat_subject.
+    # 5. Temporary shell launcher exec-ing a host PATH symlink via both resolve_seat_subject
+    #    and direct _seat_provider_source.
     with pytest.raises(pytest.fail.Exception, match="real PATH"):
         seat_subject.resolve_seat_subject("gemini", {"PATH": str(wrapper_bin)})
-    # 4. Empty PATH components search cwd on POSIX; fail when cwd is a host PATH dir.
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        pi._seat_provider_source(str(wrapper_agy), {"PATH": str(wrapper_bin)})
+    # 6. Original PATH with trailing ':' captures cwd as a host search directory.
+    with pytest.raises(pytest.fail.Exception, match="real PATH"):
+        shutil.which("agy", path=":")
+    # 7. Empty PATH components also catch explicit chdir into a host PATH dir.
     monkeypatch.chdir(fake_host_bin)
     with pytest.raises(pytest.fail.Exception, match="real PATH"):
         shutil.which("agy", path=":")
-    # 5. Provider registered after fixture setup is still guarded dynamically.
+    # 8. Provider registered after fixture setup is still guarded dynamically.
     monkeypatch.setitem(seat_subject._PROVIDER_EXECUTABLES, "custom", "custom-cli")
     with pytest.raises(pytest.fail.Exception, match="real PATH"):
         shutil.which("custom-cli", path=str(fake_host_bin))
