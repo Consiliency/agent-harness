@@ -465,6 +465,8 @@ def select(ordered: list[tuple[HeldCandidate, int]], *, predicate: Predicate, ex
             examined.add(identity)
             # The bound is read at call time (H4); an oversized candidate is a local skip.
             if before.st_size > agy_provenance.MAX_MEMBER_BYTES:
+                if candidate.origin == "cache":
+                    _record_search_fault("store_unsafe")
                 continue
             budget[candidate.authenticated] -= 1
             try:
@@ -489,8 +491,12 @@ def select(ordered: list[tuple[HeldCandidate, int]], *, predicate: Predicate, ex
         finally:
             os.close(fd)
             os.close(directory)
-        if image.sha256 in rejected or (candidate.origin == "cache" and image.sha256 != candidate.name):
-            # Already rejected, or a cache file whose content is not the digest it is named by.
+        if candidate.origin == "cache" and image.sha256 != candidate.name:
+            # A cache file whose content is not the digest it is named by.
+            _record_search_fault("store_unsafe")
+            image.close()
+            continue
+        if image.sha256 in rejected:
             image.close()
             continue
         try:

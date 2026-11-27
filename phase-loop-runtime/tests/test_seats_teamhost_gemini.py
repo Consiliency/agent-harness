@@ -1409,3 +1409,30 @@ def test_verdict_refusal_reasons_hardening_r5(tmp_path, monkeypatch):
         )
     finally:
         held_dir.chmod(0o700)
+
+    # r6 P1: Corrupted cached hold image (bytes != filename digest) -> store_unsafe (not no_qualification_record)
+    cached_file = held_dir / sha256(lkg_bytes).hexdigest()
+    cached_file.write_bytes(b"#!/bin/sh\necho corrupted\n")
+    cached_file.chmod(0o600)
+    try:
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+    finally:
+        cached_file.write_bytes(lkg_bytes)
+        cached_file.chmod(0o600)
+
+    # r6 P2: self_qualification=false + hold=true + unsafe host_dir (0777) -> store_unsafe in BOTH modes
+    cfg_file = tmp_path / "cfg" / "agent-harness" / "advisor-boards.toml"
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text("[agy]\nself_qualification = false\nhold = true\n", encoding="utf-8")
+    store.host_dir.chmod(0o777)
+    try:
+        assert q.admission_verdict(env, unqualified_path, execute=False) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+        assert q.admission_verdict(env, unqualified_path, execute=True) == q.AgyVerdict(
+            "refuses", "agy_image_unqualified", "store_unsafe"
+        )
+    finally:
+        store.host_dir.chmod(0o700)
