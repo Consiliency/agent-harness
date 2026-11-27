@@ -473,3 +473,100 @@ def test_live_pgid_members_exist_detects_live_worker_thread_when_main_thread_is_
     assert launcher._live_pgid_members_exist(77777, leader_pid=100001) is True
     (pid_dir / "task" / "424243" / "stat").write_text("424243 (worker) Z 1 77777 77777 0 -1\n", encoding="ascii")
     assert launcher._live_pgid_members_exist(77777, leader_pid=100001) is False
+
+
+def test_interrupt_before_exit_recorded_still_cleans_up_descendant(tmp_path, monkeypatch):
+    """If the leader exits while the launcher is waiting on the queue (before the main
+    loop records leader_unreaped=True) and KeyboardInterrupt fires, the interrupt handler
+    must detect the exited unreaped leader via waitid(WNOWAIT) and signal the group."""
+    marker = tmp_path / "pre_poll_interrupt_grandchild.pid"
+    script = (
+        "import subprocess, sys\n"
+        "proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(proc.pid))\n"
+        "print('leader-done', flush=True)\n"
+    )
+    interrupt_fired = False
+
+    class InterruptBeforePollQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            nonlocal interrupt_fired
+            val = super().get(block, timeout)
+            if not interrupt_fired and val == "leader-done\n":
+                # Give the leader a moment to exit while the launcher is still inside
+                # line_queue.get() (before _child_exited_no_reap has ever run).
+                time.sleep(0.15)
+                interrupt_fired = True
+                raise KeyboardInterrupt
+            return val
+
+    monkeypatch.setattr(launcher, "Queue", InterruptBeforePollQueue)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=1.5,
+        )
+        assert interrupt_fired is True
+        assert result.interrupted is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["reason"] == "interrupt"
+        assert "SIGTERM" in result.cleanup_evidence["signals_sent"]
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_interrupt_during_post_exit_sigterm_grace_escalates_to_sigkill(tmp_path, monkeypatch):
+    """A KeyboardInterrupt during the SIGTERM grace period of post-exit descendant cleanup
+    must still escalate to SIGKILL, reap the leader, and kill a SIGTERM-trapping grandchild."""
+    marker = tmp_path / "grace_interrupt_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('leader-done', flush=True)\n"
+    )
+    orig_sleep = launcher.time.sleep
+    injected = False
+
+    def interrupting_sleep(seconds):
+        nonlocal injected
+        if seconds == 0.01 and not injected:
+            injected = True
+            raise KeyboardInterrupt
+        return orig_sleep(seconds)
+
+    monkeypatch.setattr(launcher.time, "sleep", interrupting_sleep)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=0.8,
+        )
+        assert injected is True
+        assert result.returncode == 0
+        assert result.interrupted is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            orig_sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)

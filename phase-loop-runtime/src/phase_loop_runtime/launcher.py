@@ -3385,7 +3385,8 @@ def launch(
                         break
                 except KeyboardInterrupt:
                     interrupted = True
-                    if leader_unreaped and getattr(process, "returncode", None) is None:
+                    _exited_on_int, unreaped_on_int = _child_exited_no_reap(process)
+                    if (leader_unreaped or unreaped_on_int) and getattr(process, "returncode", None) is None:
                         cleanup_evidence = _cleanup_descendant_process_group(
                             process.pid,
                             process_group_id,
@@ -3414,6 +3415,8 @@ def launch(
                     pipes_closed=pipes_all_eof,
                 )
                 if descendant_cleanup is not None:
+                    if descendant_cleanup.get("interrupted"):
+                        interrupted = True
                     if cleanup_evidence is None:
                         cleanup_evidence = descendant_cleanup
                     else:
@@ -5086,11 +5089,14 @@ def _cleanup_descendant_process_group(
         return None
     evidence["signals_sent"].append("SIGTERM")
     deadline = time.monotonic() + 0.25
-    while time.monotonic() < deadline:
-        if not has_live_descendants():
-            evidence["result"] = "terminated"
-            return evidence
-        time.sleep(0.01)
+    try:
+        while time.monotonic() < deadline:
+            if not has_live_descendants():
+                evidence["result"] = "terminated"
+                return evidence
+            time.sleep(0.01)
+    except KeyboardInterrupt:
+        evidence["interrupted"] = True
     try:
         os.killpg(process_group_id, signal.SIGKILL)
         evidence["signals_sent"].append("SIGKILL")
@@ -5105,7 +5111,10 @@ def _cleanup_descendant_process_group(
         if not has_live_descendants():
             evidence["result"] = "killed"
             return evidence
-        time.sleep(0.01)
+        try:
+            time.sleep(0.01)
+        except KeyboardInterrupt:
+            evidence["interrupted"] = True
     evidence["result"] = "cleanup_failed"
     return evidence
 
