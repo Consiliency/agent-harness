@@ -23,6 +23,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Fix the `/proc/self/fd` / `/proc/$PPID/fd` descriptor-enumeration race in
+  `test_phase_loop_baml_v1_runtime.py::test_executor_launch_path_after_1140_with_a_live_worker_and_a_stalled_spawn`
+  by capturing executor and supervisor descriptors separately (ignoring only `ENOENT` on
+  transiently closed fds such as the supervisor's `go_write` pipe), gating stalled-spawn
+  release with bounded `threading.Event` synchronization, and surfacing executor
+  output/log diagnostics on failure (agent-harness#2032).
 - Pass the caller-supplied `transport` from `agy_provenance.find_provenance` through to
   `agy_attestation.attestation_status` (adapting plain `agy_provenance._Transport`
   instances into `agy_attestation._Opener` with the same `connection`, `context_factory`,
