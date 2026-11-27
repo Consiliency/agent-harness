@@ -2132,12 +2132,32 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         "th2.join(timeout=2.0)\n"
         "th1.join(timeout=2.0)\n"
         "os.write = orig_write\n"
-        "# Also verify Ctrl-C immediately after os.set_blocking(fd, False) on a fresh writable pipe restores blocking.\n"
+        "# Also verify all three Ctrl-C interrupt windows on a fresh writable pipe:\n"
+        "# (a) right after os.set_blocking(fd, False),\n"
+        "# (b) right after _LIVE_STDOUT_LOCK.acquire(blocking=False),\n"
+        "# (c) during os.set_blocking(fd, True) restoration.\n"
         "cr, cw = os.pipe()\n"
         "old_stdout = sys.stdout\n"
         "sys.stdout = os.fdopen(cw, 'w', encoding='utf-8')\n"
         "orig_set_blocking = os.set_blocking\n"
         "interrupted_set = False\n"
+        "interrupted_acq = False\n"
+        "interrupted_restore = False\n"
+        "def drain_pipe_nb(fd):\n"
+        "    out = bytearray()\n"
+        "    os.set_blocking(fd, False)\n"
+        "    try:\n"
+        "        while True:\n"
+        "            try:\n"
+        "                chunk = os.read(fd, 65536)\n"
+        "            except BlockingIOError:\n"
+        "                break\n"
+        "            if not chunk:\n"
+        "                break\n"
+        "            out.extend(chunk)\n"
+        "    finally:\n"
+        "        os.set_blocking(fd, True)\n"
+        "    return out.decode('utf-8', errors='replace')\n"
         "def interrupt_after_nonblock(fd, flag):\n"
         "    global interrupted_set\n"
         "    orig_set_blocking(fd, flag)\n"
@@ -2147,13 +2167,50 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         "os.set_blocking = interrupt_after_nonblock\n"
         "try:\n"
         f"    res_int = launcher.launch([sys.executable, '-c', \"print('ctrlc-line', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'ctrlc.log', stream_output=True, timeout_seconds=2.0)\n"
-        "    restored_ctrlc = os.get_blocking(cw)\n"
+        "    restored_ctrlc = os.get_blocking(cw) and not launcher._LIVE_STDOUT_LOCK.locked()\n"
+        "    os.set_blocking = orig_set_blocking\n"
+        "    # (b) Ctrl-C immediately after _LIVE_STDOUT_LOCK.acquire(blocking=False) succeeds\n"
+        "    def trace_after_acq(frame, event, arg):\n"
+        "        global interrupted_acq\n"
+        "        if frame.f_code.co_name == '_stream_live_text':\n"
+        "            if event == 'line' and not interrupted_acq and frame.f_locals.get('acquired') is True:\n"
+        "                interrupted_acq = True\n"
+        "                sys.settrace(None)\n"
+        "                raise KeyboardInterrupt\n"
+        "            return trace_after_acq\n"
+        "        return None\n"
+        "    sys.settrace(trace_after_acq)\n"
+        "    try:\n"
+        f"        res_int_acq = launcher.launch([sys.executable, '-c', \"print('acq-line', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'ctrlc_acq.log', stream_output=True, timeout_seconds=2.0)\n"
+        "    finally:\n"
+        "        sys.settrace(None)\n"
+        "    lock_free_after_acq = not launcher._LIVE_STDOUT_LOCK.locked()\n"
+        "    drain_pipe_nb(cr)\n"
+        f"    res_after_acq = launcher.launch([sys.executable, '-c', \"print('after-acq-ok', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'after_acq.log', stream_output=True, timeout_seconds=2.0)\n"
+        "    displayed_after_acq = drain_pipe_nb(cr)\n"
+        "    # (c) Ctrl-C during os.set_blocking(fd, True) restoration\n"
+        "    def interrupt_during_restore(fd, flag):\n"
+        "        global interrupted_restore\n"
+        "        if fd == cw and flag is True and not interrupted_restore:\n"
+        "            interrupted_restore = True\n"
+        "            raise KeyboardInterrupt\n"
+        "        orig_set_blocking(fd, flag)\n"
+        "    os.set_blocking = interrupt_during_restore\n"
+        "    try:\n"
+        f"        res_int_restore = launcher.launch([sys.executable, '-c', \"print('restore-line', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'ctrlc_restore.log', stream_output=True, timeout_seconds=2.0)\n"
+        "    finally:\n"
+        "        os.set_blocking = orig_set_blocking\n"
+        "    restored_after_restore_int = os.get_blocking(cw) and not launcher._LIVE_STDOUT_LOCK.locked()\n"
+        "    drain_pipe_nb(cr)\n"
+        f"    res_after_restore = launcher.launch([sys.executable, '-c', \"print('after-restore-ok', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'after_restore.log', stream_output=True, timeout_seconds=2.0)\n"
+        "    displayed_after_restore = drain_pipe_nb(cr)\n"
         "finally:\n"
+        "    sys.settrace(None)\n"
         "    os.set_blocking = orig_set_blocking\n"
         "    sys.stdout.close()\n"
         "    sys.stdout = old_stdout\n"
         "    os.close(cr)\n"
-        f"Path({str(report3)!r}).write_text(json.dumps({{'results': results, 't2_saw_write': t2_saw_write, 'interrupted_set': interrupted_set, 'res_int_interrupted': res_int.interrupted, 'restored_blocking': os.get_blocking(stdout_fd) and restored_ctrlc}}), encoding='utf-8')\n"
+        f"Path({str(report3)!r}).write_text(json.dumps({{'results': results, 't2_saw_write': t2_saw_write, 'interrupted_set': interrupted_set, 'res_int_interrupted': res_int.interrupted, 'interrupted_acq': interrupted_acq, 'res_int_acq_interrupted': res_int_acq.interrupted, 'lock_free_after_acq': lock_free_after_acq, 'displayed_after_acq': displayed_after_acq, 'interrupted_restore': interrupted_restore, 'res_int_restore_interrupted': res_int_restore.interrupted, 'restored_after_restore_int': restored_after_restore_int, 'displayed_after_restore': displayed_after_restore, 'restored_blocking': os.get_blocking(stdout_fd) and restored_ctrlc}}), encoding='utf-8')\n"
     )
     r3, w3 = os.pipe()
     try:
@@ -2164,7 +2221,7 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         p3 = subprocess.Popen([sys.executable, "-c", driver3], stdout=w3, stderr=subprocess.PIPE, env=env)
         os.close(w3)
         w3 = -1
-        deadline = time.monotonic() + 4.0
+        deadline = time.monotonic() + 6.0
         while not report3.exists() and time.monotonic() < deadline:
             assert p3.poll() is None, p3.stderr.read().decode(errors="replace")
             time.sleep(0.01)
@@ -2177,6 +2234,14 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         assert data3["t2_saw_write"] is False
         assert data3["interrupted_set"] is True
         assert data3["res_int_interrupted"] is True
+        assert data3["interrupted_acq"] is True
+        assert data3["res_int_acq_interrupted"] is True
+        assert data3["lock_free_after_acq"] is True
+        assert "after-acq-ok" in data3["displayed_after_acq"]
+        assert data3["interrupted_restore"] is True
+        assert data3["res_int_restore_interrupted"] is True
+        assert data3["restored_after_restore_int"] is True
+        assert "after-restore-ok" in data3["displayed_after_restore"]
         assert data3["restored_blocking"] is True
         rflags = fcntl.fcntl(r3, fcntl.F_GETFL)
         fcntl.fcntl(r3, fcntl.F_SETFL, rflags | os.O_NONBLOCK)
@@ -2193,6 +2258,78 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         os.close(r3)
         if w3 >= 0:
             os.close(w3)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipe stdout test")
+def test_live_stdout_streaming_stops_when_deadline_expires_between_chunks(tmp_path):
+    """Deterministic fake-clock test: once the post-exit drain deadline expires after the
+    first live stdout chunk, streaming stops immediately while full output stays captured."""
+    import json
+    import os
+
+    report = tmp_path / "chunk_deadline.json"
+    log_path = tmp_path / "chunk_deadline.log"
+    driver = (
+        "import json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "from phase_loop_runtime import launcher\n"
+        "stdout_fd = sys.stdout.fileno()\n"
+        "real_monotonic = time.monotonic\n"
+        "clock_offset = 0.0\n"
+        "def fake_monotonic():\n"
+        "    return real_monotonic() + clock_offset\n"
+        "time.monotonic = fake_monotonic\n"
+        "orig_write = os.write\n"
+        "chunk_writes = 0\n"
+        "def advancing_write(fd, data):\n"
+        "    global clock_offset, chunk_writes\n"
+        "    n = orig_write(fd, data)\n"
+        "    if fd == stdout_fd:\n"
+        "        chunk_writes += 1\n"
+        "        if chunk_writes == 1:\n"
+        "            clock_offset += 5.0\n"
+        "    return n\n"
+        "os.write = advancing_write\n"
+        "orig_get = launcher.Queue.get\n"
+        "first_get = True\n"
+        "def delayed_first_get(self, *args, **kwargs):\n"
+        "    global first_get\n"
+        "    if first_get:\n"
+        "        first_get = False\n"
+        "        time.sleep(0.08)\n"
+        "    return orig_get(self, *args, **kwargs)\n"
+        "launcher.Queue.get = delayed_first_get\n"
+        "payload_len = 3 * launcher._STREAM_CHUNK_BYTES\n"
+        "try:\n"
+        f"    res = launcher.launch([sys.executable, '-c', f\"print('X' * {{payload_len}}, flush=True)\"], log_path=Path({str(log_path)!r}), stream_output=True, timeout_seconds=1.0)\n"
+        "finally:\n"
+        "    os.write = orig_write\n"
+        "    time.monotonic = real_monotonic\n"
+        "    launcher.Queue.get = orig_get\n"
+        f"Path({str(report)!r}).write_text(json.dumps({{'returncode': res.returncode, 'chunk_writes': chunk_writes, 'output_len': len(res.output.strip()), 'log_len': len(Path({str(log_path)!r}).read_text(encoding='utf-8').strip()), 'lock_free': not launcher._LIVE_STDOUT_LOCK.locked(), 'blocking': os.get_blocking(stdout_fd), 'chunk_bytes': launcher._STREAM_CHUNK_BYTES}}), encoding='utf-8')\n"
+    )
+    r, w = os.pipe()
+    try:
+        env = dict(os.environ)
+        env.pop("PYTHONUNBUFFERED", None)
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        proc = subprocess.Popen([sys.executable, "-c", driver], stdout=w, stderr=subprocess.PIPE, env=env)
+        os.close(w)
+        w = -1
+        assert proc.wait(timeout=5.0) == 0, proc.stderr.read().decode(errors="replace")
+        displayed = os.read(r, 65536)
+        data = json.loads(report.read_text(encoding="utf-8"))
+        assert data["returncode"] == 0
+        assert data["chunk_writes"] == 1
+        assert len(displayed) == data["chunk_bytes"]
+        assert data["output_len"] == 3 * data["chunk_bytes"]
+        assert data["log_len"] == 3 * data["chunk_bytes"]
+        assert data["lock_free"] is True
+        assert data["blocking"] is True
+    finally:
+        os.close(r)
+        if w >= 0:
+            os.close(w)
 
 
 def test_first_record_dequeued_after_leader_exit_uses_bounded_drain(tmp_path, monkeypatch):

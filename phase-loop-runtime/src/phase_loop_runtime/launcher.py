@@ -3302,10 +3302,12 @@ def launch(
                 raw = text.encode(encoding, errors=errors)
                 if not raw:
                     return
-                if not _LIVE_STDOUT_LOCK.acquire(blocking=False):
-                    return
+                acquired = False
                 restore_blocking = False
                 try:
+                    acquired = _LIVE_STDOUT_LOCK.acquire(blocking=False)
+                    if not acquired:
+                        return
                     if not _fd_ready_for_write(stdout_fd):
                         return
                     if hasattr(os, "get_blocking") and hasattr(os, "set_blocking"):
@@ -3329,12 +3331,21 @@ def launch(
                             return
                         offset += written
                 finally:
-                    if restore_blocking:
-                        try:
-                            os.set_blocking(stdout_fd, True)
-                        except OSError:
-                            pass
-                    _LIVE_STDOUT_LOCK.release()
+                    try:
+                        if restore_blocking:
+                            try:
+                                os.set_blocking(stdout_fd, True)
+                            except OSError:
+                                pass
+                            except BaseException:
+                                try:
+                                    os.set_blocking(stdout_fd, True)
+                                except OSError:
+                                    pass
+                                raise
+                    finally:
+                        if acquired:
+                            _LIVE_STDOUT_LOCK.release()
 
             def _sink_worker() -> None:
                 assert sink_queue is not None
