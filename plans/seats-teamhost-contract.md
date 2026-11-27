@@ -455,9 +455,11 @@ through root-only ancestors. Every written or pruned entry is logged to a root-o
 non-group-or-world-writable updater log. Release bytes never establish their own authority at seat
 time. From gate G-A on, until both exist on a host:
 - that host's seats resolve `managed_release` and refuse with
-  `seat_sandbox_refused:identity`;
-- the doctor reports `authority_missing` or `authority_invalid`, which maps to that seat
-  refusal and selects the checklist item.
+  `seat_dependency_authority_missing` when the authority or pin entry is missing, or
+  `seat_sandbox_refused:identity` when the authority or pin entry is invalid;
+- the doctor reports `authority_missing` (mapping to `seat_dependency_authority_missing`) or
+  `authority_invalid` (mapping to `seat_sandbox_refused:identity`), and selects the checklist
+  item.
 
 Neither TEAMHOST nor a vendor phase lands a dotfiles change.
 
