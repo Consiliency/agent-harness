@@ -1034,6 +1034,82 @@ def test_generation_reap_waits_for_unconfirmed_renewal_boundary(env, prepared, m
     assert result.inventory.pending == 1
 
 
+def test_generation_mark_start_intent_refuses_after_unconfirmed_renewal_boundary(
+        prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    fence_at = heartbeat + ttl * 2 / 3
+    clock = Clock(heartbeat + ttl / 3)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(life, "_confirm_slot", lambda *args: False)
+    assert not life.renew_launch(*key, deadline=clock.now + 1)
+    assert life._launch_read("dispositions", GEN)["fenced"] is False
+
+    # At or after h + 2T/3, start intent is refused even before fence_launch runs.
+    clock.now = fence_at
+    with life.launch_operation_lock(key[0], GEN, timeout_s=1) as held:
+        assert held and not life.mark_start_intent(*key, deadline=clock.now + 5)
+    assert life._launch_read("dispositions", GEN)["start_intent"] is False
+
+    # Before h + 2T/3, an unfenced failed renewal still allows start intent.
+    clock.now = fence_at - 1
+    with life.launch_operation_lock(key[0], GEN, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=clock.now + 5)
+    assert life._launch_read("dispositions", GEN)["start_intent"] is True
+
+
+def test_generation_started_cancel_bounds_worker_wait_to_renewal_fence(
+        env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    rid, request_id, generation = key
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    heartbeat, ttl = initial["heartbeat_at"], initial["ttl_s"]
+    fence_at = heartbeat + ttl * 2 / 3
+    clock = Clock(heartbeat + 1)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
+
+    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
+        assert held and life.mark_start_intent(*key, deadline=clock.now + 5)
+
+    waits = []
+    def record_cancel(claim, timeout_s):
+        waits.append(timeout_s)
+        return "cancelled"
+    monkeypatch.setattr(life, "launch_cancel", record_cancel)
+
+    # Unfenced and 1.5 s before h + 2T/3: WORKER cancel wait is capped to 1.5 s
+    # rather than holding launch_operation_lock for the full CANCEL_WAIT_S (10 s).
+    clock.now = fence_at - 1.5
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancelled"
+    assert waits == [pytest.approx(1.5)]
+
+    # At/after h + 2T/3 while still unfenced: yield immediately so fence_launch is not blocked.
+    waits.clear()
+    clock.now = fence_at
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancel_pending"
+    assert waits == []
+
+    # Once fenced, WORKER cancel gets the full CANCEL_WAIT_S budget.
+    assert life.fence_launch(*key, cause="renewal_lost", deadline=clock.now + 5)
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancelled"
+    assert waits == [pytest.approx(sp.CANCEL_WAIT_S)]
+
+
+def test_generation_unstarted_cancel_past_renewal_fence_returns_supervisor_outcome(
+        env, prepared, monkeypatch):
+    life, key = _generation_claim(prepared)
+    initial = life._launch_read("renewals", f"{GEN}.0")
+    fence_at = initial["heartbeat_at"] + initial["ttl_s"] * 2 / 3
+    clock = Clock(fence_at + 1)
+    monkeypatch.setattr(sp, "_monotonic", clock)
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "owner_unverified")
+
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 5) == "owner_unverified"
+    assert env.cancels == []
+
+
 def test_generation_renewal_retries_within_confirmation_window(env, prepared, monkeypatch):
     life, key = _generation_claim(prepared)
     initial = life._launch_read("renewals", f"{GEN}.0")

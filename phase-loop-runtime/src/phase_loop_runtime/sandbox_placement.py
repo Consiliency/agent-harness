@@ -3876,9 +3876,15 @@ class PlacementLifecycle:
         except (ValueError, TypeError, KeyError, LifecycleError, OSError):
             return True
 
-    def _renewal_current(self, key, disposition) -> bool:
+    def _renewal_fence_at(self, key, disposition) -> float | None:
         confirmed = self._confirmed_renewal(key, disposition)
-        return confirmed is not None and _monotonic() < confirmed["heartbeat_at"] + confirmed["ttl_s"] * 2 / 3
+        if confirmed is None:
+            return None
+        return confirmed["heartbeat_at"] + confirmed["ttl_s"] * 2 / 3
+
+    def _renewal_current(self, key, disposition) -> bool:
+        fence_at = self._renewal_fence_at(key, disposition)
+        return fence_at is not None and _monotonic() < fence_at
 
     def _generation_collectible(self, claim, deadline, *, check_allocations=True) -> bool:
         key = _identity_fields(claim["reservation_id"], claim["request_id"], claim["generation"])
@@ -4356,14 +4362,18 @@ class PlacementLifecycle:
         bound = _Deadline(deadline)
         with self.launch_lock(reservation_id, timeout_s=bound.left()) as lock:
             claim = self._owned_claim(key) if lock.held else None
-            if not claim or claim["owner"] != _own_identity() or claim.get("rollback_cause") or lock.window(None)[0]:
+            if not claim or claim["owner"] != _own_identity() or claim.get("rollback_cause"):
+                return False
+            code, active = lock.window(None)
+            if code or not active:
                 return False
             row = self._disposition(key)
-            if row["start_intent"] or bound.expired():
+            local = active["effect"]["kind"] == "local"
+            if row["start_intent"] or (local and not self._renewal_current(key, row)) or bound.expired():
                 return False
             row["start_intent"] = True
             self._launch_write("dispositions", generation, row)
-            return not bound.expired()
+            return not bound.expired() and (not local or self._renewal_current(key, row))
 
     def read_cleanup_debt(self, reservation_id: str, request_id: str, generation: str) -> Debt | None:
         key = _identity_fields(reservation_id, request_id, generation)
@@ -4580,12 +4590,23 @@ class PlacementLifecycle:
                         return "owner_unverified"
                     # WORKER addresses a reusable attempt ID. Durable start intent
                     # rules out rollback for the generation authorizing this call.
-                    worker_allowed = started and self._disposition(key)["start_intent"]
-                wait = min(CANCEL_WAIT_S, bound.left())
-                if wait <= 0:
+                    row = self._disposition(key)
+                    worker_allowed = started and row["start_intent"]
+                    cap_to_fence = (
+                        worker_allowed
+                        and not row["fenced"]
+                        and row.get("confirmed_count") is not None
+                    )
+                    fence_at = self._renewal_fence_at(key, row) if cap_to_fence else None
+                if bound.expired():
                     return "cancel_pending"
                 if not worker_allowed:
                     return outcome
+                wait = min(CANCEL_WAIT_S, bound.left())
+                if cap_to_fence:
+                    wait = 0.0 if fence_at is None else min(wait, max(0.0, fence_at - _monotonic()))
+                if wait <= 0:
+                    return "cancel_pending"
                 try:
                     worker = self.launch_cancel(claim, wait)
                 except Exception:
