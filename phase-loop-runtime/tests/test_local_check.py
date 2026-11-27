@@ -23,6 +23,19 @@ def lc():
     return module
 
 
+@pytest.fixture(autouse=True)
+def _clear_local_check_policy_env(monkeypatch, lc):
+    for var in (
+        lc.SHARED_HOST_ENV,
+        lc.WORKERS_ENV,
+        lc.OVERRIDE_ENV,
+        lc.CPU_LIMIT_ENV,
+        lc.MEMORY_LIMIT_GIB_ENV,
+        "PYTEST_ADDOPTS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture
 def pkg(tmp_path):
     root = tmp_path / "phase-loop-runtime"
@@ -196,7 +209,7 @@ def test_the_copied_run_exit_code_is_aggregated(lc, monkeypatch, tmp_path, selec
     monkeypatch.setattr(lc, "changed_files", lambda repo, base: ["x"])
     monkeypatch.setattr(lc, "select", lambda pkg_root, files: (selected, ["test"]))
     monkeypatch.setattr(lc, "check_python", lambda repo: lc.sys.executable)
-    monkeypatch.setattr(lc, "copied_tree_run", lambda *a: (["copied"], tmp_path, {}))
+    monkeypatch.setattr(lc, "copied_tree_run", lambda *a, **k: (["copied"], tmp_path, {}))
     # Hermetic: a linter must be "available" whatever the host has (CI runners have no uvx,
     # and a missing linter is itself a FAIL).
     monkeypatch.setattr(lc.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -285,6 +298,112 @@ def test_workers_zero_runs_serial_and_auto_is_refused(lc, monkeypatch, capsys):
     assert "REFUSED" in err and "auto" in err
     assert recorded == []
 
+    for blank_argv, blank_env in (
+        (["--workers", ""], None),
+        (["--workers", "   "], None),
+        ([], ""),
+        ([], "   "),
+    ):
+        if blank_env is not None:
+            monkeypatch.setenv(lc.WORKERS_ENV, blank_env)
+        else:
+            monkeypatch.delenv(lc.WORKERS_ENV, raising=False)
+        assert lc.main(blank_argv) == 2
+        assert "REFUSED" in capsys.readouterr().err
+        assert recorded == []
+    monkeypatch.delenv(lc.WORKERS_ENV, raising=False)
+
+
+def test_copied_tree_and_host_env_enforce_worker_cap_and_strip_pytest_addopts(
+    lc, monkeypatch, tmp_path
+):
+    captured: list[tuple[list[str], dict[str, str] | None]] = []
+    monkeypatch.setattr(lc, "is_shared_host", lambda *a, **k: (True, "team-host"))
+    monkeypatch.setattr(lc, "changed_files", lambda repo, base: ["x"])
+    monkeypatch.setattr(
+        lc,
+        "select",
+        lambda pkg_root, files: (["tests/test_x.py", "tests/test_legible_evidence.py"], ["stub"]),
+    )
+    monkeypatch.setattr(lc, "check_python", lambda repo: lc.sys.executable)
+    monkeypatch.setattr(lc.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-n auto")
+
+    def fake_copied_tree_run(repo, pkg_root, python, files, *, has_xdist=False, workers=0):
+        argv = [
+            python,
+            "-m",
+            "pytest",
+            "-m",
+            "not dotfiles_integration",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            *lc.xdist_args(has_xdist, workers),
+            *[str(tmp_path / f) for f in files],
+        ]
+        return argv, tmp_path, {"PYTHONPATH": str(tmp_path)}
+
+    monkeypatch.setattr(lc, "copied_tree_run", fake_copied_tree_run)
+
+    def run(cmd, *args, **kwargs):
+        if cmd[1:3] == ["-c", "import sys; print(sys.version.split()[0])"]:
+            return subprocess.CompletedProcess(cmd, 0, "3.12.0\n", "")
+        if cmd[1:3] == ["-c", "import xdist"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd[:2] == ["bash", str(Path(lc.__file__).resolve().parents[2] / "ci" / "chronology-scope.sh")]:
+            return subprocess.CompletedProcess(cmd, 0, "tests/x.py::test_node\n", "")
+        captured.append((list(cmd), dict(kwargs["env"]) if kwargs.get("env") is not None else None))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(lc.subprocess, "run", run)
+
+    assert lc.main(["--host-env", "--workers", "0"]) == 0
+    pytest_runs = [(cmd, env) for cmd, env in captured if "-m" in cmd and "pytest" in cmd]
+    assert len(pytest_runs) == 2
+    for cmd, env in pytest_runs:
+        assert ["-n", "0"] == cmd[cmd.index("-n") : cmd.index("-n") + 2]
+        assert "auto" not in cmd
+        assert env is not None and "PYTEST_ADDOPTS" not in env
+
+    captured.clear()
+    assert lc.main(["--host-env", "--workers", "2"]) == 0
+    pytest_runs = [(cmd, env) for cmd, env in captured if "-m" in cmd and "pytest" in cmd]
+    assert len(pytest_runs) == 2
+    for cmd, env in pytest_runs:
+        assert ["-n", "2", "--dist", "loadfile", "--max-worker-restart=0"] == cmd[
+            cmd.index("-n") : cmd.index("-n") + 5
+        ]
+        assert env is not None and "PYTEST_ADDOPTS" not in env
+
+    # Exercise the real copied_tree_run builder directly too.
+    real_pkg = tmp_path / "real" / "phase-loop-runtime"
+    (real_pkg / "tests").mkdir(parents=True)
+    (real_pkg / "tests" / "test_legible_evidence.py").write_text("")
+    monkeypatch.undo()
+    real_argv0, _, _ = lc.copied_tree_run(
+        tmp_path / "real", real_pkg, "/py", ["tests/test_legible_evidence.py"], has_xdist=True, workers=0
+    )
+    assert ["-n", "0"] == real_argv0[real_argv0.index("-n") : real_argv0.index("-n") + 2]
+    real_argv2, _, _ = lc.copied_tree_run(
+        tmp_path / "real", real_pkg, "/py", ["tests/test_legible_evidence.py"], has_xdist=True, workers=2
+    )
+    assert ["-n", "2", "--dist", "loadfile", "--max-worker-restart=0"] == real_argv2[
+        real_argv2.index("-n") : real_argv2.index("-n") + 5
+    ]
+
+
+def test_unrecognized_override_env_value_keeps_full_refusal(lc, monkeypatch, capsys):
+    recorded = _stub_main_env(
+        lc, monkeypatch, selected=["tests/test_x.py"], shared=(True, "team-host marker"), has_xdist=True
+    )
+    monkeypatch.setenv(lc.OVERRIDE_ENV, "disabled")
+    monkeypatch.setenv(lc.CPU_LIMIT_ENV, "4")
+    monkeypatch.setenv(lc.MEMORY_LIMIT_GIB_ENV, "8")
+    assert lc.main(["--full"]) == 2
+    assert "REFUSED" in capsys.readouterr().err
+    assert recorded == []
+
 
 @pytest.mark.parametrize("argv,selected", [
     (["--full"], ["tests/test_x.py"]),
@@ -307,7 +426,7 @@ def test_shared_host_caps_workers_unless_owner_override_with_limits(lc, monkeypa
     recorded = _stub_main_env(
         lc, monkeypatch, selected=["tests/test_x.py"], shared=(True, "team-host marker"), has_xdist=True
     )
-    monkeypatch.setattr(lc, "copied_tree_run", lambda *a: (["copied"], tmp_path, {}))
+    monkeypatch.setattr(lc, "copied_tree_run", lambda *a, **k: (["copied"], tmp_path, {}))
 
     # Without override, >2 workers is refused.
     assert lc.main(["--workers", "4"]) == 2

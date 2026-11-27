@@ -46,6 +46,7 @@ OVERRIDE_ENV = "LOCAL_CHECK_ALLOW_SHARED_HOST_OVERRIDE"
 CPU_LIMIT_ENV = "LOCAL_CHECK_CPU_LIMIT"
 MEMORY_LIMIT_GIB_ENV = "LOCAL_CHECK_MEMORY_LIMIT_GIB"
 _FALSY_ENV = frozenset({"", "0", "false", "no", "off"})
+_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 CI_GUARD_GLOBS = ("tests/test_ci_*.py", "tests/test_*workflow*.py")
 CI_TRIGGERS = (".github/workflows/", "ci/", f"{PKG}/scripts/gate_a_cleanroom.sh")
 FULL_TRIGGERS = (f"{PKG}/tests/conftest.py", f"{PKG}/pyproject.toml", f"{PKG}/tests/phase_loop_test_utils.py")
@@ -206,7 +207,24 @@ def clean_env(python: str) -> dict[str, str]:
     return env
 
 
-def copied_tree_run(repo: Path, pkg_root: Path, python: str, files: list[str]) -> tuple[list[str], Path, dict[str, str]]:
+def xdist_args(has_xdist: bool, workers: int) -> list[str]:
+    """Return bounded pytest-xdist arguments for a pytest invocation (agent-harness#1826)."""
+    if not has_xdist:
+        return []
+    if workers == 0:
+        return ["-n", "0"]
+    return ["-n", str(workers), "--dist", "loadfile", "--max-worker-restart=0"]
+
+
+def copied_tree_run(
+    repo: Path,
+    pkg_root: Path,
+    python: str,
+    files: list[str],
+    *,
+    has_xdist: bool = False,
+    workers: int = 0,
+) -> tuple[list[str], Path, dict[str, str]]:
     """(argv, cwd, extra env) that run ``files`` the way test.yml does: from a copy of
     tests/ plus specs/phase-plans-v10.md in a tree with no ``.git``. The working tree's
     src/ is put on the path so the run tests the current code, not the cached install."""
@@ -219,8 +237,18 @@ def copied_tree_run(repo: Path, pkg_root: Path, python: str, files: list[str]) -
     roadmap = repo / "specs" / "phase-plans-v10.md"
     if roadmap.is_file():
         shutil.copy2(roadmap, base / "specs" / roadmap.name)
-    argv = [python, "-m", "pytest", "-m", "not dotfiles_integration", "-q", "-p", "no:cacheprovider",
-            *[str(suite_root / f) for f in files]]
+    argv = [
+        python,
+        "-m",
+        "pytest",
+        "-m",
+        "not dotfiles_integration",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        *xdist_args(has_xdist, workers),
+        *[str(suite_root / f) for f in files],
+    ]
     return argv, suite_root, {"PYTHONPATH": f"{suite_root / 'tests'}{os.pathsep}{pkg_root / 'src'}"}
 
 
@@ -257,7 +285,7 @@ def parse_owner_override(
     source = os.environ if env is None else env
     env_flag = source.get(OVERRIDE_ENV)
     requested = allow_override or (
-        env_flag is not None and env_flag.strip().lower() not in _FALSY_ENV
+        env_flag is not None and env_flag.strip().lower() in _TRUTHY_ENV
     )
     if not requested:
         return None
@@ -301,8 +329,13 @@ def resolve_workers(
 ) -> int:
     """Resolve a bounded pytest-xdist worker count; never returns ``auto`` (agent-harness#1826)."""
     source = os.environ if env is None else env
-    raw = raw_workers if raw_workers is not None else source.get(WORKERS_ENV)
-    if raw is None or not raw.strip():
+    if raw_workers is not None:
+        raw: str | None = raw_workers
+    elif WORKERS_ENV in source:
+        raw = source[WORKERS_ENV]
+    else:
+        raw = None
+    if raw is None:
         workers = (
             min(DEFAULT_MAX_WORKERS, override[0])
             if shared_host and override is not None
@@ -423,12 +456,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"local_check: REFUSED — {exc}", file=sys.stderr)
         return 2
 
-    pytest_cmd = [python, "-m", "pytest", "-m", "not dotfiles_integration", "-q", "-p", "no:cacheprovider"]
-    if has_xdist:
-        if workers == 0:
-            pytest_cmd += ["-n", "0"]
-        else:
-            pytest_cmd += ["-n", str(workers), "--dist", "loadfile", "--max-worker-restart=0"]
+    pytest_cmd = [
+        python,
+        "-m",
+        "pytest",
+        "-m",
+        "not dotfiles_integration",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        *xdist_args(has_xdist, workers),
+    ]
     copied = list(SUITE_IGNORES) if tests is None else [t for t in (tests or []) if t in SUITE_IGNORES]
     main_tests = None if tests is None else [t for t in tests if t not in SUITE_IGNORES]
     if tests is None:
@@ -484,13 +522,16 @@ def main(argv: list[str] | None = None) -> int:
     if lint_cmd:
         status |= subprocess.run(lint_cmd, cwd=repo).returncode
     env = dict(os.environ, PYTHONPATH="src:tests") if args.host_env else clean_env(python)
+    env.pop("PYTEST_ADDOPTS", None)
     if tests is None or main_tests:
         code = subprocess.run(pytest_cmd, cwd=pkg_root, env=env).returncode
         # 5 = nothing collected: fine when every SELECTED test was deselected by marker;
         # never for the whole suite.
         status |= 0 if code == 5 and tests is not None else code
     if copied:
-        copied_argv, copied_cwd, copied_env = copied_tree_run(repo, pkg_root, python, copied)
+        copied_argv, copied_cwd, copied_env = copied_tree_run(
+            repo, pkg_root, python, copied, has_xdist=has_xdist, workers=workers
+        )
         code = subprocess.run(copied_argv, cwd=copied_cwd, env={**env, **copied_env}).returncode
         # 5 (nothing collected) is tolerable only when this run is a strict SUBSET of CI's
         # copied step; CI runs both files together and fails on 5 (#1059 r1).
