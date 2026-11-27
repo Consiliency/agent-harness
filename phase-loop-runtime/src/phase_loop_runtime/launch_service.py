@@ -133,12 +133,13 @@ def _landed_attempt_status(state_root: Path, attempt_id: str) -> object:
 
 
 def _landed_cancel_attempt(
-    state_root: Path, attempt_id: str, wait_s: float, *, deadline: float | None = None,
+    state_root: Path, attempt_id: str, wait_s: float, *,
+    deadline: float | None = None, signal_guard: object = None,
 ) -> str:
     from .convergence.adapters.patch_return import cancel_attempt
 
     return cancel_attempt(state_root=Path(state_root), attempt_id=attempt_id,
-                          wait_seconds=wait_s, deadline=deadline)
+                          wait_seconds=wait_s, deadline=deadline, signal_guard=signal_guard)
 
 
 class LaunchService:
@@ -345,9 +346,10 @@ def build_launch_service(
     cancel_worker = cancel_attempt if cancel_attempt is not None else _landed_cancel_attempt
     if lifecycle is None:
         if cancel_attempt is None:
-            def _lifecycle_cancel(claim, wait, *, deadline=None):
+            def _lifecycle_cancel(claim, wait, *, deadline=None, signal_guard=None):
                 return _landed_cancel_attempt(
-                    worker_root, str(claim["run_id"]), wait, deadline=deadline,
+                    worker_root, str(claim["run_id"]), wait,
+                    deadline=deadline, signal_guard=signal_guard,
                 )
         else:
             def _lifecycle_cancel(claim, wait):

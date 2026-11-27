@@ -621,6 +621,7 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
 def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: str | None = None,
                    wait_seconds: float = CANCEL_WAIT_SECONDS,
                    deadline: float | None = None,
+                   signal_guard: object = None,
                    launcher_commands: tuple[tuple[str, ...], ...] = PRODUCTION_LAUNCHER_COMMANDS) -> CancelOutcome:
     if not 0 < wait_seconds <= CANCEL_WAIT_SECONDS:
         raise ValueError("cancel_wait_invalid")
@@ -686,7 +687,14 @@ def cancel_attempt(*, state_root: Path, run_id: str | None = None, attempt_id: s
         lock_type, _, _, _, owner = struct.unpack("hhqqi", lock)
         if lock_type == fcntl.F_UNLCK or owner != pid:
             return "owner_unverified"
-        signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+        def _send_sigterm() -> None:
+            signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+        if signal_guard is not None:
+            guarded = signal_guard(_send_sigterm)
+            if guarded is not None:
+                return guarded
+        else:
+            _send_sigterm()
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return "owner_unverified"
     finally:

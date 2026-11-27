@@ -1143,30 +1143,34 @@ def test_generation_mark_start_intent_checks_caller_deadline_after_renewal_read(
     {"heartbeat_at": "not-a-number"},
     {"ttl_s": 0},
     {"ttl_s": float("nan")},
+    {"heartbeat_at": 10**400},
+    {"ttl_s": 1e308},
 ])
 def test_generation_malformed_renewal_fields_fail_closed_without_raw_exception(
         prepared, monkeypatch, bad_row):
     life, key = _generation_claim(prepared)
     rid, request_id, generation = key
-    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
-        assert held and life.mark_start_intent(*key, deadline=time.monotonic() + 5)
     row = life._launch_read("renewals", f"{GEN}.0")
     row.update(bad_row)
     life._launch_write("renewals", f"{GEN}.0", row)
-    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
+    ident = sp._identity_fields(rid, request_id, generation)
+    disp = life._disposition(ident)
+    assert life._renewal_fence_at(ident, disp) is None
+    assert life._renewal_current(ident, disp) is False
+    with life.launch_operation_lock(rid, generation, timeout_s=1) as held:
+        assert held and not life.mark_start_intent(*key, deadline=time.monotonic() + 5)
 
+    disp["start_intent"] = True
+    life._launch_write("dispositions", generation, disp)
+    monkeypatch.setattr(sp, "_supervisor_cancel", lambda *args: "cancelled")
     assert life.cancel_launch_owner(*key, deadline=time.monotonic() + 10) == "cancel_pending"
-    assert life._renewal_current(
-        sp._identity_fields(rid, request_id, generation),
-        life._disposition(sp._identity_fields(rid, request_id, generation)),
-    ) is False
 
 
 def test_generation_started_cancel_worker_deadline_bounds_verification_and_polling(
         prepared, monkeypatch, tmp_path):
-    """Through the production patch_return.cancel_attempt path, advancing the monotonic clock
-    during launcher verification reduces or eliminates post-SIGTERM polling so the operation
-    lock is not held past h + 2T/3."""
+    """Through the production patch_return.cancel_attempt path, launcher verification and
+    post-SIGTERM status polling run outside launch_operation_lock; the lock is acquired
+    only to revalidate generation/fence and deliver SIGTERM."""
     from types import SimpleNamespace
     import fcntl
     import hashlib
@@ -1215,15 +1219,29 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
             writer=SimpleNamespace(owner_pid=os.getpid(), process_start_time="start-1", writer_instance_id="nonce-1"),
         ),
     )
-    monkeypatch.setattr(
-        patch_return.projection, "attempt_status",
-        lambda *a, **k: SimpleNamespace(state="running", display="running", termination=None, refusal=None),
-    )
 
+    lock_during_verify = []
+    lock_during_signal = []
+    lock_during_poll = []
+    signals_sent = []
+    sleeps = []
     verification_delay = 1.6
+    fence_during_verify = False
+
+    def spy_attempt_status(*a, **k):
+        if signals_sent:
+            lock_during_poll.append(life._holds_operation(rid, generation))
+        else:
+            lock_during_verify.append(life._holds_operation(rid, generation))
+        return SimpleNamespace(state="running", display="running", termination=None, refusal=None)
+
+    monkeypatch.setattr(patch_return.projection, "attempt_status", spy_attempt_status)
 
     def slow_start_identity(pid):
+        lock_during_verify.append(life._holds_operation(rid, generation))
         clock.now += verification_delay
+        if fence_during_verify:
+            assert life.fence_launch(*key, cause="renewal_lost", deadline=clock.now + 5)
         return "start-1"
 
     monkeypatch.setattr(patch_return.journal, "process_start_identity", slow_start_identity)
@@ -1238,34 +1256,52 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
         lambda fd, op, arg: struct.pack("hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 0, os.getpid())
         if op == fcntl.F_GETLK else fcntl.fcntl(fd, op, arg),
     )
-    signals_sent = []
-    monkeypatch.setattr(
-        patch_return.signal, "pidfd_send_signal",
-        lambda pidfd, sig: signals_sent.append(sig),
-    )
-    sleeps = []
+
+    def spy_signal(pidfd, sig):
+        lock_during_signal.append(life._holds_operation(rid, generation))
+        signals_sent.append(sig)
+
+    monkeypatch.setattr(patch_return.signal, "pidfd_send_signal", spy_signal)
 
     def fake_sleep(seconds):
+        lock_during_poll.append(life._holds_operation(rid, generation))
         sleeps.append(seconds)
         clock.now += seconds
 
     monkeypatch.setattr(patch_return.time, "sleep", fake_sleep)
     monkeypatch.setattr(life, "launch_cancel", sp._landed_launch_cancel)
 
-    # Case 1: verification consumes 1.6 s (> 1.5 s remaining to fence_at) -> zero polling sleep!
+    # Case 1: verification crosses fence_at while still unfenced -> lock was not held during
+    # verification, signal_guard refuses to signal past fence_at, and zero polling runs.
     assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancel_pending"
-    assert signals_sent == [signal.SIGTERM]
+    assert lock_during_verify and all(held is False for held in lock_during_verify)
+    assert signals_sent == []
     assert sleeps == []
 
-    # Case 2: verification consumes 1.0 s of 1.5 s remaining -> polls only the remaining 0.5 s.
-    signals_sent.clear()
-    sleeps.clear()
+    # Case 2: verification completes before fence_at -> lock held ONLY during SIGTERM,
+    # released before status polling begins so polling cannot block fence_launch.
+    for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
+        lst.clear()
     clock.now = fence_at - 1.5
     verification_delay = 1.0
-    assert life.cancel_launch_owner(*key, deadline=clock.now + 20) == "cancel_pending"
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 2.0) == "cancel_pending"
+    assert lock_during_verify and all(held is False for held in lock_during_verify)
     assert signals_sent == [signal.SIGTERM]
-    assert sum(sleeps) == pytest.approx(0.5)
-    assert clock.now == pytest.approx(fence_at)
+    assert lock_during_signal == [True]
+    assert lock_during_poll and all(held is False for held in lock_during_poll)
+    assert sum(sleeps) == pytest.approx(1.0)
+
+    # Case 3: fence_launch runs concurrently during verification (proving the lock is free);
+    # once fenced, signal_guard sees fenced=True and delivers SIGTERM even past fence_at.
+    for lst in (lock_during_verify, lock_during_signal, lock_during_poll, signals_sent, sleeps):
+        lst.clear()
+    clock.now = fence_at - 1.5
+    verification_delay = 1.6
+    fence_during_verify = True
+    assert life.cancel_launch_owner(*key, deadline=clock.now + 3.0) == "cancel_pending"
+    assert signals_sent == [signal.SIGTERM]
+    assert lock_during_signal == [True]
+    assert lock_during_poll and all(held is False for held in lock_during_poll)
 
 
 def test_generation_renewal_retries_within_confirmation_window(env, prepared, monkeypatch):
