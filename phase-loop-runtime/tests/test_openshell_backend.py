@@ -181,7 +181,9 @@ class ModelStream:
 @pytest.fixture
 def pipeline(bundle, tmp_path, monkeypatch):
     proto = stock_bindings()
-    monkeypatch.setattr(sp, "ANSWER_BOUND_S", 0.5)
+    # Keep generous default RPC/place headroom on loaded runners; dedicated timeout
+    # tests set shorter ANSWER_BOUND_S / deadline values explicitly (agent-harness#2096).
+    monkeypatch.setattr(sp, "ANSWER_BOUND_S", 15.0)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     loop = asyncio.new_event_loop()
     ready = threading.Event()
@@ -221,7 +223,7 @@ def pipeline(bundle, tmp_path, monkeypatch):
         leases.append(lease)
         return lease
 
-    def place(*, deadline=5, enabled=True, cancelled=None, required=frozenset(), roots=None):
+    def place(*, deadline=30, enabled=True, cancelled=None, required=frozenset(), roots=None):
         return sp.place(roots or [root], "none", prepared,
                         lambda root: replace(base_request, deadline_s=deadline, required_capabilities=required),
                         open_lease, preflight=lambda: None, seal=backend.seal,
@@ -376,8 +378,10 @@ def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure, wrapped, 
     endpoint.worker_envelope = wrapped
     setattr(worker if failure == 'native_refuse' else endpoint, failure, True)
     # This tests rejection, not elapsed time: synthetic worker/git work must finish
-    # before the fixed end. Dedicated fixed-end/dispatch-bound tests retain their bounds.
-    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', 5)
+    # before the fixed end and without an incidental execute/wait driver timeout
+    # (agent-harness#2096: 5 s could still expire under loaded hosted CI).
+    # Dedicated fixed-end/dispatch-bound tests retain their shorter bounds.
+    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', 30.0)
     failures = []
     real_wait = backend.wait
 
@@ -391,6 +395,7 @@ def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure, wrapped, 
     monkeypatch.setattr(backend, 'wait', observe_wait)
     decision = place(deadline=60)
     assert decision.outcome == 'placed', decision
+    assert not decision.placement._launch_failed, decision
     with pytest.raises(sp.PlacementUnavailable, match='lost_after_launch'):
         run(decision.placement)
     # An incidental driver timeout also maps to lost_after_launch; it must not
