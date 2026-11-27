@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import builtins
+import codecs
 import hashlib
 import contextlib
 import json
@@ -9,6 +11,7 @@ import select
 import signal
 import shlex
 import shutil
+import stat
 import string
 import subprocess
 import sys
@@ -19,8 +22,13 @@ import urllib.parse
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Queue, SimpleQueue
 from typing import Any, Callable, Mapping
+
+_BUILTIN_PRINT = builtins.print
+_STREAM_CHUNK_BYTES = 512
+_LIVE_STDOUT_LOCK = threading.RLock()
+_LIVE_STDOUT_ACTIVE = threading.local()
 
 from .capability_registry import capability_registry
 from .advisor_board.harness_mapping import agy_model_effort, render_agy_model
@@ -333,6 +341,7 @@ class LaunchResult:
     timed_out: bool = False
     interrupted: bool = False
     stalled: bool = False
+    drain_incomplete: bool = False
     claude_route: str | None = None
     claude_route_result: dict[str, Any] | None = None
     # CR round-5/6/7/8 finding C: route-level provenance warnings (e.g. the channel route's
@@ -417,6 +426,8 @@ class LaunchResult:
             data["interrupted"] = self.interrupted
         if self.stalled:
             data["stalled"] = self.stalled
+        if self.drain_incomplete:
+            data["drain_incomplete"] = self.drain_incomplete
         if self.claude_route is not None:
             data["claude_route"] = self.claude_route
         if self.claude_route_warnings:
@@ -3127,7 +3138,12 @@ def launch(
         started_at = _utc_now()
         started_monotonic = time.monotonic()
 
-        with log_path.open("w", encoding="utf-8") as log:
+        log = log_path.open("w", encoding="utf-8")
+        sink_queue: SimpleQueue[Any] | None = None
+        sink_thread: threading.Thread | None = None
+        sink_close_on_exit = threading.Event()
+        sink_stalled = False
+        try:
             popen_kwargs: dict[str, Any] = {
                 "text": _codex_usage_observer is None,
                 "stdin": subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
@@ -3187,6 +3203,21 @@ def launch(
             if exec_status_read is not None:
                 executor_released = _read_supervisor_status(process, exec_status_read, command)
             process_group_id = _process_group_id(process.pid)
+            if (
+                process_group_id is None
+                and popen_kwargs.get("start_new_session")
+                and isinstance(getattr(process, "pid", None), int)
+                and hasattr(os, "getpgrp")
+            ):
+                # On macOS, getpgid() can return ESRCH for a fast-exiting unreaped leader
+                # spawned with start_new_session=True; its owned PGID is process.pid.
+                poll_fn = getattr(type(process), "poll", None)
+                if getattr(poll_fn, "__module__", None) == "subprocess":
+                    try:
+                        if process.pid != os.getpgrp():
+                            process_group_id = process.pid
+                    except OSError:
+                        pass
             assert process.stdout is not None
             if _codex_usage_observer is None and hasattr(process.stdout, "reconfigure"):
                 # Output only: an undecodable byte must not kill the line reader and drop
@@ -3196,17 +3227,203 @@ def launch(
                 process.stdin.write(stdin_text if _codex_usage_observer is None else stdin_text.encode())
                 process.stdin.close()
             reader_stop = threading.Event()
+            pipe_eof = threading.Event()
+            stream_eofs = {"stdout": threading.Event(), "stderr": threading.Event()}
             streams_done = set()
             readers = []
+            using_default_reader = _codex_usage_observer is None and _read_lines is _DEFAULT_READ_LINES
             if _codex_usage_observer is None:
-                readers.append(threading.Thread(target=_read_lines, args=(process.stdout, line_queue), daemon=True))
+                reader_args = (
+                    (process.stdout, line_queue, reader_stop, pipe_eof)
+                    if using_default_reader
+                    else (process.stdout, line_queue)
+                )
+                readers.append(threading.Thread(target=_read_lines, args=reader_args, daemon=True))
             else:
                 for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
                     readers.append(threading.Thread(target=_read_usage_lines,
-                        args=(pipe, line_queue, name, reader_stop), daemon=True))
+                        args=(pipe, line_queue, name, reader_stop, stream_eofs[name]), daemon=True))
             for reader in readers:
                 reader.start()
-            def consume(record):
+
+            def pipes_all_eof() -> bool:
+                if _codex_usage_observer is not None:
+                    return all(ev.is_set() for ev in stream_eofs.values())
+                return pipe_eof.is_set() if using_default_reader else reader_eof
+
+            def pipe_writers_all_closed() -> bool:
+                if _codex_usage_observer is not None:
+                    return all(
+                        stream_eofs[name].is_set() or _pipe_writers_closed(pipe)
+                        for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr))
+                    )
+                if using_default_reader:
+                    return pipe_eof.is_set() or _pipe_writers_closed(process.stdout)
+                return reader_eof or _pipe_writers_closed(process.stdout)
+
+            def _stream_stdout_fd() -> int | None:
+                if print is not _BUILTIN_PRINT:
+                    return None
+                try:
+                    fd = sys.stdout.fileno()
+                    mode = os.fstat(fd).st_mode
+                except (AttributeError, OSError, ValueError):
+                    return None
+                if stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode):
+                    return fd
+                return None
+
+            def _fd_ready_for_write(fd: int) -> bool:
+                if hasattr(select, "poll"):
+                    poller = select.poll()
+                    poller.register(fd, select.POLLOUT)
+                    events = poller.poll(0)
+                    return bool(events)
+                _, writable, _ = select.select([], [fd], [], 0.0)
+                return bool(writable)
+
+            def _stream_live_text(text: str, *, deadline: float | None = None) -> None:
+                """Best-effort non-blocking live display on real pipes/sockets/ttys.
+                Never calls sys.stdout.flush() (which can block on pre-buffered data),
+                never delays process polling or log capture, uses poll() so fds >= 1024
+                work cleanly, uses non-blocking lock acquisition and non-blocking
+                os.write() so competing or concurrent writers cannot block or race on
+                fd blocking mode, and retries on each subsequent record so live output
+                resumes once backpressure clears. BrokenPipeError still propagates."""
+                if not stream_output or not text:
+                    return
+                if deadline is not None and time.monotonic() >= deadline:
+                    return
+                stdout_fd = _stream_stdout_fd()
+                if stdout_fd is None:
+                    print(text, end="", flush=True)
+                    return
+                encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+                errors = getattr(sys.stdout, "errors", None) or "replace"
+                raw = text.encode(encoding, errors=errors)
+                if not raw:
+                    return
+                if getattr(_LIVE_STDOUT_ACTIVE, "held", False):
+                    return
+                restore_blocking = False
+                try:
+                    if not _LIVE_STDOUT_LOCK.acquire(blocking=False):
+                        return
+                    _LIVE_STDOUT_ACTIVE.held = True
+                    if not _fd_ready_for_write(stdout_fd):
+                        return
+                    if hasattr(os, "get_blocking") and hasattr(os, "set_blocking"):
+                        try:
+                            if os.get_blocking(stdout_fd):
+                                restore_blocking = True
+                                os.set_blocking(stdout_fd, False)
+                        except OSError:
+                            restore_blocking = False
+                    offset = 0
+                    while offset < len(raw):
+                        if deadline is not None and time.monotonic() >= deadline:
+                            return
+                        if offset > 0 and not _fd_ready_for_write(stdout_fd):
+                            return
+                        try:
+                            written = os.write(stdout_fd, raw[offset : offset + _STREAM_CHUNK_BYTES])
+                        except BlockingIOError:
+                            return
+                        if written <= 0:
+                            return
+                        offset += written
+                finally:
+                    try:
+                        if restore_blocking:
+                            try:
+                                os.set_blocking(stdout_fd, True)
+                            except OSError:
+                                pass
+                            except BaseException:
+                                try:
+                                    os.set_blocking(stdout_fd, True)
+                                except OSError:
+                                    pass
+                                raise
+                    finally:
+                        try:
+                            try:
+                                _LIVE_STDOUT_LOCK.release()
+                            except RuntimeError:
+                                pass
+                            except BaseException:
+                                try:
+                                    _LIVE_STDOUT_LOCK.release()
+                                except RuntimeError:
+                                    pass
+                                raise
+                        finally:
+                            _LIVE_STDOUT_ACTIVE.held = False
+
+            def _sink_worker() -> None:
+                assert sink_queue is not None
+                try:
+                    while True:
+                        item = sink_queue.get()
+                        if item is None:
+                            return
+                        text, call_print, done, err_box = item
+                        try:
+                            log.write(text)
+                            log.flush()
+                            if call_print:
+                                print(text, end="", flush=True)
+                        except BaseException as exc:
+                            err_box.append(exc)
+                        finally:
+                            done.set()
+                finally:
+                    if sink_close_on_exit.is_set():
+                        try:
+                            log.close()
+                        except OSError:
+                            pass
+
+            def _write_sinks(text: str, deadline: float | None) -> bool:
+                nonlocal sink_queue, sink_thread, sink_stalled
+                if deadline is None:
+                    log.write(text)
+                    log.flush()
+                    _stream_live_text(text)
+                    return True
+                if sink_stalled:
+                    return False
+                wait_left = deadline - time.monotonic()
+                if wait_left <= 0:
+                    return False
+                # Never run stock print() against a real OS pipe/socket/tty on a daemon
+                # thread (which would hold sys.stdout's BufferedWriter lock across a full
+                # pipe write and abort subsequent writes or interpreter shutdown).
+                call_print_in_worker = stream_output and print is not _BUILTIN_PRINT
+                if sink_thread is None:
+                    sink_queue = SimpleQueue()
+                    sink_thread = threading.Thread(target=_sink_worker, daemon=True)
+                    sink_thread.start()
+                assert sink_queue is not None
+                done = threading.Event()
+                err_box: list[BaseException] = []
+                try:
+                    sink_queue.put((text, call_print_in_worker, done, err_box))
+                    finished = done.wait(timeout=wait_left)
+                except BaseException:
+                    if not done.is_set():
+                        sink_stalled = True
+                    raise
+                if not finished:
+                    sink_stalled = True
+                    return False
+                if err_box:
+                    raise err_box[0]
+                if stream_output and not call_print_in_worker:
+                    _stream_live_text(text, deadline=deadline)
+                return True
+
+            def consume(record, *, deadline: float | None = None) -> bool:
                 if _codex_usage_observer is None:
                     rendered = record
                 else:
@@ -3216,142 +3433,361 @@ def launch(
                 # (agent-harness#1282).
                 if rendered:
                     rendered = redact_seat(rendered)
+                    if deadline is not None and (sink_stalled or deadline - time.monotonic() <= 0):
+                        return False
+                    if not _write_sinks(rendered, deadline):
+                        return False
+                    output_parts.append(rendered)
                 if _codex_usage_observer is not None:
                     if kind == "eof":
                         streams_done.add(name)
                     elif kind == "error":
                         _codex_usage_observer.invalidate("reader_failure")
-                    elif name == "stdout":
+                    elif name == "stdout" and rendered:
                         _codex_usage_observer.observe(rendered)
-                if rendered:
-                    output_parts.append(rendered)
-                    log.write(rendered)
-                    log.flush()
-                    if stream_output:
-                        print(rendered, end="", flush=True)
-            def drain():
-                deadline = time.monotonic() + 1.0
-                while streams_done != {"stdout", "stderr"} and time.monotonic() < deadline:
+                return True
+            def post_exit_deadline() -> float:
+                now_ts = time.monotonic()
+                bound = now_ts + 1.0
+                if (not timed_out and not stalled and not interrupted
+                        and action != "review" and timeout_seconds is not None):
+                    bound = min(bound, started_monotonic + timeout_seconds)
+                    # When all pipe writers have already closed or records are already queued
+                    # after a normal exit, give a strictly bounded 0.1 s flush floor so queued
+                    # output is kept without ever overrunning the clock on slow stream writes.
+                    if pipe_writers_all_closed() or line_queue.qsize() > 0:
+                        bound = max(bound, now_ts + 0.1)
+                return bound
+
+            def drain(*, deadline_override: float | None = None):
+                deadline = post_exit_deadline() if deadline_override is None else deadline_override
+                try:
+                    while streams_done != {"stdout", "stderr"} and not sink_stalled:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        try:
+                            record = line_queue.get(timeout=min(0.05, max(0.001, remaining)))
+                        except Empty:
+                            continue
+                        if not consume(record, deadline=deadline):
+                            break
+                finally:
+                    if streams_done != {"stdout", "stderr"} or sink_stalled:
+                        _codex_usage_observer.invalidate("incomplete_drain")
+
+            def drain_plain(*, deadline_override: float | None = None):
+                nonlocal reader_eof
+                drain_deadline = (
+                    post_exit_deadline() if deadline_override is None else deadline_override
+                )
+                while not reader_eof and not sink_stalled:
+                    remaining = drain_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
                     try:
-                        consume(line_queue.get(timeout=min(0.05, max(0.001, deadline-time.monotonic()))))
+                        line = line_queue.get(timeout=remaining)
                     except Empty:
-                        pass
-                if streams_done != {"stdout", "stderr"}:
-                    _codex_usage_observer.invalidate("incomplete_drain")
+                        break
+                    if line is None:
+                        reader_eof = True
+                    elif not consume(line, deadline=drain_deadline):
+                        break
             last_heartbeat = 0.0
             timed_out = False
             interrupted = False
             stalled = False
+            drain_incomplete = False
+            leader_unreaped = False
+            cleaned_up_group = False
             cleanup_evidence: dict[str, Any] | None = None
             last_heartbeat_summary: dict[str, Any] | None = None
             reader_eof = False
-            while True:
-                try:
+            def cleanup_own_group_or_process(reason: str) -> dict[str, Any]:
+                nonlocal leader_unreaped, cleaned_up_group, interrupted
+                own_pgrp = False
+                if process_group_id is not None and hasattr(os, "killpg"):
                     try:
-                        line = line_queue.get(timeout=0.05 if _codex_usage_observer is not None else 1)
-                        if line is None and _codex_usage_observer is None:
-                            reader_eof = True
-                    except Empty:
-                        line = None
-                    if line:
-                        consume(line)
-                    now = time.monotonic()
-                    if heartbeat_path is not None and now - last_heartbeat >= heartbeat_interval_seconds:
-                        heartbeat = run_heartbeat_summary(
-                            log_path=log_path,
-                            heartbeat_path=heartbeat_path,
-                            pid=process.pid,
-                            started_monotonic=started_monotonic,
-                            started_at=started_at,
-                            heartbeat_interval_seconds=heartbeat_interval_seconds,
-                            quiet_warning_seconds=quiet_warning_seconds,
-                            quiet_blocker_seconds=quiet_blocker_seconds,
-                            command=command,
-                            returncode=process.poll(),
-                            process_group_id=process_group_id,
-                        )
-                        last_heartbeat_summary = heartbeat
-                        write_run_heartbeat(heartbeat_path, heartbeat)
-                        if stream_output and heartbeat.get("quiet_level") != "active":
-                            print(
-                                "heartbeat:",
-                                f"pid={heartbeat.get('pid')}",
-                                f"elapsed={heartbeat.get('elapsed_seconds')}s",
-                                f"quiet={heartbeat.get('seconds_since_log_update')}s",
-                                f"level={heartbeat.get('quiet_level')}",
-                                flush=True,
+                        own_pgrp = process_group_id != os.getpgrp()
+                    except OSError:
+                        own_pgrp = False
+                if own_pgrp and getattr(process, "returncode", None) is None:
+                    # Preserve graceful shutdown budgets for live executors:
+                    # - Unleased live executors keep the existing 2.0 s SIGTERM grace before
+                    #   SIGKILL (matching _cleanup_process_group).
+                    # - Leased launches run under lease_supervisor, which forwards SIGTERM,
+                    #   waits 1.0 s before SIGKILLing the executor, then waits up to
+                    #   _DESCENDANT_REAP_GRACE_SECONDS (5.0 s) + _DESCENDANT_KILL_GRACE_SECONDS
+                    #   (1.0 s) to kill and reap session-detached adopted descendants.
+                    supervised = _supervisor_lease_fd is not None
+                    term_grace_s = (
+                        LeaseSupervisor._DESCENDANT_REAP_GRACE_SECONDS
+                        + LeaseSupervisor._DESCENDANT_KILL_GRACE_SECONDS
+                        + 2.0
+                        if supervised else 2.0
+                    )
+                    evidence = _cleanup_descendant_process_group(
+                        process.pid,
+                        process_group_id,
+                        reason=reason,
+                        pipes_closed=pipes_all_eof,
+                        include_leader=True,
+                        leader_exited=lambda: _waitid_nowait(process.pid) is True,
+                        term_grace_s=term_grace_s,
+                        kill_grace_s=2.0,
+                        preserve_grace_on_interrupt=supervised,
+                    )
+                    leader_unreaped = False
+                    cleaned_up_group = True
+                    if evidence is not None:
+                        if evidence.get("interrupted"):
+                            interrupted = True
+                        return evidence
+                leader_unreaped = False
+                cleaned_up_group = True
+                return _cleanup_process_group(process, process_group_id, reason=reason)
+
+            exited_now = False
+            loop_completed = False
+            writers_closed_before_drain = False
+            try:
+                while True:
+                    try:
+                        wait_s = 0.05 if _codex_usage_observer is not None else 1.0
+                        if action != "review" and timeout_seconds is not None:
+                            remaining_launch = started_monotonic + timeout_seconds - time.monotonic()
+                            wait_s = min(wait_s, 0.05, max(0.005, remaining_launch))
+                        try:
+                            line = line_queue.get(timeout=wait_s)
+                            if line is None and _codex_usage_observer is None:
+                                reader_eof = True
+                        except Empty:
+                            line = None
+                        if line:
+                            exited_now, unreaped_now = _child_exited_no_reap(process)
+                            if exited_now:
+                                leader_unreaped = unreaped_now
+                                writers_closed_before_drain = pipe_writers_all_closed()
+                                drain_deadline = post_exit_deadline()
+                                consumed_ok = consume(line, deadline=drain_deadline)
+                                if _codex_usage_observer is not None:
+                                    if consumed_ok:
+                                        drain(deadline_override=drain_deadline)
+                                    else:
+                                        _codex_usage_observer.invalidate("incomplete_drain")
+                                    drain_incomplete = (
+                                        streams_done != {"stdout", "stderr"}
+                                        or sink_stalled
+                                        or not consumed_ok
+                                    )
+                                    break
+                                if consumed_ok:
+                                    drain_plain(deadline_override=drain_deadline)
+                                drain_incomplete = (
+                                    (not reader_eof) or sink_stalled or not consumed_ok
+                                )
+                                break
+                            consume(line)
+                        now = time.monotonic()
+                        if heartbeat_path is not None and now - last_heartbeat >= heartbeat_interval_seconds:
+                            heartbeat = run_heartbeat_summary(
+                                log_path=log_path,
+                                heartbeat_path=heartbeat_path,
+                                pid=process.pid,
+                                started_monotonic=started_monotonic,
+                                started_at=started_at,
+                                heartbeat_interval_seconds=heartbeat_interval_seconds,
+                                quiet_warning_seconds=quiet_warning_seconds,
+                                quiet_blocker_seconds=quiet_blocker_seconds,
+                                command=command,
+                                returncode=getattr(process, "returncode", None),
+                                process_group_id=process_group_id,
                             )
-                        last_heartbeat = now
-                        if action != "review" and heartbeat.get("stalled_suspect") and process.poll() is None:
-                            stalled = True
+                            last_heartbeat_summary = heartbeat
+                            write_run_heartbeat(heartbeat_path, heartbeat)
+                            if stream_output and heartbeat.get("quiet_level") != "active":
+                                _stream_live_text(
+                                    " ".join((
+                                        "heartbeat:",
+                                        f"pid={heartbeat.get('pid')}",
+                                        f"elapsed={heartbeat.get('elapsed_seconds')}s",
+                                        f"quiet={heartbeat.get('seconds_since_log_update')}s",
+                                        f"level={heartbeat.get('quiet_level')}",
+                                    )) + "\n"
+                                )
+                            last_heartbeat = now
+                            if action != "review" and heartbeat.get("stalled_suspect") and not _child_exited_no_reap(process)[0]:
+                                stalled = True
+                                salvage = _salvage_snapshot(
+                                    command=command,
+                                    cwd=cwd,
+                                    log_path=log_path,
+                                    heartbeat=heartbeat,
+                                    process=process,
+                                    process_group_id=process_group_id,
+                                    reason="stalled",
+                                )
+                                cleanup_evidence = cleanup_own_group_or_process("stalled")
+                                cleanup_evidence["salvage_snapshot"] = salvage
+                        if action != "review" and timeout_seconds is not None and now - started_monotonic >= timeout_seconds and not _child_exited_no_reap(process)[0]:
+                            timed_out = True
                             salvage = _salvage_snapshot(
                                 command=command,
                                 cwd=cwd,
                                 log_path=log_path,
-                                heartbeat=heartbeat,
+                                heartbeat=last_heartbeat_summary,
                                 process=process,
                                 process_group_id=process_group_id,
-                                reason="stalled",
+                                reason="timeout",
                             )
-                            cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="stalled")
+                            cleanup_evidence = cleanup_own_group_or_process("timeout")
                             cleanup_evidence["salvage_snapshot"] = salvage
-                    if action != "review" and timeout_seconds is not None and now - started_monotonic >= timeout_seconds and process.poll() is None:
-                        timed_out = True
-                        salvage = _salvage_snapshot(
-                            command=command,
-                            cwd=cwd,
-                            log_path=log_path,
-                            heartbeat=last_heartbeat_summary,
-                            process=process,
-                            process_group_id=process_group_id,
-                            reason="timeout",
-                        )
-                        cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
-                        cleanup_evidence["salvage_snapshot"] = salvage
-                    if process.poll() is not None:
-                        if _codex_usage_observer is not None:
-                            drain()
+                        exited_now, unreaped_now = _child_exited_no_reap(process)
+                        if exited_now:
+                            leader_unreaped = unreaped_now
+                            writers_closed_before_drain = pipe_writers_all_closed()
+                            if _codex_usage_observer is not None:
+                                drain()
+                                drain_incomplete = streams_done != {"stdout", "stderr"} or sink_stalled
+                                break
+                            # The child has exited, but its last lines may still be in the
+                            # pipe or the reader. Collect until the reader's EOF sentinel,
+                            # bounded by the launch's own deadline (and at most 1 s): the
+                            # budget is checked before each dequeue and sink write
+                            # (agent-harness#2129).
+                            drain_plain()
+                            drain_incomplete = (not reader_eof) or sink_stalled
                             break
-                        # The child has exited, but its last lines may still be in the
-                        # pipe or the reader. Collect until the reader's EOF sentinel,
-                        # within one second as drain() does: the budget is checked
-                        # before each dequeue. A sink write in flight and the cleanup
-                        # after this loop are outside the bound.
-                        drain_deadline = time.monotonic() + 1.0
-                        while not reader_eof:
-                            remaining = drain_deadline - time.monotonic()
-                            if remaining <= 0:
-                                break
-                            try:
-                                line = line_queue.get(timeout=remaining)
-                            except Empty:
-                                break
-                            if line is None:
-                                reader_eof = True
+                    except KeyboardInterrupt:
+                        interrupted = True
+                        cleanup_evidence = cleanup_own_group_or_process("interrupt")
+                        try:
+                            if _codex_usage_observer is not None:
+                                drain()
+                                drain_incomplete = streams_done != {"stdout", "stderr"} or sink_stalled
                             else:
-                                consume(line)
+                                drain_plain()
+                                drain_incomplete = (not reader_eof) or sink_stalled
+                        except KeyboardInterrupt:
+                            drain_incomplete = True
+                            if _codex_usage_observer is not None:
+                                _codex_usage_observer.invalidate("incomplete_drain")
                         break
-                except KeyboardInterrupt:
-                    interrupted = True
-                    cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
-                    if _codex_usage_observer is not None:
-                        drain()
-                    break
-            returncode = process.wait()
-            reader_stop.set()
-            for reader in readers:
-                reader.join(timeout=1)
-            try:
-                process.stdout.close()
-                if _codex_usage_observer is not None and process.stderr is not None:
-                    process.stderr.close()
-            except OSError:
-                pass
+                descendant_cleanup = None
+                if (
+                    drain_incomplete
+                    and not pipe_writers_all_closed()
+                    and not cleaned_up_group
+                    and leader_unreaped
+                    and getattr(process, "returncode", None) is None
+                ):
+                    descendant_cleanup = _cleanup_descendant_process_group(
+                        process.pid, process_group_id, reason="post_exit_pipe_open",
+                        pipes_closed=pipes_all_eof,
+                    )
+                    if descendant_cleanup is not None:
+                        if descendant_cleanup.get("interrupted"):
+                            interrupted = True
+                        if cleanup_evidence is None:
+                            cleanup_evidence = descendant_cleanup
+                        else:
+                            cleanup_evidence["post_exit_descendant_cleanup"] = descendant_cleanup
+                if (
+                    drain_incomplete
+                    and not interrupted
+                    and not sink_stalled
+                    and (
+                        descendant_cleanup is not None
+                        or (not writers_closed_before_drain and pipe_writers_all_closed())
+                    )
+                ):
+                    # Closing the inherited pipe writer (either via descendant cleanup or
+                    # naturally at the drain boundary) lets the reader enqueue any final
+                    # partial/unterminated line; collect it within a brief bounded window
+                    # while keeping drain_incomplete=True.
+                    final_deadline = time.monotonic() + 0.1
+                    try:
+                        if _codex_usage_observer is not None:
+                            drain(deadline_override=final_deadline)
+                        else:
+                            drain_plain(deadline_override=final_deadline)
+                    except KeyboardInterrupt:
+                        interrupted = True
+                loop_completed = True
+            finally:
+                # If an unexpected error (e.g., BrokenPipeError in consume()) or an early
+                # interrupt unwinds before post-exit handling completes, clean up the owned
+                # process group before reaping the leader so neither live children nor
+                # post-exit descendants survive the exception, even if Ctrl-C arrives during
+                # unwind.
+                while True:
+                    try:
+                        if (
+                            not loop_completed
+                            and not cleaned_up_group
+                            and getattr(process, "returncode", None) is None
+                        ):
+                            if exited_now:
+                                if leader_unreaped:
+                                    _cleanup_descendant_process_group(
+                                        process.pid,
+                                        process_group_id,
+                                        reason="interrupt" if interrupted else "error",
+                                        pipes_closed=pipes_all_eof,
+                                    )
+                                    cleaned_up_group = True
+                            else:
+                                waited_exited = _waitid_nowait(process.pid) is True
+                                if not waited_exited:
+                                    cleanup_own_group_or_process(
+                                        "interrupt" if interrupted else "error"
+                                    )
+                                else:
+                                    _cleanup_descendant_process_group(
+                                        process.pid,
+                                        process_group_id,
+                                        reason="interrupt" if interrupted else "error",
+                                        pipes_closed=pipes_all_eof,
+                                    )
+                                    cleaned_up_group = True
+                        returncode = process.wait()
+                        break
+                    except KeyboardInterrupt:
+                        interrupted = True
+                        loop_completed = False
+                reader_stop.set()
+                for reader in readers:
+                    try:
+                        reader.join(timeout=1)
+                    except KeyboardInterrupt:
+                        interrupted = True
+                if not any(reader.is_alive() for reader in readers):
+                    try:
+                        process.stdout.close()
+                        if _codex_usage_observer is not None and process.stderr is not None:
+                            process.stderr.close()
+                    except OSError:
+                        pass
             if not executor_released and returncode != 0 and not (timed_out or interrupted or stalled):
                 # The supervisor died before releasing the executor, so the
                 # executor never ran (see lease_supervisor's handshake); that is a
                 # failed launch, never an executor exit status.
                 raise subprocess.SubprocessError("Exception occurred in preexec_fn.")
+        finally:
+            if sink_thread is not None:
+                assert sink_queue is not None
+                sink_close_on_exit.set()
+                sink_queue.put(None)
+                if not sink_stalled:
+                    try:
+                        sink_thread.join(timeout=1.0)
+                    except KeyboardInterrupt:
+                        pass
+            if sink_thread is None or not sink_thread.is_alive():
+                try:
+                    log.close()
+                except OSError:
+                    pass
         heartbeat_summary = None
         if heartbeat_path is not None:
             heartbeat_summary = run_heartbeat_summary(
@@ -3387,6 +3823,7 @@ def launch(
             timed_out=timed_out,
             interrupted=interrupted,
             stalled=stalled,
+            drain_incomplete=drain_incomplete,
             cleanup_evidence=cleanup_evidence,
         )
         return _with_changed_paths(result, change_snapshot, cwd)
@@ -4312,6 +4749,7 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         timed_out=result.timed_out,
         interrupted=result.interrupted,
         stalled=result.stalled,
+        drain_incomplete=result.drain_incomplete,
         claude_route=spec.claude_route,
         claude_route_warnings=spec.claude_route_warnings,
         claude_route_result=result.claude_route_result,
@@ -4602,7 +5040,165 @@ def _codex_usage_version(executable, env, cwd, timeout):
             process.wait(timeout=1)
 
 
-def _read_usage_lines(pipe, line_queue, name, stop):
+def _read_proc_stat_fields(path: Path) -> list[str] | None:
+    try:
+        stat_text = path.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return None
+    rparen = stat_text.rfind(")")
+    if rparen < 0:
+        return None
+    fields = stat_text[rparen + 2:].split()
+    return fields if len(fields) >= 3 else None
+
+
+def _waitid_nowait_darwin(pid: int) -> bool | None:
+    """Non-reaping ``waitid(P_PID, pid, &siginfo, WEXITED|WNOHANG|WNOWAIT)`` via libc
+    for macOS Python 3.12 where ``os.waitid`` is not exposed in stdlib."""
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None)
+        waitid = libc.waitid
+    except (OSError, AttributeError):
+        return None
+    waitid.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int]
+    waitid.restype = ctypes.c_int
+    siginfo = ctypes.create_string_buffer(256)
+    # Darwin sys/wait.h: P_PID=1, WNOHANG=0x01, WEXITED=0x04, WNOWAIT=0x20.
+    if waitid(1, pid, siginfo, 0x01 | 0x04 | 0x20) != 0:
+        return None
+    si_signo = ctypes.c_int.from_buffer(siginfo).value
+    return si_signo != 0
+
+
+def _proc_pid_is_live(proc_root: Path, pid_str: str) -> bool | None:
+    """Return True if ``pid_str`` has any live (non-zombie/non-dead) main or worker
+    thread under ``proc_root``, False if all threads are dead/zombie, or None if
+    unreadable."""
+    fields = _read_proc_stat_fields(proc_root / pid_str / "stat")
+    if fields is None:
+        return None
+    if fields[0] not in {"Z", "X", "x"}:
+        return True
+    # A multi-threaded process whose main thread called pthread_exit() reports state "Z"
+    # at /proc/<pid>/stat while worker threads stay alive under task/.
+    task_dir = proc_root / pid_str / "task"
+    try:
+        task_entries = list(os.scandir(task_dir))
+    except OSError:
+        return False
+    for task in task_entries:
+        if not task.name.isdigit():
+            continue
+        task_fields = _read_proc_stat_fields(task_dir / task.name / "stat")
+        if task_fields is not None and task_fields[0] not in {"Z", "X", "x"}:
+            return True
+    return False
+
+
+def _waitid_nowait(pid: int) -> bool | None:
+    """Return True if child ``pid`` has exited without reaping it, False if still live,
+    or None if non-reaping inspection is unavailable."""
+    if hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
+        try:
+            info = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return None
+        except OSError:
+            pass
+        else:
+            return info is not None
+    if sys.platform == "darwin":
+        return _waitid_nowait_darwin(pid)
+    if sys.platform.startswith("linux"):
+        live = _proc_pid_is_live(Path("/proc"), str(pid))
+        if live is not None:
+            return not live
+    return None
+
+
+def _child_exited_no_reap(process: Any) -> tuple[bool, bool]:
+    """Return ``(exited, leader_unreaped)`` without reaping whenever non-reaping
+    inspection is available, keeping the child's PID/PGID pinned through cleanup."""
+    if getattr(process, "returncode", None) is not None:
+        return True, False
+    poll_fn = getattr(type(process), "poll", None)
+    if (
+        getattr(poll_fn, "__module__", None) == "subprocess"
+        and isinstance(getattr(process, "pid", None), int)
+    ):
+        waited = _waitid_nowait(process.pid)
+        if waited is not None:
+            return waited, waited
+    return process.poll() is not None, False
+
+
+def _make_fd_poller(fd: int):
+    if hasattr(select, "poll"):
+        poller = select.poll()
+        poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        return poller
+    return None
+
+
+def _fd_ready(fd: int, poller, timeout_s: float = 0.05) -> bool:
+    if poller is not None:
+        return bool(poller.poll(int(timeout_s * 1000)))
+    return bool(select.select([fd], [], [], timeout_s)[0])
+
+
+def _pipe_writers_closed(pipe) -> bool:
+    """Return True when the pipe's write end has closed (``POLLHUP``), independent of
+    whether the reader thread has finished draining buffered bytes."""
+    if pipe is None or not hasattr(select, "poll") or not hasattr(pipe, "fileno"):
+        return False
+    try:
+        fd = pipe.fileno()
+        poller = select.poll()
+        poller.register(fd, select.POLLHUP)
+        events = poller.poll(0)
+    except (OSError, ValueError):
+        return False
+    return any(bool(ev & select.POLLHUP) for _, ev in events)
+
+
+def _live_pgid_members_exist(pgid: int, *, leader_pid: int | None) -> bool | None:
+    """Return whether any live (non-zombie/non-dead) process or thread (optionally
+    excluding ``leader_pid``) belongs to ``pgid``, or ``None`` when ``/proc`` inspection
+    is unavailable."""
+    if not sys.platform.startswith("linux"):
+        return None
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    try:
+        entries = list(os.scandir(proc_root))
+    except OSError:
+        return None
+
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if leader_pid is not None and pid == leader_pid:
+            continue
+        fields = _read_proc_stat_fields(proc_root / entry.name / "stat")
+        if fields is None:
+            continue
+        state = fields[0]
+        try:
+            proc_pgid = int(fields[2])
+        except ValueError:
+            continue
+        if proc_pgid != pgid:
+            continue
+        if _proc_pid_is_live(proc_root, entry.name) is True:
+            return True
+    return False
+
+
+def _read_usage_lines(pipe, line_queue, name, stop, eof_event=None):
     pending = b""
     def emit(raw):
         try:
@@ -4614,13 +5210,19 @@ def _read_usage_lines(pipe, line_queue, name, stop):
     try:
         fd = pipe.fileno()
         os.set_blocking(fd, False)
+        poller = _make_fd_poller(fd)
         while not stop.is_set():
-            if not select.select([fd], [], [], 0.05)[0]:
+            if not _fd_ready(fd, poller, 0.05):
                 continue
-            raw = os.read(fd, 65536)
+            try:
+                raw = os.read(fd, 65536)
+            except BlockingIOError:
+                continue
             if not raw:
                 if pending:
                     emit(pending)
+                if eof_event is not None:
+                    eof_event.set()
                 line_queue.put((name, "eof", None))
                 return
             pending += raw
@@ -4635,12 +5237,94 @@ def _read_usage_lines(pipe, line_queue, name, stop):
         line_queue.put((name, "error", None))
 
 
-def _read_lines(stdout, line_queue: Queue[str | None]) -> None:
+def _read_lines(
+    stdout,
+    line_queue: Queue[str | None],
+    stop: threading.Event | None = None,
+    eof_event: threading.Event | None = None,
+) -> None:
+    if stop is not None and sys.platform != "win32" and hasattr(stdout, "fileno"):
+        encoding = getattr(stdout, "encoding", None) or "utf-8"
+        decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
+        fragments: list[str] = []
+        trailing_cr = False
+        eof_reached = False
+
+        def feed(chunk: str, *, final: bool = False) -> None:
+            nonlocal trailing_cr
+            if trailing_cr:
+                if chunk.startswith("\n"):
+                    line_queue.put("".join(fragments) + "\n")
+                    fragments.clear()
+                    chunk = chunk[1:]
+                    trailing_cr = False
+                elif chunk or final:
+                    line_queue.put("".join(fragments) + "\n")
+                    fragments.clear()
+                    trailing_cr = False
+            if chunk:
+                chunk = chunk.replace("\r\n", "\n")
+                if not final and chunk.endswith("\r"):
+                    trailing_cr = True
+                    body = chunk[:-1]
+                else:
+                    body = chunk
+                body = body.replace("\r", "\n")
+                if "\n" in body:
+                    parts = body.split("\n")
+                    fragments.append(parts[0])
+                    line_queue.put("".join(fragments) + "\n")
+                    fragments.clear()
+                    for mid in parts[1:-1]:
+                        line_queue.put(mid + "\n")
+                    if parts[-1]:
+                        fragments.append(parts[-1])
+                elif body:
+                    fragments.append(body)
+            if final:
+                if trailing_cr:
+                    line_queue.put("".join(fragments) + "\n")
+                    fragments.clear()
+                    trailing_cr = False
+                elif fragments:
+                    line_queue.put("".join(fragments))
+                    fragments.clear()
+
+        try:
+            fd = stdout.fileno()
+            os.set_blocking(fd, False)
+            poller = _make_fd_poller(fd)
+            while not stop.is_set():
+                if not _fd_ready(fd, poller, 0.05):
+                    continue
+                try:
+                    raw = os.read(fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not raw:
+                    eof_reached = True
+                    break
+                feed(decoder.decode(raw))
+            if eof_reached:
+                feed(decoder.decode(b"", final=True), final=True)
+        except (OSError, ValueError):
+            eof_reached = False
+        finally:
+            if eof_reached:
+                if eof_event is not None:
+                    eof_event.set()
+                line_queue.put(None)
+        return
     try:
         for line in stdout:
             line_queue.put(line)
+        if eof_event is not None:
+            eof_event.set()
     finally:
         line_queue.put(None)
+
+
+_DEFAULT_READ_LINES = _read_lines
 
 
 def _utc_now() -> str:
@@ -4760,6 +5444,144 @@ def _cleanup_process_group(process: subprocess.Popen, process_group_id: int | No
         evidence["result"] = "cleanup_failed"
         evidence["final_returncode"] = process.poll()
         evidence["process_alive_after_cleanup"] = process.poll() is None
+    return evidence
+
+
+def _cleanup_descendant_process_group(
+    process_pid: int,
+    process_group_id: int | None,
+    *,
+    reason: str,
+    pipes_closed: Callable[[], bool],
+    include_leader: bool = False,
+    leader_exited: Callable[[], bool] | None = None,
+    term_grace_s: float = 0.25,
+    kill_grace_s: float = 0.25,
+    preserve_grace_on_interrupt: bool = False,
+) -> dict[str, Any] | None:
+    """Terminate surviving members in a child's own process group (agent-harness#2129).
+    Caller keeps the leader unreaped until signaling finishes so the PGID cannot be
+    recycled. Tracks non-zombie PGID tasks via ``/proc`` (falling back to leader exit +
+    ``pipes_closed`` off Linux) so neither unreaped zombies nor a SIGTERM-ignoring
+    process that closes its pipes can fool termination detection."""
+    if process_group_id is None or not hasattr(os, "killpg"):
+        return None
+    try:
+        if process_group_id == os.getpgrp():
+            return None
+    except OSError:
+        return None
+    evidence: dict[str, Any] = {
+        "reason": reason,
+        "requested_at": _utc_now(),
+        "process_pid": process_pid,
+        "process_group_id": process_group_id,
+        "cleanup_scope": "process_group",
+        "signals_sent": [],
+        "drain_incomplete": not include_leader,
+    }
+
+    def has_live_descendants(*, after_sigkill: bool = False) -> bool:
+        live = _live_pgid_members_exist(
+            process_group_id,
+            leader_pid=None if include_leader else process_pid,
+        )
+        if live is not None:
+            return live
+        # Off Linux (no /proc), pipe EOF alone cannot prove that a SIGTERM-ignoring
+        # same-group descendant is gone. Check killpg(0) for whole-group disappearance;
+        # before SIGKILL, stay conservative so SIGTERM-ignoring descendants always get
+        # escalated to SIGKILL after the brief grace period.
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            pass
+        if not after_sigkill:
+            return True
+        if include_leader and leader_exited is not None and not leader_exited():
+            return True
+        return not pipes_closed()
+
+    def send_signal(sig: int) -> str | None:
+        while True:
+            try:
+                os.killpg(process_group_id, sig)
+                return None
+            except KeyboardInterrupt:
+                evidence["interrupted"] = True
+            except ProcessLookupError:
+                return "absent"
+            except OSError:
+                return "error"
+
+    # Wrap the entire SIGTERM dispatch -> grace transition so a KeyboardInterrupt anywhere
+    # before SIGKILL (including on time.monotonic()) escalates to SIGKILL rather than escaping.
+    # For leased launches (preserve_grace_on_interrupt=True), keep waiting out the supervisor's
+    # escalation and reaping window before falling back to SIGKILL.
+    term_err = send_signal(signal.SIGTERM)
+    if term_err is not None:
+        return None
+    deadline: float | None = None
+    # Require two consecutive empty scans so a descendant forked during SIGTERM handling
+    # (after /proc enumeration but before the parent exited) cannot slip past as terminated.
+    empty_scans = 0
+    while True:
+        try:
+            if "SIGTERM" not in evidence["signals_sent"]:
+                evidence["signals_sent"].append("SIGTERM")
+            if deadline is None:
+                deadline = time.monotonic() + term_grace_s
+            if not has_live_descendants(after_sigkill=False):
+                empty_scans += 1
+                if empty_scans >= 2:
+                    evidence["result"] = "terminated"
+                    evidence["process_alive_after_cleanup"] = False
+                    return evidence
+            else:
+                empty_scans = 0
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        except KeyboardInterrupt:
+            evidence["interrupted"] = True
+            if "SIGTERM" not in evidence["signals_sent"]:
+                evidence["signals_sent"].append("SIGTERM")
+            if not preserve_grace_on_interrupt:
+                break
+    kill_err = send_signal(signal.SIGKILL)
+    if kill_err == "absent":
+        evidence["result"] = "terminated"
+        evidence["process_alive_after_cleanup"] = False
+        return evidence
+    if kill_err == "error":
+        evidence["result"] = "cleanup_failed"
+        evidence["process_alive_after_cleanup"] = True
+        return evidence
+    kill_deadline: float | None = None
+    kill_empty_scans = 0
+    while True:
+        try:
+            if "SIGKILL" not in evidence["signals_sent"]:
+                evidence["signals_sent"].append("SIGKILL")
+            if kill_deadline is None:
+                kill_deadline = time.monotonic() + kill_grace_s
+            if not has_live_descendants(after_sigkill=True):
+                kill_empty_scans += 1
+                if kill_empty_scans >= 2:
+                    evidence["result"] = "killed"
+                    evidence["process_alive_after_cleanup"] = False
+                    return evidence
+            else:
+                kill_empty_scans = 0
+            if time.monotonic() >= kill_deadline:
+                break
+            time.sleep(0.01)
+        except KeyboardInterrupt:
+            evidence["interrupted"] = True
+    evidence["result"] = "cleanup_failed"
+    evidence["process_alive_after_cleanup"] = True
     return evidence
 
 
