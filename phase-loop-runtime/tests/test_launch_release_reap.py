@@ -1250,10 +1250,18 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
         Path, "read_bytes",
         lambda self: cmdline if str(self) == f"/proc/{os.getpid()}/cmdline" else orig_read_bytes(self),
     )
+    real_fcntl_fn = fcntl.fcntl
     monkeypatch.setattr(
-        patch_return.fcntl, "fcntl",
-        lambda fd, op, arg: struct.pack("hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 0, os.getpid())
-        if op == fcntl.F_GETLK else fcntl.fcntl(fd, op, arg),
+        patch_return, "fcntl",
+        SimpleNamespace(
+            **{
+                **vars(fcntl),
+                "fcntl": lambda fd, op, arg: struct.pack(
+                    "hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 0, os.getpid(),
+                )
+                if op == fcntl.F_GETLK else real_fcntl_fn(fd, op, arg),
+            }
+        ),
     )
 
     def spy_signal(pidfd, sig):
@@ -1324,11 +1332,35 @@ def test_generation_started_cancel_worker_deadline_bounds_verification_and_polli
     assert signals_sent == []
     monkeypatch.setattr(life, "launch_lock", orig_launch_lock)
 
-    # Case 5: legacy 2-arg and generic **kwargs launch_cancel adapters stay on the lock-held
-    # legacy path and cap both their reservation-lock deadline and wait against fence_at.
+    # Case 5: legacy 2-arg, generic **kwargs, transparent forwarding **kwargs, and
+    # functools.wraps(_landed_launch_cancel) adapters all stay on the lock-held legacy
+    # path, never receive unexpected deadline/signal_guard kwargs, and cap both their
+    # reservation-lock deadline and wait against fence_at.
+    import functools
+
+    def _make_forwarding_wrapper(rec):
+        def inner(claim, wait_s):
+            rec.append((life._holds_operation(rid, generation), wait_s))
+            return "cancelled"
+
+        def forward(*args, **kwargs):
+            return inner(*args, **kwargs)
+
+        return forward
+
+    def _make_wraps_adapter(rec):
+        @functools.wraps(sp._landed_launch_cancel)
+        def wrapped(claim, wait_s):
+            rec.append((life._holds_operation(rid, generation), wait_s))
+            return "cancelled"
+
+        return wrapped
+
     for make_adapter in (
         lambda rec: (lambda claim, wait_s: (rec.append((life._holds_operation(rid, generation), wait_s)), "cancelled")[1]),
         lambda rec: (lambda claim, wait_s, **kwargs: (rec.append((life._holds_operation(rid, generation), wait_s)), "cancelled")[1]),
+        _make_forwarding_wrapper,
+        _make_wraps_adapter,
     ):
         legacy_locks = []
         legacy_calls = []

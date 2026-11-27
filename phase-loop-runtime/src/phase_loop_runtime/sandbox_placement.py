@@ -5836,17 +5836,20 @@ def _landed_launch_owner(claim: Mapping[str, object]) -> str:
 
 
 def _launch_cancel_uses_signal_guard(fn: Callable[..., str]) -> bool:
-    """Explicit opt-in required so generic ``**kwargs`` wrappers stay on the legacy lock path."""
-    return getattr(fn, "_supports_signal_guard", False) is True
+    """Explicit opt-in bound to the exact callable so ``**kwargs`` and
+    ``functools.wraps`` wrappers stay on the legacy lock path."""
+    return getattr(fn, "_supports_signal_guard_for", None) is fn
 
 
 def _launch_cancel_supports(fn: Callable[..., str], param: str) -> bool:
     import inspect
 
     try:
-        params = inspect.signature(fn).parameters
-        return param in params or any(
-            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        params = inspect.signature(fn, follow_wrapped=False).parameters
+        spec = params.get(param)
+        return spec is not None and spec.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
         )
     except (TypeError, ValueError):
         return False
@@ -5883,7 +5886,7 @@ def _landed_launch_cancel(
     )
 
 
-_landed_launch_cancel._supports_signal_guard = True  # type: ignore[attr-defined]
+_landed_launch_cancel._supports_signal_guard_for = _landed_launch_cancel  # type: ignore[attr-defined]
 
 
 def _remove_tree(path: Path) -> None:
