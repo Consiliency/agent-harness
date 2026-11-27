@@ -27,7 +27,8 @@ from typing import Any, Callable, Mapping
 
 _BUILTIN_PRINT = builtins.print
 _STREAM_CHUNK_BYTES = 512
-_LIVE_STDOUT_LOCK = threading.Lock()
+_LIVE_STDOUT_LOCK = threading.RLock()
+_LIVE_STDOUT_ACTIVE = threading.local()
 
 from .capability_registry import capability_registry
 from .advisor_board.harness_mapping import agy_model_effort, render_agy_model
@@ -3302,12 +3303,13 @@ def launch(
                 raw = text.encode(encoding, errors=errors)
                 if not raw:
                     return
-                acquired = False
+                if getattr(_LIVE_STDOUT_ACTIVE, "held", False):
+                    return
                 restore_blocking = False
                 try:
-                    acquired = _LIVE_STDOUT_LOCK.acquire(blocking=False)
-                    if not acquired:
+                    if not _LIVE_STDOUT_LOCK.acquire(blocking=False):
                         return
+                    _LIVE_STDOUT_ACTIVE.held = True
                     if not _fd_ready_for_write(stdout_fd):
                         return
                     if hasattr(os, "get_blocking") and hasattr(os, "set_blocking"):
@@ -3344,8 +3346,19 @@ def launch(
                                     pass
                                 raise
                     finally:
-                        if acquired:
-                            _LIVE_STDOUT_LOCK.release()
+                        try:
+                            try:
+                                _LIVE_STDOUT_LOCK.release()
+                            except RuntimeError:
+                                pass
+                            except BaseException:
+                                try:
+                                    _LIVE_STDOUT_LOCK.release()
+                                except RuntimeError:
+                                    pass
+                                raise
+                        finally:
+                            _LIVE_STDOUT_ACTIVE.held = False
 
             def _sink_worker() -> None:
                 assert sink_queue is not None

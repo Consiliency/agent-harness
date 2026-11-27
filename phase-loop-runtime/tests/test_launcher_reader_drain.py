@@ -2093,7 +2093,7 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
     # fd blocking mode, and Ctrl-C right after os.set_blocking(False) still restores blocking.
     report3 = tmp_path / "concurrent.json"
     driver3 = (
-        "import json, os, sys, threading, time\n"
+        "import json, os, signal, sys, threading, time\n"
         "from pathlib import Path\n"
         "from phase_loop_runtime import launcher\n"
         "stdout_fd = sys.stdout.fileno()\n"
@@ -2158,6 +2158,17 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         "    finally:\n"
         "        os.set_blocking(fd, True)\n"
         "    return out.decode('utf-8', errors='replace')\n"
+        "def lock_is_free_from_other_thread():\n"
+        "    ok_box = []\n"
+        "    def probe():\n"
+        "        ok = launcher._LIVE_STDOUT_LOCK.acquire(blocking=False)\n"
+        "        ok_box.append(ok)\n"
+        "        if ok:\n"
+        "            launcher._LIVE_STDOUT_LOCK.release()\n"
+        "    th = threading.Thread(target=probe)\n"
+        "    th.start()\n"
+        "    th.join(timeout=2.0)\n"
+        "    return ok_box == [True]\n"
         "def interrupt_after_nonblock(fd, flag):\n"
         "    global interrupted_set\n"
         "    orig_set_blocking(fd, flag)\n"
@@ -2167,24 +2178,26 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         "os.set_blocking = interrupt_after_nonblock\n"
         "try:\n"
         f"    res_int = launcher.launch([sys.executable, '-c', \"print('ctrlc-line', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'ctrlc.log', stream_output=True, timeout_seconds=2.0)\n"
-        "    restored_ctrlc = os.get_blocking(cw) and not launcher._LIVE_STDOUT_LOCK.locked()\n"
+        "    restored_ctrlc = os.get_blocking(cw) and lock_is_free_from_other_thread()\n"
         "    os.set_blocking = orig_set_blocking\n"
-        "    # (b) Ctrl-C immediately after _LIVE_STDOUT_LOCK.acquire(blocking=False) succeeds\n"
-        "    def trace_after_acq(frame, event, arg):\n"
+        "    # (b) Real SIGINT delivered at the exact C-return boundary of _LIVE_STDOUT_LOCK.acquire(blocking=False)\n"
+        "    def profile_acquire_c_return(frame, event, arg):\n"
         "        global interrupted_acq\n"
-        "        if frame.f_code.co_name == '_stream_live_text':\n"
-        "            if event == 'line' and not interrupted_acq and frame.f_locals.get('acquired') is True:\n"
-        "                interrupted_acq = True\n"
-        "                sys.settrace(None)\n"
-        "                raise KeyboardInterrupt\n"
-        "            return trace_after_acq\n"
-        "        return None\n"
-        "    sys.settrace(trace_after_acq)\n"
+        "        if (\n"
+        "            event == 'c_return'\n"
+        "            and not interrupted_acq\n"
+        "            and frame.f_code.co_name == '_stream_live_text'\n"
+        "            and getattr(arg, '__name__', None) == 'acquire'\n"
+        "        ):\n"
+        "            interrupted_acq = True\n"
+        "            sys.setprofile(None)\n"
+        "            os.kill(os.getpid(), signal.SIGINT)\n"
+        "    sys.setprofile(profile_acquire_c_return)\n"
         "    try:\n"
         f"        res_int_acq = launcher.launch([sys.executable, '-c', \"print('acq-line', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'ctrlc_acq.log', stream_output=True, timeout_seconds=2.0)\n"
         "    finally:\n"
-        "        sys.settrace(None)\n"
-        "    lock_free_after_acq = not launcher._LIVE_STDOUT_LOCK.locked()\n"
+        "        sys.setprofile(None)\n"
+        "    lock_free_after_acq = lock_is_free_from_other_thread()\n"
         "    drain_pipe_nb(cr)\n"
         f"    res_after_acq = launcher.launch([sys.executable, '-c', \"print('after-acq-ok', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'after_acq.log', stream_output=True, timeout_seconds=2.0)\n"
         "    displayed_after_acq = drain_pipe_nb(cr)\n"
@@ -2200,12 +2213,12 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
         f"        res_int_restore = launcher.launch([sys.executable, '-c', \"print('restore-line', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'ctrlc_restore.log', stream_output=True, timeout_seconds=2.0)\n"
         "    finally:\n"
         "        os.set_blocking = orig_set_blocking\n"
-        "    restored_after_restore_int = os.get_blocking(cw) and not launcher._LIVE_STDOUT_LOCK.locked()\n"
+        "    restored_after_restore_int = os.get_blocking(cw) and lock_is_free_from_other_thread()\n"
         "    drain_pipe_nb(cr)\n"
         f"    res_after_restore = launcher.launch([sys.executable, '-c', \"print('after-restore-ok', flush=True)\"], log_path=Path({str(tmp_path)!r}) / 'after_restore.log', stream_output=True, timeout_seconds=2.0)\n"
         "    displayed_after_restore = drain_pipe_nb(cr)\n"
         "finally:\n"
-        "    sys.settrace(None)\n"
+        "    sys.setprofile(None)\n"
         "    os.set_blocking = orig_set_blocking\n"
         "    sys.stdout.close()\n"
         "    sys.stdout = old_stdout\n"
@@ -2262,15 +2275,17 @@ def test_competing_stdout_writer_and_temporary_backpressure_resume(tmp_path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipe stdout test")
 def test_live_stdout_streaming_stops_when_deadline_expires_between_chunks(tmp_path):
-    """Deterministic fake-clock test: once the post-exit drain deadline expires after the
-    first live stdout chunk, streaming stops immediately while full output stays captured."""
+    """Deterministic fake-clock test: synchronize on leader exit, continuously drain a
+    4 KiB stdout pipe so the sink stays writable after chunk 1, and verify that expiring
+    the post-exit deadline after chunk 1 stops live streaming while full output is captured."""
+    import fcntl
     import json
     import os
 
     report = tmp_path / "chunk_deadline.json"
     log_path = tmp_path / "chunk_deadline.log"
     driver = (
-        "import json, os, sys, time\n"
+        "import json, os, select, subprocess, sys, threading, time\n"
         "from pathlib import Path\n"
         "from phase_loop_runtime import launcher\n"
         "stdout_fd = sys.stdout.fileno()\n"
@@ -2279,26 +2294,41 @@ def test_live_stdout_streaming_stops_when_deadline_expires_between_chunks(tmp_pa
         "def fake_monotonic():\n"
         "    return real_monotonic() + clock_offset\n"
         "time.monotonic = fake_monotonic\n"
+        "orig_popen = launcher.subprocess.Popen\n"
+        "child_proc = None\n"
+        "def spy_popen(*args, **kwargs):\n"
+        "    global child_proc\n"
+        "    child_proc = orig_popen(*args, **kwargs)\n"
+        "    return child_proc\n"
+        "launcher.subprocess.Popen = spy_popen\n"
         "orig_write = os.write\n"
         "chunk_writes = 0\n"
+        "writable_after_chunk1 = False\n"
         "def advancing_write(fd, data):\n"
-        "    global clock_offset, chunk_writes\n"
+        "    global clock_offset, chunk_writes, writable_after_chunk1\n"
         "    n = orig_write(fd, data)\n"
         "    if fd == stdout_fd:\n"
         "        chunk_writes += 1\n"
         "        if chunk_writes == 1:\n"
+        "            # Wait until the parent reader drains chunk 1 so stdout_fd is provably\n"
+        "            # writable again before expiring the deadline; without the per-chunk\n"
+        "            # deadline guard, chunks 2 and 3 would also be written.\n"
+        "            poller = select.poll()\n"
+        "            poller.register(stdout_fd, select.POLLOUT)\n"
+        "            writable_after_chunk1 = bool(poller.poll(2000))\n"
         "            clock_offset += 5.0\n"
         "    return n\n"
         "os.write = advancing_write\n"
         "orig_get = launcher.Queue.get\n"
         "first_get = True\n"
-        "def delayed_first_get(self, *args, **kwargs):\n"
+        "def sync_after_leader_exit(self, *args, **kwargs):\n"
         "    global first_get\n"
         "    if first_get:\n"
         "        first_get = False\n"
-        "        time.sleep(0.08)\n"
+        "        assert child_proc is not None\n"
+        "        child_proc.wait(timeout=5.0)\n"
         "    return orig_get(self, *args, **kwargs)\n"
-        "launcher.Queue.get = delayed_first_get\n"
+        "launcher.Queue.get = sync_after_leader_exit\n"
         "payload_len = 3 * launcher._STREAM_CHUNK_BYTES\n"
         "try:\n"
         f"    res = launcher.launch([sys.executable, '-c', f\"print('X' * {{payload_len}}, flush=True)\"], log_path=Path({str(log_path)!r}), stream_output=True, timeout_seconds=1.0)\n"
@@ -2306,10 +2336,29 @@ def test_live_stdout_streaming_stops_when_deadline_expires_between_chunks(tmp_pa
         "    os.write = orig_write\n"
         "    time.monotonic = real_monotonic\n"
         "    launcher.Queue.get = orig_get\n"
-        f"Path({str(report)!r}).write_text(json.dumps({{'returncode': res.returncode, 'chunk_writes': chunk_writes, 'output_len': len(res.output.strip()), 'log_len': len(Path({str(log_path)!r}).read_text(encoding='utf-8').strip()), 'lock_free': not launcher._LIVE_STDOUT_LOCK.locked(), 'blocking': os.get_blocking(stdout_fd), 'chunk_bytes': launcher._STREAM_CHUNK_BYTES}}), encoding='utf-8')\n"
+        "    launcher.subprocess.Popen = orig_popen\n"
+        "lock_free_box = []\n"
+        "def check_lock():\n"
+        "    ok = launcher._LIVE_STDOUT_LOCK.acquire(blocking=False)\n"
+        "    lock_free_box.append(ok)\n"
+        "    if ok:\n"
+        "        launcher._LIVE_STDOUT_LOCK.release()\n"
+        "th = threading.Thread(target=check_lock)\n"
+        "th.start(); th.join(timeout=2.0)\n"
+        f"Path({str(report)!r}).write_text(json.dumps({{'returncode': res.returncode, 'chunk_writes': chunk_writes, 'writable_after_chunk1': writable_after_chunk1, 'output_len': len(res.output.strip()), 'log_len': len(Path({str(log_path)!r}).read_text(encoding='utf-8').strip()), 'lock_free': lock_free_box == [True], 'blocking': os.get_blocking(stdout_fd), 'chunk_bytes': launcher._STREAM_CHUNK_BYTES}}), encoding='utf-8')\n"
     )
     r, w = os.pipe()
+    displayed = bytearray()
+    def _drain_reader():
+        while True:
+            chunk = os.read(r, 65536)
+            if not chunk:
+                break
+            displayed.extend(chunk)
+    reader = threading.Thread(target=_drain_reader, daemon=True)
     try:
+        fcntl.fcntl(w, fcntl.F_SETPIPE_SZ, 4096)
+        reader.start()
         env = dict(os.environ)
         env.pop("PYTHONUNBUFFERED", None)
         env["PYTHONPATH"] = os.pathsep.join(sys.path)
@@ -2317,9 +2366,10 @@ def test_live_stdout_streaming_stops_when_deadline_expires_between_chunks(tmp_pa
         os.close(w)
         w = -1
         assert proc.wait(timeout=5.0) == 0, proc.stderr.read().decode(errors="replace")
-        displayed = os.read(r, 65536)
+        reader.join(timeout=2.0)
         data = json.loads(report.read_text(encoding="utf-8"))
         assert data["returncode"] == 0
+        assert data["writable_after_chunk1"] is True
         assert data["chunk_writes"] == 1
         assert len(displayed) == data["chunk_bytes"]
         assert data["output_len"] == 3 * data["chunk_bytes"]
@@ -2327,9 +2377,10 @@ def test_live_stdout_streaming_stops_when_deadline_expires_between_chunks(tmp_pa
         assert data["lock_free"] is True
         assert data["blocking"] is True
     finally:
-        os.close(r)
         if w >= 0:
             os.close(w)
+        reader.join(timeout=1.0)
+        os.close(r)
 
 
 def test_first_record_dequeued_after_leader_exit_uses_bounded_drain(tmp_path, monkeypatch):
