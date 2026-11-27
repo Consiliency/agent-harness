@@ -3224,6 +3224,16 @@ def launch(
                     return all(ev.is_set() for ev in stream_eofs.values())
                 return pipe_eof.is_set() if using_default_reader else reader_eof
 
+            def pipe_writers_all_closed() -> bool:
+                if _codex_usage_observer is not None:
+                    return all(
+                        stream_eofs[name].is_set() or _pipe_writers_closed(pipe)
+                        for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr))
+                    )
+                if using_default_reader:
+                    return pipe_eof.is_set() or _pipe_writers_closed(process.stdout)
+                return reader_eof or _pipe_writers_closed(process.stdout)
+
             def consume(record):
                 if _codex_usage_observer is None:
                     rendered = record
@@ -3375,6 +3385,7 @@ def launch(
                         break
                 except KeyboardInterrupt:
                     interrupted = True
+                    leader_unreaped = False
                     cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="interrupt")
                     if _codex_usage_observer is not None:
                         drain()
@@ -3383,7 +3394,12 @@ def launch(
                         drain_plain()
                         drain_incomplete = not reader_eof
                     break
-            if drain_incomplete and not pipes_all_eof() and leader_unreaped:
+            if (
+                drain_incomplete
+                and not pipe_writers_all_closed()
+                and leader_unreaped
+                and getattr(process, "returncode", None) is None
+            ):
                 descendant_cleanup = _cleanup_descendant_process_group(
                     process.pid, process_group_id, reason="post_exit_pipe_open",
                     pipes_closed=pipes_all_eof,
@@ -4695,6 +4711,59 @@ def _fd_ready(fd: int, poller, timeout_s: float = 0.05) -> bool:
     return bool(select.select([fd], [], [], timeout_s)[0])
 
 
+def _pipe_writers_closed(pipe) -> bool:
+    """Return True when the pipe's write end has closed (``POLLHUP``), independent of
+    whether the reader thread has finished draining buffered bytes."""
+    if pipe is None or not hasattr(select, "poll") or not hasattr(pipe, "fileno"):
+        return False
+    try:
+        fd = pipe.fileno()
+        poller = select.poll()
+        poller.register(fd, select.POLLHUP)
+        events = poller.poll(0)
+    except (OSError, ValueError):
+        return False
+    return any(bool(ev & select.POLLHUP) for _, ev in events)
+
+
+def _live_pgid_members_exist(pgid: int, *, leader_pid: int) -> bool | None:
+    """Return whether any live (non-zombie/non-dead) process other than ``leader_pid``
+    belongs to ``pgid``, or ``None`` when ``/proc`` inspection is unavailable."""
+    if not sys.platform.startswith("linux"):
+        return None
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return None
+    try:
+        entries = list(os.scandir(proc_root))
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == leader_pid:
+            continue
+        try:
+            stat_text = (proc_root / entry.name / "stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        rparen = stat_text.rfind(")")
+        if rparen < 0:
+            continue
+        fields = stat_text[rparen + 2:].split()
+        if len(fields) < 3:
+            continue
+        state = fields[0]
+        try:
+            proc_pgid = int(fields[2])
+        except ValueError:
+            continue
+        if proc_pgid == pgid and state not in {"Z", "X", "x"}:
+            return True
+    return False
+
+
 def _read_usage_lines(pipe, line_queue, name, stop, eof_event=None):
     pending = b""
     def emit(raw):
@@ -4953,8 +5022,9 @@ def _cleanup_descendant_process_group(
 ) -> dict[str, Any] | None:
     """Terminate surviving descendants in a child's own process group after child exit
     (agent-harness#2129). Caller must keep the leader unreaped until signaling finishes so
-    the PGID cannot be recycled. Uses pipe EOF (not ``killpg(0)``) to detect exit so
-    unreaped zombies never register as live descendants."""
+    the PGID cannot be recycled. Tracks non-zombie PGID members via ``/proc`` (falling back
+    to ``pipes_closed`` off Linux) so neither unreaped zombies nor a SIGTERM-ignoring
+    descendant that closes its pipes can fool termination detection."""
     if process_group_id is None or not hasattr(os, "killpg"):
         return None
     try:
@@ -4971,6 +5041,13 @@ def _cleanup_descendant_process_group(
         "signals_sent": [],
         "drain_incomplete": True,
     }
+
+    def has_live_descendants() -> bool:
+        live = _live_pgid_members_exist(process_group_id, leader_pid=process_pid)
+        if live is not None:
+            return live
+        return not pipes_closed()
+
     try:
         os.killpg(process_group_id, signal.SIGTERM)
     except ProcessLookupError:
@@ -4980,7 +5057,7 @@ def _cleanup_descendant_process_group(
     evidence["signals_sent"].append("SIGTERM")
     deadline = time.monotonic() + 0.25
     while time.monotonic() < deadline:
-        if pipes_closed():
+        if not has_live_descendants():
             evidence["result"] = "terminated"
             return evidence
         time.sleep(0.01)
@@ -4995,7 +5072,7 @@ def _cleanup_descendant_process_group(
         return evidence
     kill_deadline = time.monotonic() + 0.25
     while time.monotonic() < kill_deadline:
-        if pipes_closed():
+        if not has_live_descendants():
             evidence["result"] = "killed"
             return evidence
         time.sleep(0.01)

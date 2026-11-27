@@ -240,17 +240,11 @@ def test_grandchild_holding_stdout_open_marks_usage_unknown_and_cleans_group(tmp
         _kill_pid_best_effort(marker)
 
 
-def test_read_lines_handles_high_fd_large_line_and_errors():
+def test_read_lines_handles_large_line_and_errors():
     import os
 
-    # High fd (>= 1024) must succeed via poll() without FD_SETSIZE ValueError.
     r_fd, w_fd = os.pipe()
-    high_fd = None
     try:
-        try:
-            high_fd = os.dup2(r_fd, 1024)
-        except OSError:
-            high_fd = r_fd
         q: queue.Queue = queue.Queue()
         stop = threading.Event()
         eof = threading.Event()
@@ -265,7 +259,7 @@ def test_read_lines_handles_high_fd_large_line_and_errors():
 
         t = threading.Thread(target=writer, daemon=True)
         t.start()
-        fake_stream = type("S", (), {"fileno": lambda self: high_fd, "encoding": "utf-8"})()
+        fake_stream = type("S", (), {"fileno": lambda self: r_fd, "encoding": "utf-8"})()
         started = time.monotonic()
         launcher._read_lines(fake_stream, q, stop, eof)
         elapsed = time.monotonic() - started
@@ -279,12 +273,10 @@ def test_read_lines_handles_high_fd_large_line_and_errors():
         assert second == "second\n"
         assert sentinel is None
     finally:
-        for fd in {r_fd, high_fd}:
-            if fd is not None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
+        try:
+            os.close(r_fd)
+        except OSError:
+            pass
 
     # A reader error must NOT fabricate EOF.
     err_q: queue.Queue = queue.Queue()
@@ -293,3 +285,152 @@ def test_read_lines_handles_high_fd_large_line_and_errors():
     launcher._read_lines(broken, err_q, threading.Event(), err_eof)
     assert not err_eof.is_set()
     assert err_q.empty()
+
+
+def test_read_lines_handles_high_fd():
+    import fcntl
+    import os
+
+    r_fd, w_fd = os.pipe()
+    high_fd = None
+    try:
+        try:
+            high_fd = fcntl.fcntl(r_fd, fcntl.F_DUPFD, 1024)
+        except OSError as exc:
+            os.close(w_fd)
+            pytest.skip(f"cannot allocate unused fd >= 1024: {exc}")
+        assert high_fd >= 1024
+        q: queue.Queue = queue.Queue()
+        eof = threading.Event()
+        os.write(w_fd, b"high-fd-line\n")
+        os.close(w_fd)
+        fake_stream = type("S", (), {"fileno": lambda self: high_fd, "encoding": "utf-8"})()
+        launcher._read_lines(fake_stream, q, threading.Event(), eof)
+        assert eof.is_set()
+        assert q.get_nowait() == "high-fd-line\n"
+        assert q.get_nowait() is None
+    finally:
+        for fd in (r_fd, high_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def test_pipe_writers_closed_detects_hangup_with_unread_bytes():
+    """Kernel POLLHUP reports closed writers immediately even while unread bytes remain
+    in the pipe buffer, independent of reader thread progress."""
+    import os
+
+    r_fd, w_fd = os.pipe()
+    fake_pipe = type("P", (), {"fileno": lambda self: r_fd})()
+    try:
+        os.write(w_fd, b"buffered-before-close\n")
+        assert launcher._pipe_writers_closed(fake_pipe) is False
+        os.close(w_fd)
+        w_fd = -1
+        assert launcher._pipe_writers_closed(fake_pipe) is True
+    finally:
+        for fd in (r_fd, w_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def test_sigterm_trapping_descendant_closing_pipe_is_escalated_to_sigkill(tmp_path):
+    """A descendant that catches SIGTERM, closes stdout/stderr, and keeps running must
+    still be escalated to SIGKILL rather than reported terminated on pipe EOF."""
+    marker = tmp_path / "trap_grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"marker = {str(marker)!r}\n"
+        "child_code = (\n"
+        "    'import os, signal, time\\n'\n"
+        "    'def trap(*_):\\n'\n"
+        "    '    for fd in (1, 2):\\n'\n"
+        "    '        try: os.close(fd)\\n'\n"
+        "    '        except OSError: pass\\n'\n"
+        "    'signal.signal(signal.SIGTERM, trap)\\n'\n"
+        "    f'open({marker!r}, \"w\").write(str(os.getpid()))\\n'\n"
+        "    'time.sleep(30)\\n'\n"
+        ")\n"
+        "subprocess.Popen([sys.executable, '-c', child_code])\n"
+        "deadline = time.monotonic() + 5.0\n"
+        "while (not os.path.exists(marker) or os.path.getsize(marker) == 0) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print('leader-done', flush=True)\n"
+    )
+    try:
+        started = time.monotonic()
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=1.0,
+        )
+        assert time.monotonic() - started < 5.0
+        assert result.returncode == 0
+        assert "leader-done" in result.output
+        assert result.drain_incomplete is True
+        assert result.cleanup_evidence is not None
+        assert result.cleanup_evidence["signals_sent"] == ["SIGTERM", "SIGKILL"]
+        assert result.cleanup_evidence["result"] == "killed"
+        grandchild_pid = int(marker.read_text().strip())
+        deadline = time.monotonic() + 1.0
+        while _proc_alive(grandchild_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _proc_alive(grandchild_pid)
+    finally:
+        _kill_pid_best_effort(marker)
+
+
+def test_interrupt_during_post_exit_drain_skips_descendant_cleanup_after_reap(tmp_path, monkeypatch):
+    """If KeyboardInterrupt fires during post-exit drain after leader_unreaped was set,
+    _cleanup_process_group reaps the leader and post-exit descendant cleanup must NOT
+    signal a potentially recycled PGID."""
+    marker = tmp_path / "interrupt_grandchild.pid"
+    script = (
+        "import subprocess, sys\n"
+        "proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(proc.pid))\n"
+        "print('leader-done', flush=True)\n"
+    )
+    descendant_calls = []
+    monkeypatch.setattr(
+        launcher,
+        "_cleanup_descendant_process_group",
+        lambda *a, **k: descendant_calls.append((a, k)),
+    )
+    interrupt_fired = False
+    orig_waitid = launcher._child_exited_no_reap
+    leader_exited = threading.Event()
+
+    def tracking_exited(proc):
+        exited, unreaped = orig_waitid(proc)
+        if exited:
+            leader_exited.set()
+        return exited, unreaped
+
+    class InterruptInDrainQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            nonlocal interrupt_fired
+            if leader_exited.is_set() and not interrupt_fired:
+                interrupt_fired = True
+                raise KeyboardInterrupt
+            return super().get(block, timeout)
+
+    monkeypatch.setattr(launcher, "_child_exited_no_reap", tracking_exited)
+    monkeypatch.setattr(launcher, "Queue", InterruptInDrainQueue)
+    try:
+        result = launcher.launch(
+            _child(script),
+            log_path=tmp_path / "run" / "output.log",
+            timeout_seconds=1.5,
+        )
+        assert interrupt_fired is True
+        assert result.interrupted is True
+        assert descendant_calls == []
+    finally:
+        _kill_pid_best_effort(marker)
