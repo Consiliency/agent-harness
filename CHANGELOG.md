@@ -23,6 +23,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Translate `seat_resource_caps.CapsUnavailable` refusals (including every `_seat_scope`
+  failure path) to the typed `seat_resource_caps_unavailable` detail and notice code in
+  `panel_invoker._typed_refusal_code`, `_default_spawn_via_provider`, and board leg
+  exception handling instead of falling back to `"Gemini broker local provider failure"`,
+  generic unknown failure, or leaking private cause text into review text
+  (agent-harness#1908).
 - Fix the `/proc/self/fd` / `/proc/$PPID/fd` descriptor-enumeration race in
   `test_phase_loop_baml_v1_runtime.py::test_executor_launch_path_after_1140_with_a_live_worker_and_a_stalled_spawn`
   by capturing executor and supervisor descriptors separately (ignoring only `ENOENT` on
