@@ -54,6 +54,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   runtime `pytest` from the opt-in `test` dependency group (`build`, `setuptools`, `pip`,
   `agy-watch`, `grok-catalog`) and `visual` extra, and use an absolute `PYTHONPATH`,
   locked interpreter, serial pytest without `-n`, and `timeout` (agent-harness#1945).
+- Name the `phase-loop archive-state` remedy—and note that the archive holds dot-prefixed
+  `.phase-loop__state.json` / `.phase-loop__events.jsonl` files (visible with `ls -a`)—when
+  `discovery.select_roadmap` refuses stale phase-loop state pointing at a non-active or
+  superseded roadmap, pin `state` -> `registry` -> `manifest` precedence, and add
+  `registry` to the fail-closed selector source coverage (agent-harness#1510).
 
 ## [0.7.48] - 2026-11-27
 
