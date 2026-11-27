@@ -69,7 +69,7 @@ Qualification inputs compared with the `v0.7.47` tag:
 
 | Seat | Inputs that moved | Stable inputs |
 | --- | --- | --- |
-| Claude | Seat-window runtime digest and release identity. The Claude SDK proof inputs `panel_invoker.py::_prepare_jailed_claude`, `seat_route.py`, `seat_route_contract.py`, `seat_subject.py`, and `test_seats_claude_transport.py` change, so SDK admission requires a fresh boundary proof. | Production jail profile, all six `QualificationKey` fields for the same launch inputs (the jail-digest read set is pinned and unchanged). TUI remains the default. |
+| Claude | Seat-window runtime digest and release identity. The Claude SDK proof inputs `panel_invoker.py::_prepare_jailed_claude`, `seat_route.py`, `seat_route_contract.py`, `seat_subject.py`, `test_seats_claude_transport.py`, and `phase-loop-runtime/uv.lock` (version-only bump) change, so SDK admission requires a fresh boundary proof. | Production jail profile, all six `QualificationKey` fields for the same launch inputs (the jail-digest read set is pinned and unchanged). TUI remains the default. |
 | Gemini | Seat-window runtime digest and release identity. | Production jail profile, all six `QualificationKey` fields, the agy validator closure and QCI. |
 | Codex | Seat-window runtime digest and release identity. | Production jail profile and all six `QualificationKey` fields. |
 
