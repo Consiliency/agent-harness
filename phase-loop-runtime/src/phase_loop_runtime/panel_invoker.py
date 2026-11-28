@@ -5872,7 +5872,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 keep_fds.add(token_fd)
                 profile_env[_seat_jail.CLAUDE_TOKEN_FD_ENV] = str(token_fd)
                 redactions.append(seat_credential.token.decode("ascii", errors="replace"))
-                profile_notices = tuple(seat_credential.notices)
+                profile_notices = tuple(getattr(seat_credential, "notices", ()))
                 # agent-harness#1682: carry ignored-override notices into the leg's notices
                 # on the print/owned route just as the jailed route does.
                 if SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW:
