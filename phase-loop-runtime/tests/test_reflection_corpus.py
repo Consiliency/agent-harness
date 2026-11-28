@@ -1748,3 +1748,39 @@ def test_fenced_markdown_example_in_preamble_does_not_inject_improvements_sectio
     assert corpus.scanned[0].improvements_class == "repo_specific"
     assert corpus.scanned[0].excluded == "improvements_repo_specific"
     assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("underline", ["==============", "--------------"])
+def test_setext_heading_above_rejected_bullet_does_not_trigger_archival(tmp_path, underline):
+    root = tmp_path / "skills"
+    improvements = f"Proposed edits\n{underline}\n- Fix agent-harness#1371."
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("placeholder_line", [
+    "- 0123456789abcdef0123456789abcdef01234567",
+    "- `0123456789abcdef0123456789abcdef01234567`.",
+    '- {"status": "ok"}',
+])
+def test_bare_redaction_placeholder_sibling_does_not_trigger_archival(tmp_path, placeholder_line):
+    root = tmp_path / "skills"
+    improvements = f"- Fix agent-harness#1371.\n{placeholder_line}"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []

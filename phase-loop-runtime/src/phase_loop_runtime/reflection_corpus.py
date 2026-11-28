@@ -89,6 +89,9 @@ _LIST_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>(?:[-*+]|\d+[.)]))(?:
 _FENCE_OPEN_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 _THEMATIC_BREAK_RE = re.compile(r"^[ \t]*(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
 _HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}(?:\s|$)")
+_SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(?:=+|-+)[ \t]*$")
+_ANY_SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]*(?:=+|-+)[ \t]*$")
+_PLACEHOLDER_ONLY_RE = re.compile(r"^(?:<(?:sha|json|url|path|ref)>|[\s.,;:!?()\[\]{}`\"'/-])*$")
 
 
 @dataclass
@@ -545,11 +548,23 @@ def _split_improvement_units(text: str) -> list[list[str]]:
                 idx += 1
             units.append(item)
             continue
-        # Plain (non-bullet, non-fence) line: keep any strictly more-indented
-        # continuation lines attached while keeping same-indent sibling lines separate.
+        # Plain (non-bullet, non-fence) line: keep a Setext heading underline or
+        # strictly more-indented continuation lines attached while keeping
+        # same-indent sibling lines separate.
         base_indent = _indent_width(line)
         item = [line]
         idx += 1
+        if (
+            base_indent <= 3
+            and not _THEMATIC_BREAK_RE.match(line)
+            and not _HEADING_RE.match(line)
+            and idx < len(lines)
+            and _SETEXT_UNDERLINE_RE.match(lines[idx])
+        ):
+            item.append(lines[idx])
+            idx += 1
+            units.append(item)
+            continue
         while idx < len(lines) and lines[idx].strip():
             cur = lines[idx]
             if _indent_width(cur) > base_indent:
@@ -662,7 +677,13 @@ def _line_is_non_proposal_marker(line: str) -> bool:
         return True
     if _list_item_content_indent(line) is not None and not _strip_list_marker(line):
         return True
-    return classify_improvements(line) in {"none", "missing"}
+    if classify_improvements(line) in {"none", "missing"}:
+        return True
+    redacted = redact(line, drop_ledger=True, bulleted_ledger=True)
+    if not redacted:
+        return True
+    body = _strip_list_marker(redacted)
+    return not body or bool(_PLACEHOLDER_ONLY_RE.fullmatch(body))
 
 
 def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
@@ -716,7 +737,21 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
                 continue
         residual.append(line)
         idx += 1
-    return all(_line_is_non_proposal_marker(line) for line in residual)
+    # Drop Setext heading pairs (non-list line immediately underlined by `===` / `---`).
+    filtered_residual: list[str] = []
+    r_idx = 0
+    while r_idx < len(residual):
+        if (
+            r_idx + 1 < len(residual)
+            and _list_item_content_indent(residual[r_idx]) is None
+            and not _THEMATIC_BREAK_RE.match(residual[r_idx])
+            and _ANY_SETEXT_UNDERLINE_RE.match(residual[r_idx + 1])
+        ):
+            r_idx += 2
+            continue
+        filtered_residual.append(residual[r_idx])
+        r_idx += 1
+    return all(_line_is_non_proposal_marker(line) for line in filtered_residual)
 
 
 CONTENT_KEYS = ("worked", "didnt", "improvements")
