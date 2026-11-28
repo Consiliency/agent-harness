@@ -12,9 +12,17 @@ Four bounds hold on every execution:
 * **Environment.** The child inherits only what survives the two pure scrubbers
   this package is permitted to use -- the subscription scrubber and the
   mutation-credential stripper -- so no mutation credential, vendor API key, or
-  endpoint escape reaches it. The provider's own scratch is then moved off a
-  RAM-backed temp dir (agent-harness#1147): only ``TMPDIR`` / ``CLAUDE_CODE_TMPDIR``
-  may be added, set to the runtime's own private disk-backed dir.
+  endpoint escape reaches it. The provider's own scratch is then decided via
+  :func:`sandbox_policy.child_scratch_env` (agent-harness#1147): under
+  ``CHILD_SCRATCH_RELOCATE``, unset ``TMPDIR`` / ``CLAUDE_CODE_TMPDIR``
+  variables whose defaults would land in RAM are pointed at the runtime's own
+  private disk-backed dir (explicit caller values and already disk-backed
+  defaults are preserved). When relocation is needed and no suitable private
+  disk-backed dir is available, it warns once and falls back to RAM by default,
+  refusing only when ``PHASE_LOOP_SANDBOX_REFUSE_RAM`` is truthy (``1``,
+  ``true``, or ``yes``). Frozen-capture launches instead pass
+  ``CHILD_SCRATCH_FROZEN_CAPTURE`` without relocating scratch. Every decided
+  environment sets ``PHASE_LOOP_SCRATCH_DECIDED``.
 * **Time and process group.** The child runs in its own session. Non-review
   actions use the requested wall-clock timeout; review actions have no such
   deadline. Cleanup sends SIGKILL to the owned process group and waits for the
