@@ -35,6 +35,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Enforce `grok_tool_surface.bridged_to(prefix, proxy)` inside `_check_context` so
+  standalone `verify_launch_context` binds every issued `LaunchContext` mark directly to
+  the live namespace holder and proxy pair instead of relying solely on outer board-leg
+  and `launch_owned` checks (agent-harness#2035).
 - Capture the real launch-boundary keyword arguments in `test_seat_argv_bound_paths_1441.py`
   (`_captured_launches` / `fake_liveness`) so Grok mount qualification directly asserts no
   `writable_tree` / `writable_trees` grant is requested (with a mutation falsifier), make the

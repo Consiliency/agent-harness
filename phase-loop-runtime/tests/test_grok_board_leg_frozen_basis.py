@@ -617,14 +617,25 @@ def test_ba3_the_final_admission_is_bound_to_the_exact_holder_and_proxy(
                         with pi._seat_command_profile(command, env=dict(board.env), cwd=out_dir,
                                                       grok_egress_proxy=proxy) as (owned, profile):
                             # The leg's own final step refuses the pairing outright.
-                            with pytest.raises(pi._seat_jail.SeatSandboxRefused):
+                            with pytest.raises(pi._seat_jail.SeatSandboxRefused) as leg_refusal:
                                 pi._grok_leg_final_check(profile, (proxy, prefix),
                                                          env=dict(board.env), cwd=out_dir)
-                            # A mark issued for it anyway is refused at the final admission.
-                            marked = gts.verify_launch_context(profile, env=dict(board.env),
-                                                               cwd=out_dir, role=role, proxy=proxy)
+                            assert leg_refusal.value.code == REFUSED
+                            # The standalone mark issuer also refuses the crossed pair on the
+                            # holder/proxy binding itself (agent-harness#2035).
+                            judged.clear()
+                            with pytest.raises(pi._seat_jail.SeatSandboxRefused) as mark_refusal:
+                                gts.verify_launch_context(profile, env=dict(board.env),
+                                                          cwd=out_dir, role=role, proxy=proxy)
+                            assert mark_refusal.value.code == REFUSED
+                            assert judged == [False]
+                            # Defense in depth: even if a mark existed for the crossed pair,
+                            # launch_owned still refuses it on the binding alone.
+                            with monkeypatch.context() as bypass:
+                                bypass.setattr(gts, "bridged_to", lambda _p, _px: True)
+                                marked = gts.verify_launch_context(profile, env=dict(board.env),
+                                                                   cwd=out_dir, role=role, proxy=proxy)
                             assert gts.is_issued(marked.grok_launch_context)
-                            # Every other condition held: the binding alone refused it.
                             assert launch(marked, prefix) == [False]
                     finally:
                         pi._EGRESS_LAUNCH_PREFIX.reset(token)
