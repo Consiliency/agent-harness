@@ -5595,7 +5595,7 @@ def _require_dependency_profile_composition(dependency, harness, env, *, gemini_
 def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=(),
                  broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
                  writable_trees=(), needs_login=True, dependency=None, grok_sessions=None,
-                 egress_proxy=None, standalone_runtime=None):
+                 standalone_runtime=None, egress_proxy=None):
     """Copy declared subscription state into a per-launch private home.
 
     ``needs_login`` is False only for a launch that makes no provider request
