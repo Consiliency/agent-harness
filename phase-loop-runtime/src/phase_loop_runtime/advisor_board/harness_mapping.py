@@ -145,21 +145,28 @@ def gemini_base_model(model: str) -> str:
     return _GEMINI_EMBED_RE.sub("", model or "").strip()
 
 
-def gemini_default_model(model: str, env=None) -> str:
-    """Apply the local preference only at a Gemini default-selection boundary."""
-    value = (os.environ if env is None else env).get("PHASE_LOOP_GEMINI_MODEL")
-    if value is None:
-        return model
+def validate_gemini_base_model(value: str, *, source: str = "gemini_model") -> str:
+    """Validate that ``value`` names a registered canonical Gemini base model."""
+    if not isinstance(value, str):
+        raise ValueError(f"{source} must name a registered Gemini base model")
     candidate = value.strip()
     from .registries import DEFAULT_MODEL_REGISTRY, UnknownModelError
 
     try:
         spec = DEFAULT_MODEL_REGISTRY.get(candidate)
     except UnknownModelError:
-        raise ValueError("PHASE_LOOP_GEMINI_MODEL must name a registered Gemini base model") from None
+        raise ValueError(f"{source} must name a registered Gemini base model") from None
     if spec.vendor_family != "gemini" or not _AGY_BASE_GEMINI.fullmatch(candidate):
-        raise ValueError("PHASE_LOOP_GEMINI_MODEL must name a registered Gemini base model")
+        raise ValueError(f"{source} must name a registered Gemini base model")
     return candidate
+
+
+def gemini_default_model(model: str, env=None) -> str:
+    """Apply the local preference only at a Gemini default-selection boundary."""
+    value = (os.environ if env is None else env).get("PHASE_LOOP_GEMINI_MODEL")
+    if value is None:
+        return model
+    return validate_gemini_base_model(value, source="PHASE_LOOP_GEMINI_MODEL")
 
 
 def render_agy_model(model: str, effort: str | None = None) -> str:
