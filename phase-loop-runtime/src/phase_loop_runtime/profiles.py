@@ -809,9 +809,11 @@ def resolve_execution_policy(
         # agent-harness#1711: when the shipped policy rule was computed for the
         # pre-flip executor (pi), recompute it for the post-flip executor (claude)
         # so implementer actions pick up Claude's IMPLEMENTER_EFFORTS entry while
-        # still letting plan/roadmap/operator effort pins and custom rules win.
+        # still letting plan/roadmap/operator effort pins, custom rules, and any
+        # higher-priority non-claude policy executor (e.g. grok) win.
         if (
-            model_policy_rule is not None
+            (policy is None or policy.executor in (None, "claude"))
+            and model_policy_rule is not None
             and model_policy_rule == shipped_model_policy_rule(action, pre_flip_executor)
         ):
             model_policy_rule = shipped_model_policy_rule(action, executor)

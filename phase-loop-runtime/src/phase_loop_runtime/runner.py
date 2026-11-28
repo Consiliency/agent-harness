@@ -3037,7 +3037,7 @@ def run_loop(
                 if model_class_escalation_decision is not None:
                     escalation_application = apply_model_class_escalation(
                         execution_policy,
-                        executor=resolved_executor,
+                        executor=execution_policy.executor,
                         decision=model_class_escalation_decision,
                         from_model_class=model_class_escalation_from_class,
                         operator_model_present=model is not None,
@@ -3064,6 +3064,7 @@ def run_loop(
                             escalation_record.pop("not_applied_reason", None)
                         else:
                             escalation_record["not_applied_reason"] = escalation_application.not_applied_reason
+                resolved_executor = execution_policy.executor
                 selection = resolve_model_selection_from_policy(
                     profile=selection.profile,
                     resolved_policy=execution_policy,

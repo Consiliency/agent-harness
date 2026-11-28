@@ -255,31 +255,114 @@ def test_pi_to_claude_flip_resolves_shipped_effort_from_post_flip_executor(actio
     assert (policy.executor, policy.model, policy.effort) == ("claude", model.strip(), "medium")
 
 
-def test_pi_to_claude_flip_through_runner_seam_resolves_claude_implementer_effort(tmp_path):
+@pytest.mark.parametrize("launch_mode", ["execute", "repair"])
+def test_pi_to_claude_flip_through_runner_seam_builds_claude_launch(launch_mode, tmp_path, monkeypatch):
     import subprocess
     from unittest.mock import patch
 
     from phase_loop_runtime import runner
+    from phase_loop_runtime.events import append_event
+    from phase_loop_runtime.models import LoopEvent, utc_now
+    from phase_loop_runtime.provenance import event_provenance
 
+    monkeypatch.setenv("PHASE_LOOP_CLAUDE_ROUTE", "agent_view")
+    repo_root = Path(__file__).resolve().parents[2]
+    if (repo_root / "phase-loop-skills").is_dir():
+        monkeypatch.setenv("PHASE_LOOP_RUNNER_REPO_ROOT", str(repo_root))
     repo = make_repo(tmp_path)
     roadmap = repo / "specs" / "phase-plans-v1.md"
-    plan = write_phase_plan(repo, "RUNNER", roadmap)
+    phase = "RUNNER" if launch_mode == "execute" else "CONTRACT"
+    plan = write_phase_plan(repo, phase, roadmap, owned_files=("README.md",))
     subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "add runner plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
-    resolved = []
-    real = runner.resolve_execution_policy
+    if launch_mode == "repair":
+        append_event(repo, LoopEvent(
+            timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase=phase,
+            action="run", status="blocked", model="claude-sonnet-5-5", reasoning_effort="medium",
+            source="fixture",
+            blocker={
+                "human_required": False,
+                "blocker_class": "verification_failure",
+                "blocker_summary": "Initial verification failed.",
+                "required_human_inputs": (),
+                "access_attempts": (),
+            },
+            metadata={
+                "launch_request": {"executor": "claude", "action": "execute", "repo": str(repo),
+                                   "roadmap": str(roadmap), "phase": phase, "plan": str(plan)},
+                "terminal_summary": {"terminal_status": "blocked", "verification_status": "blocked",
+                                     "next_action": "Repair verification failure.", "dirty_paths": []},
+            },
+            selected_executor="claude", **event_provenance(roadmap, phase),
+        ))
 
-    def capture(**kwargs):
-        policy = real(**kwargs)
-        resolved.append((policy.executor, policy.model, policy.effort))
+    captured = []
+    real_spec = runner.build_launch_spec
+
+    def capture_spec(request):
+        spec = real_spec(request)
+        captured.append((
+            request.action,
+            request.executor,
+            request.prompt_bundle.expected_skill_pack,
+            spec.executor,
+            list(spec.command),
+        ))
         raise _Resolved
 
     with patch("phase_loop_runtime.runner.run_auth_preflight",
                return_value=type("Preflight", (), {"ok": True, "metadata": {"probes": []}})()), \
-            patch("phase_loop_runtime.runner.resolve_execution_policy", side_effect=capture), \
+            patch("phase_loop_runtime.runner.build_launch_spec", side_effect=capture_spec), \
             pytest.raises(_Resolved):
-        runner.run_loop(repo, roadmap, phase="RUNNER", executor="pi", model="claude-sonnet-5-5")
-    assert resolved == [("claude", "claude-sonnet-5-5", "medium")]
+        runner.run_loop(
+            repo,
+            roadmap,
+            phase=phase,
+            executor="pi",
+            model="claude-sonnet-5-5",
+            run_mode="governed" if launch_mode == "repair" else "autonomous",
+        )
+    assert len(captured) == 1
+    action, req_executor, skill_pack, spec_executor, argv = captured[0]
+    assert (action, req_executor, spec_executor) == (launch_mode, "claude", "claude")
+    assert skill_pack and all(s.startswith("claude-") for s in skill_pack), skill_pack
+    assert "pi-agent-watch" not in argv, argv
+    assert _contains(argv, ["--model", "claude-sonnet-5-5", "--effort", "medium"]), argv
+
+
+@pytest.mark.parametrize("action", ["execute", "repair"])
+@pytest.mark.parametrize("policy_kwarg", ["plan_policy", "roadmap_policy"])
+def test_pi_to_claude_flip_does_not_leak_claude_effort_to_higher_priority_executor(action, policy_kwarg):
+    from phase_loop_runtime.models import ExecutionPolicyRule
+
+    selection = profiles.resolve_profile_for_executor(
+        action=action, executor="pi", model="claude-sonnet-5-5",
+    )
+    kwargs = {
+        policy_kwarg: ExecutionPolicyRule(
+            executor="grok",
+            source="plan" if policy_kwarg == "plan_policy" else "roadmap",
+        ),
+    }
+    policy = profiles.resolve_execution_policy(
+        action=action,
+        executor="pi",
+        model_selection=selection,
+        operator_model="claude-sonnet-5-5",
+        model_policy_rule=profiles.shipped_model_policy_rule(action, "pi"),
+        **kwargs,
+    )
+    assert (policy.executor, policy.effort) == ("grok", "high")
+
+    unreasoned_pi = profiles.resolve_execution_policy(
+        action=action,
+        executor="pi",
+        model_selection=selection,
+        operator_model="claude-sonnet-5-5",
+        plan_policy=ExecutionPolicyRule(executor="pi", source="plan"),
+        model_policy_rule=profiles.shipped_model_policy_rule(action, "pi"),
+    )
+    assert (unreasoned_pi.executor, unreasoned_pi.effort) == ("pi", "high")
 
 
 def test_pi_to_claude_flip_preserves_explicit_effort_plan_pin_and_none_policy():
