@@ -976,12 +976,18 @@ def _mark_duplicates(reflections: list[Reflection]) -> None:
             else set()
         )
         has_didnt, imp_class = _dedup_signature(reflection)
+        reflection_non_archivable = not has_didnt and imp_class in {"ledger_only", "repo_specific"}
         for kept_id, kept_lines, kept_imp_lines, kept_has_didnt, kept_imp_class in kept_by_group[group]:
             if not lines or len(lines & kept_lines) / len(lines) < NEAR_DUPLICATE_OVERLAP:
                 continue
             if has_didnt and not kept_has_didnt:
                 continue
             if _DISPOSITION_RANK[imp_class] > _DISPOSITION_RANK[kept_imp_class]:
+                continue
+            kept_non_archivable = (
+                not kept_has_didnt and kept_imp_class in {"ledger_only", "repo_specific"}
+            )
+            if reflection_non_archivable and not kept_non_archivable:
                 continue
             if _improvements_add_uncovered_evidence(reflection, kept_imp_lines):
                 continue

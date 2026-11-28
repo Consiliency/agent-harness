@@ -2065,6 +2065,40 @@ def test_friction_bearing_copy_is_not_collapsed_into_frictionless_ledger_copy(tm
     assert "Retrying timed out without naming the stuck step." in rc.render_bundle(corpus)
 
 
+@pytest.mark.parametrize(("admitted_didnt", "admitted_improvements"), [
+    ("Retrying timed out without naming the stuck step.", "- Hosted CI: passed."),
+    ("", "- Clarify timeout defaults.\n- Hosted CI: passed."),
+])
+def test_ledger_only_copy_stays_unarchived_even_when_admitted_twin_sorts_first(
+    tmp_path, admitted_didnt, admitted_improvements
+):
+    # agent-harness#1655: a frictionless ledger-only copy must keep its non-archivable
+    # disposition even when an admitted twin (with friction or a generic proposal) sorts first.
+    root_a = tmp_path / "a-root"
+    root_b = tmp_path / "b-root"
+    shared_worked = "\n".join(f"- Shared worked observation {i}." for i in range(4))
+    admitted_path = put(root_a, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=shared_worked,
+        didnt=admitted_didnt,
+        improvements=admitted_improvements,
+    ))
+    ledger_only = put(root_b, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=shared_worked,
+        didnt="",
+        improvements="- Hosted CI: passed.",
+    ))
+
+    corpus, boilerplate = rc.collect([root_a, root_b], min_reflections=1)
+    by_path = {r.path: r for r in corpus.scanned}
+    consumed = set(rc.manifest(corpus, boilerplate)["reflections_consumed"])
+
+    assert by_path[admitted_path].excluded is None
+    assert by_path[ledger_only].improvements_class == "ledger_only"
+    assert by_path[ledger_only].excluded == "improvements_ledger_only"
+    assert [r.path for r in corpus.admitted] == [admitted_path]
+    assert consumed == {str(admitted_path)}
+
+
 def test_indented_fenced_ledger_block_is_not_admitted_as_proposal(tmp_path):
     # agent-harness#1655: a 4-space-indented code fence wrapping only ledger lines must not
     # leave an unclosed fence opener behind as an agnostic proposal.
