@@ -45,9 +45,12 @@ _PRIVATE_DIR_REFUSAL_MESSAGES = frozenset({
     "private directory must be absolute",
     "invalid private directory path",
 })
+# Closed allowlist of static literal SeatSandboxRefused messages safe to persist in
+# failure records, display on the seat mode line, and echo from the CLI (agent-harness#1287).
+# Any other SeatSandboxRefused message (which may wrap OSError text or host paths) is
+# omitted and represented solely by its closed refusal code.
+_APPROVED_REFUSAL_MESSAGES = _PRIVATE_DIR_REFUSAL_MESSAGES
 _EXCEPTION_CLASS_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,127}")
-_POSIX_ABS_PATH_RE = re.compile(r"(?<!\w)/(?:[^\s,:;)'\"<>]+)")
-_REFUSAL_MESSAGE_MAX_CHARS = 160
 
 #: Typed reasons; each has a literal fix.
 REASON_FIXES: Mapping[str, str] = {
@@ -151,17 +154,12 @@ def _valid_exception_class(value: object) -> str | None:
     return None
 
 
-def _sanitize_refusal_message(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    cleaned = "".join(ch if ord(ch) >= 32 and ord(ch) != 127 else " " for ch in value)
-    cleaned = " ".join(cleaned.split())
-    if not cleaned:
-        return None
-    cleaned = _POSIX_ABS_PATH_RE.sub("<path>", cleaned)
-    if len(cleaned) > _REFUSAL_MESSAGE_MAX_CHARS:
-        cleaned = cleaned[:_REFUSAL_MESSAGE_MAX_CHARS - 3] + "..."
-    return cleaned
+def safe_refusal_message(value: object) -> str | None:
+    """Return an approved static refusal message, or None for arbitrary/unapproved text."""
+    text = str(value) if isinstance(value, seat_jail.SeatSandboxRefused) else value
+    if isinstance(text, str) and text in _APPROVED_REFUSAL_MESSAGES:
+        return text
+    return None
 
 
 def _failure_diagnostic(exc: BaseException | None) -> tuple[str | None, str | None, str | None]:
@@ -171,12 +169,7 @@ def _failure_diagnostic(exc: BaseException | None) -> tuple[str | None, str | No
     exc_class = _valid_exception_class(type(exc).__name__)
     if isinstance(exc, seat_jail.SeatSandboxRefused):
         code = exc.code if exc.code in seat_jail.NOTICES else None
-        raw_message = str(exc)
-        message = (
-            _sanitize_refusal_message(raw_message)
-            if code is not None and raw_message and raw_message != code
-            else None
-        )
+        message = safe_refusal_message(exc) if code is not None else None
         return exc_class, code, message
     return exc_class, None, None
 
@@ -225,7 +218,7 @@ def _read_cached_failure(digest: str, *, now: float, retry_after_s: float) -> Ou
     raw_code = record.get("refusal_code")
     refusal_code = raw_code if isinstance(raw_code, str) and raw_code in seat_jail.NOTICES else None
     refusal_message = (
-        _sanitize_refusal_message(record.get("refusal_message"))
+        safe_refusal_message(record.get("refusal_message"))
         if refusal_code is not None
         else None
     )

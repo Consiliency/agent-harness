@@ -229,10 +229,10 @@ def test_private_dir_refusal_is_typed_persisted_and_reloaded_from_cache():
     (
         seat_jail.SeatSandboxRefused(
             seat_jail.refused("identity"),
-            "built jail failed under /home/alice/secret/dir",
+            "OSError: '/home/alice/my secret dir' token=sk-live-secret",
         ),
         "sandbox_refused",
-        "built jail failed under <path>",
+        None,
     ),
     (
         seat_jail.SeatSandboxRefused(seat_jail.refused("stage_not_private")),
@@ -240,15 +240,52 @@ def test_private_dir_refusal_is_typed_persisted_and_reloaded_from_cache():
         None,
     ),
 ])
-def test_sandbox_refused_variants_classify_and_scrub_paths(exc, expected_reason, expected_msg):
+def test_sandbox_refused_variants_only_allowlist_approved_messages(
+        exc, expected_reason, expected_msg):
+    import json
+
     outcome = _ensure(_Store(raises=exc), now=lambda: 3000.0, retry_after_s=3600)
     assert outcome == aq.Outcome(aq.FAILED, expected_reason)
     assert outcome.exception_class == "SeatSandboxRefused"
     assert outcome.refusal_code == exc.code
     assert outcome.refusal_message == expected_msg
     assert aq.REASON_FIXES[expected_reason]
-    if expected_msg is not None:
-        assert "/home/alice" not in expected_msg
+    digest = seat_jail.jail_profile_digest("claude")
+    raw = (aq.failure_dir() / f"{digest}.json").read_text(encoding="utf-8")
+    record = json.loads(raw)
+    assert record["refusal_code"] == exc.code
+    assert "/home/alice" not in raw and "sk-live-secret" not in raw
+    if expected_msg is None:
+        assert "refusal_message" not in record
+        assert aq.format_reason(outcome) == f"{expected_reason} (SeatSandboxRefused: {exc.code})"
+    else:
+        assert record["refusal_message"] == expected_msg
+        assert aq.format_reason(outcome) == f"{expected_reason} (SeatSandboxRefused: {expected_msg})"
+
+
+def test_cached_failure_readback_drops_unapproved_refusal_message():
+    import json
+
+    digest = seat_jail.jail_profile_digest("claude")
+    aq._private_dirs(seat_jail.state_home(), aq._state_dir(), aq.failure_dir())
+    (aq.failure_dir() / f"{digest}.json").write_text(json.dumps({
+        "schema": aq._SCHEMA,
+        "profile_digest": digest,
+        "reason": "sandbox_refused",
+        "exception_class": "SeatSandboxRefused",
+        "refusal_code": "seat_sandbox_refused:identity",
+        "refusal_message": "OSError: '/home/alice/my secret dir' token=sk-live-secret",
+        "failed_at": 5500.0,
+        "host_identity": seat_jail.host_identity(),
+        "falsifier_layout": seat_jail.falsifier_layout_identity(),
+    }), encoding="utf-8")
+    outcome = _ensure(_Store(), now=lambda: 5510.0, retry_after_s=3600)
+    assert outcome == aq.Outcome(aq.FAILED, "sandbox_refused")
+    assert outcome.refusal_code == "seat_sandbox_refused:identity"
+    assert outcome.refusal_message is None
+    assert aq.format_reason(outcome) == (
+        "sandbox_refused (SeatSandboxRefused: seat_sandbox_refused:identity)"
+    )
 
 
 def test_generic_exception_persists_class_only_and_never_message():

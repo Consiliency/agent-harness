@@ -2996,8 +2996,8 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
             return 1
         except seat_jail.SeatSandboxRefused as exc:
             reason = seat_jail_autoqualify.classify_failure(exc)
-            detail = str(exc)
-            suffix = f": {detail}" if detail and detail != exc.code else ""
+            detail = seat_jail_autoqualify.safe_refusal_message(exc)
+            suffix = f": {detail}" if detail is not None else ""
             print(f"seat-sandbox qualify: cannot run: {exc.code}{suffix}", file=sys.stderr)
             print("seat-sandbox qualify: fix: "
                   f"{seat_jail_autoqualify.fix_for(reason)}", file=sys.stderr)

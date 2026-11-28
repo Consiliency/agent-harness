@@ -186,6 +186,31 @@ def test_the_qualify_command_catches_seat_sandbox_refused_and_prints_fix(monkeyp
     assert "chmod 700 /tmp/phase-loop-<uid>" in err
 
 
+def test_the_qualify_command_omits_unapproved_refusal_message_text(monkeypatch, capsys):
+    # agent-harness#1287: unapproved SeatSandboxRefused text (e.g. wrapped OSError paths or
+    # tokens) must not be echoed by the CLI; only the closed refusal code and fix are printed.
+    import contextlib
+
+    from phase_loop_runtime import cli, seat_jail, seat_qualification_entry
+
+    monkeypatch.setattr(aq, "qualification_lock", contextlib.nullcontext)
+    monkeypatch.setattr(
+        seat_qualification_entry,
+        "main",
+        lambda argv: (_ for _ in ()).throw(
+            seat_jail.SeatSandboxRefused(
+                seat_jail.refused("identity"),
+                "OSError: '/home/alice/my secret dir' token=sk-live-secret",
+            )
+        ),
+    )
+    assert cli.main(["seat-sandbox", "qualify"]) == 1
+    err = capsys.readouterr().err
+    assert "cannot run: seat_sandbox_refused:identity\n" in err
+    assert "/home/alice" not in err and "sk-live-secret" not in err
+    assert aq.REASON_FIXES["sandbox_refused"] in err
+
+
 def test_the_qualify_command_adds_no_fix_line_for_other_failures(monkeypatch, capsys):
     import contextlib
 

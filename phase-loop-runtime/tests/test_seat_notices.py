@@ -1246,8 +1246,15 @@ def _modes(monkeypatch, *, qualified=True, credential=None, profile_credential=T
     outcome = {True: aq.Outcome(aq.QUALIFIED), "now": aq.Outcome(aq.QUALIFIED_NOW),
                False: aq.Outcome(aq.FAILED, "prerequisite_missing")}[qualified]
 
-    def _ensure(leg, **_kwargs):
-        return aq._remember(seat_jail.jail_profile_digest(leg), outcome)
+    def _ensure(leg, *, qualification_key=None, **_kwargs):
+        from phase_loop_runtime.seat_route_contract import key_digest
+
+        digest = (
+            key_digest(qualification_key)
+            if qualification_key is not None
+            else seat_jail.jail_profile_digest(leg)
+        )
+        return aq._remember(digest, outcome)
 
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified", _ensure)
 
@@ -1416,6 +1423,108 @@ def test_jailcore_qualification_key_qualified_now_surfaces_on_mode_line(monkeypa
     claude = next(m for m in modes if m.leg == "claude")
     assert claude.mode == "jailed" and claude.qualified_now is True
     assert "jailed (qualified now)" in claude.render()
+
+
+def test_distinct_qualification_keys_on_same_leg_do_not_share_qualified_now(monkeypatch):
+    # agent-harness#1287: two jailed seats on the same leg with distinct qualification keys
+    # must memoize qualified_now by qualification digest, never by bare leg.
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+    from phase_loop_runtime import seat_route_contract as src
+
+    _modes(monkeypatch, qualified=True)
+    aq._RECENT.clear()
+    for cached in list(pi._JAILCORE_ROUTE_CACHE.values()):
+        pi._release_seat_route(cached)
+    pi._JAILCORE_ROUTE_CACHE.clear()
+
+    profile = seat_jail.jail_profile_digest("claude")
+    key_a = src.QualificationKey(
+        profile_digest=profile,
+        allowlist_digest="1" * 64,
+        projection_digest="proj-a",
+        variant="print",
+        host_identity="host-a",
+        falsifier_layout="layout-a",
+    )
+    key_b = src.QualificationKey(
+        profile_digest=profile,
+        allowlist_digest="2" * 64,
+        projection_digest="proj-b",
+        variant="sdk",
+        host_identity="host-a",
+        falsifier_layout="layout-a",
+    )
+    aq._remember(src.key_digest(key_a), aq.Outcome(aq.QUALIFIED_NOW))
+    aq._remember(src.key_digest(key_b), aq.Outcome(aq.QUALIFIED))
+
+    def _fake_route(leg, _auth, *, seat_key=None, **_kwargs):
+        qkey = key_a if seat_key == "claude:a" else key_b
+        decision = types.SimpleNamespace(
+            mode="jailed", code=None, also=(), qualification_key=qkey,
+        )
+        return seat_jail.SeatRoute(True, None, decision=decision), [], None
+
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", _fake_route)
+    board = types.SimpleNamespace(seats=[
+        types.SimpleNamespace(harness="claude", seat_key="claude:a", model="m"),
+        types.SimpleNamespace(harness="claude", seat_key="claude:b", model="m"),
+    ])
+    modes = pi._seat_launch_modes(
+        board, mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64), base_env={})
+    assert [(m.seat_key, m.qualified_now) for m in modes] == [
+        ("claude:a", True), ("claude:b", False),
+    ]
+
+
+def test_exact_qualification_key_miss_does_not_leak_legacy_profile_failure(monkeypatch):
+    # agent-harness#1287: when a route carries a QualificationKey whose exact digest has no
+    # recent outcome, do not fall back to a stale legacy failure keyed by jail_profile_digest.
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+    from phase_loop_runtime import seat_route_contract as src
+
+    _modes(monkeypatch, qualified=True)
+    aq._RECENT.clear()
+    for cached in list(pi._JAILCORE_ROUTE_CACHE.values()):
+        pi._release_seat_route(cached)
+    pi._JAILCORE_ROUTE_CACHE.clear()
+
+    profile = seat_jail.jail_profile_digest("claude")
+    aq._remember(profile, aq.Outcome(aq.FAILED, "uid_switch_denied"))
+    qkey = src.QualificationKey(
+        profile_digest=profile,
+        allowlist_digest="3" * 64,
+        projection_digest="proj-c",
+        variant="print",
+        host_identity="host-a",
+        falsifier_layout="layout-a",
+    )
+
+    def _fake_route(leg, _auth, **_kwargs):
+        decision = types.SimpleNamespace(
+            mode="degraded",
+            code="seat_jail_qualification_failed",
+            also=(),
+            qualification_key=qkey,
+        )
+        return (
+            seat_jail.SeatRoute(False, "seat_jail_qualification_failed", decision=decision),
+            [],
+            "seat_jail_qualification_failed",
+        )
+
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", _fake_route)
+    board = types.SimpleNamespace(seats=[
+        types.SimpleNamespace(harness="claude", seat_key="claude:a", model="m"),
+    ])
+    modes = pi._seat_launch_modes(
+        board, mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64), base_env={})
+    claude = next(m for m in modes if m.leg == "claude")
+    assert (claude.mode, claude.code) == ("degraded", "seat_jail_qualification_failed")
+    assert claude.why.endswith("reason: error")
+    assert "uid_switch_denied" not in claude.why
+    assert claude.fix == aq.REASON_FIXES["error"]
 
 
 def test_no_login_and_no_override_is_degraded_and_will_not_run(monkeypatch):
