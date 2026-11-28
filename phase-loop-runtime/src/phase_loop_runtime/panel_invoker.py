@@ -2089,8 +2089,15 @@ class PanelLegResult:
         accepted = _claude_seat_transport.mode_line_codes() | {_seat_jail.REVIEW_BUNDLE_TOO_LARGE}
         if isinstance(detail, str) and str.__str__(detail) in accepted:
             codes.append(str.__str__(detail))
-        rendered = (_claude_seat_transport.render_notice(code, self.seat_key)
-                    for code in dict.fromkeys(codes))
+        rendered = (
+            _seat_jail.render_tool_sandbox_notice(self.seat_key, detail._notice_cause)
+            if (code == _seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE
+                and type(detail) is _HarnessCode
+                and str.__str__(detail) == code
+                and detail._notice_cause is not None)
+            else _claude_seat_transport.render_notice(code, self.seat_key)
+            for code in dict.fromkeys(codes)
+        )
         return tuple(notice for notice in rendered if notice is not None)
 
 
@@ -3533,7 +3540,16 @@ class _HarnessCode(str):
     output, stdout, exception messages and PTY tails are never turned into one. A plain
     ``str`` reaching ``detail`` is kept only when it EQUALS one of our fixed literals."""
 
-    __slots__ = ()
+    __slots__ = ("_notice_cause",)
+
+    def __new__(cls, value: str, *, notice_cause: str | None = None):
+        obj = super().__new__(cls, value)
+        obj._notice_cause = (
+            notice_cause
+            if type(notice_cause) is str and notice_cause in _seat_jail.TOOL_SANDBOX_CAUSE_NOTICES
+            else None
+        )
+        return obj
 
 
 def _is_harness_code(value: str) -> bool:
@@ -3582,13 +3598,21 @@ class _LegFailure:
 
     def rendered(self, log_ref: str | None = None) -> _HarnessCode:
         body = _unknown_detail(self.rc, log_ref) if self.unknown else self.template
+        notice_cause: str | None = (
+            self.template._notice_cause
+            if not self.unknown and type(self.template) is _HarnessCode
+            else None
+        )
         if self.stall_diagnostic:
             body = f"{body}; {self.stall_diagnostic}"
+            notice_cause = None
         if log_ref and not self.unknown and self._retains_tui_tail():
             body = f"{body}; CLI output: {log_ref}"
+            notice_cause = None
         if type(self.prefix) is _HarnessCode and _is_harness_code(str.__str__(self.prefix)):
             body = f"{str.__str__(self.prefix)}: {body}"
-        return _HarnessCode(body)
+            notice_cause = None
+        return _HarnessCode(body, notice_cause=notice_cause)
 
 
 def _finalize_leg_detail(value: object) -> _HarnessCode | None:
@@ -3608,7 +3632,14 @@ def _finalize_leg_detail(value: object) -> _HarnessCode | None:
         canonical = str.__str__(value)
         if not canonical:
             return None
-        return _HarnessCode(canonical if _detail_is_valid(canonical) else _UNKNOWN_DETAIL)
+        if _detail_is_valid(canonical):
+            cause = (
+                value._notice_cause
+                if canonical == _seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE
+                else None
+            )
+            return _HarnessCode(canonical, notice_cause=cause)
+        return _HarnessCode(_UNKNOWN_DETAIL)
     text = str.__str__(value) if isinstance(value, str) else ""
     if isinstance(value, str) and not text:
         return None
@@ -18546,9 +18577,9 @@ def _codex_sandbox_probe_command(cmd: "Sequence[str]") -> "list[str] | None":
             "--", "true"]
 
 
-def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retain_caps=(),
-                                        child_scratch: "str | None" = None,
-                                        quiescence_latch: "_ProviderQuiescenceLatch | None" = None) -> bool:
+def _probe_codex_command_sandbox(cmd: "Sequence[str]", *, cwd, env, retain_caps=(),
+                                 child_scratch: "str | None" = None,
+                                 quiescence_latch: "_ProviderQuiescenceLatch | None" = None) -> str | None:
     """Measure the capability, not the reply: can codex start a command in this seat's view?
 
     codex runs every command inside its own bubblewrap sandbox. Where that sandbox cannot
@@ -18559,14 +18590,15 @@ def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retai
     environment and read-only view, under the leg's quiescence latch (a
     cancel kills it like any launch of the leg) -- and only the argv after ``codex`` differs.
 
-    True ONLY for a failed probe that printed the launcher's own diagnostic. Everything else
-    (the probe ran, cannot be launched, timed out, or failed another way such as a codex
-    without this subcommand or a launcher error with another prefix) is inconclusive: the
-    seat runs and is classified exactly as it was before this check existed. A replaced
-    process runner (a test seam) is never asked to answer a probe."""
+    Returns the closed diagnostic cause (``nested_namespace``, ``read_only_tree``, or
+    ``unknown``) ONLY for a failed probe that printed the launcher's own diagnostic, else
+    ``None``. Everything else (the probe ran, cannot be launched, timed out, or failed another
+    way such as a codex without this subcommand or a launcher error with another prefix) is
+    inconclusive: the seat runs and is classified exactly as it was before this check existed.
+    A replaced process runner (a test seam) is never asked to answer a probe."""
     probe = _codex_sandbox_probe_command(cmd)
     if probe is None or _run_leg_with_liveness is not _PRODUCTION_RUN_LEG_WITH_LIVENESS:
-        return False
+        return None
     try:
         run = _run_leg_with_liveness(
             probe, cwd=cwd, env=env, deadline_s=_CODEX_SANDBOX_PROBE_TIMEOUT_S,
@@ -18574,8 +18606,20 @@ def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retai
             quiescence_latch=quiescence_latch,
         )
     except (OSError, subprocess.TimeoutExpired, _sandbox_egress.EgressUnavailable):
-        return False  # inconclusive; the leg's own launch reports its own refusal
-    return run.returncode != 0 and _seat_tool_evidence.launcher_diagnostic_in(run.stderr)
+        return None  # inconclusive; the leg's own launch reports its own refusal
+    if run.returncode == 0:
+        return None
+    return _seat_tool_evidence.classify_launcher_diagnostic(run.stderr)
+
+
+def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retain_caps=(),
+                                        child_scratch: "str | None" = None,
+                                        quiescence_latch: "_ProviderQuiescenceLatch | None" = None) -> bool:
+    """Boolean view of ``_probe_codex_command_sandbox`` for callers that only need pass/fail."""
+    return _probe_codex_command_sandbox(
+        cmd, cwd=cwd, env=env, retain_caps=retain_caps,
+        child_scratch=child_scratch, quiescence_latch=quiescence_latch,
+    ) is not None
 
 
 _EXEC_OBSERVATION: ContextVar[dict | None] = ContextVar("leg_exec_observation", default=None)
@@ -19866,13 +19910,18 @@ def _exec_leg(
                 model=model, out_dir=out_dir, out_file=out_file,
                 codex_effort_args=codex_effort_args,
             )
-        # agent-harness#1469 remains on the non-brokered route. Jailed review
+        # agent-harness#1469 / #1473 remains on the non-brokered route. Jailed review
         # seats use their CLI-shape gate and parent-held completed-command record.
-        if (agy_capture is None and not brokered
-                and _codex_command_sandbox_cannot_start(
-                    cmd, cwd=provider_cwd, env=env,
-                    child_scratch=leg_scratch, quiescence_latch=quiescence_latch)):
-            return 1, "", _HarnessCode(_seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE)
+        sandbox_cause = (
+            _probe_codex_command_sandbox(
+                cmd, cwd=provider_cwd, env=env,
+                child_scratch=leg_scratch, quiescence_latch=quiescence_latch)
+            if (agy_capture is None and not brokered) else None
+        )
+        if sandbox_cause is not None:
+            return 1, "", _HarnessCode(
+                _seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE, notice_cause=sandbox_cause,
+            )
         if brokered:
             _record_broker_provider_evidence(
                 broker_evidence, harness="codex",

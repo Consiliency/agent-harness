@@ -98,6 +98,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   eliminating non-atomic `mv` fallbacks, preserving non-collision OS diagnostics, and
   documenting the `python3` prerequisite in `docs/TEAM-ONBOARDING.md`
   (agent-harness#1605).
+- Distinguish the two known `seat_tool_sandbox_unavailable` causes in leg notices
+  (host refusing the nested user namespace vs staged workspace tree presented read-only to
+  a workspace-write sandbox, with closed static literals and generic fallback for other
+  `bwrap:` diagnostics) and document `seat_tool_sandbox_unavailable` on
+  `docs/advisor-board-capabilities-card.md` (agent-harness#1473).
 - Refresh stale implementer comments (`presets.py`, `fixtures.py`, `panel_invoker.py`) from
   `claude-sonnet-5` to `claude-sonnet-5-5`, rename
   `ShippedPolicyTest.test_execute_claude_becomes_sonnet_high` to

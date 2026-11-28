@@ -754,8 +754,13 @@ token is empty. The CLI-shape and credential gates refuse before delivery, and a
 counts only with parent-held evidence of a completed turn and successful command.
 `codex_seat_tools_unavailable`, `codex_seat_unknown_event`, token output and refresh
 codes refuse the leg. The staged workspace-write grant and retained `setfcap` are
-retired; the non-brokered route retains its sandbox probe. There is no unconfined
-review-seat fallback. Decision: `plans/decision-seats-codex-boundary.md`
+retired; the non-brokered route retains its sandbox probe. When that probe's `bwrap` launcher
+fails, the seat degrades before launch with `seat_tool_sandbox_unavailable` and distinguishes
+the two known causes in its notice (agent-harness#1335, agent-harness#1473): a host that
+refuses the nested user namespace (enable unprivileged user namespaces for bubblewrap or run
+on a host that permits them) versus a staged tree presented read-only to a workspace-write
+sandbox (present the tree writable, or use a read-only profile or the jailed Codex route).
+There is no unconfined review-seat fallback. Decision: `plans/decision-seats-codex-boundary.md`
 (agent-harness#1916). The provider-free receipt is not a `done-local` row window.
 
 **Seat modes.** Before any seat launches, the board prints one line per seat

@@ -18,12 +18,23 @@ Nothing here launches a process or reads a file.
 from __future__ import annotations
 
 __all__ = [
+    "CAUSE_NESTED_NAMESPACE",
+    "CAUSE_READ_ONLY_TREE",
+    "CAUSE_UNKNOWN",
+    "KNOWN_CAUSES",
     "TOOL_SANDBOX_UNAVAILABLE",
+    "classify_launcher_diagnostic",
     "launcher_diagnostic_in",
 ]
 
 #: The leg detail and seat notice code (``seat_jail.NOTICES`` renders what / why / fix).
 TOOL_SANDBOX_UNAVAILABLE = "seat_tool_sandbox_unavailable"
+
+#: Closed cause vocabulary for ``seat_tool_sandbox_unavailable`` notices (agent-harness#1473).
+CAUSE_NESTED_NAMESPACE = "nested_namespace"
+CAUSE_READ_ONLY_TREE = "read_only_tree"
+CAUSE_UNKNOWN = "unknown"
+KNOWN_CAUSES: frozenset[str] = frozenset({CAUSE_NESTED_NAMESPACE, CAUSE_READ_ONLY_TREE})
 
 # How a sandbox launcher reports that it could not start. bubblewrap prefixes every fatal
 # message with its own name, whatever the reason and whatever the version's wording ("No
@@ -31,10 +42,45 @@ TOOL_SANDBOX_UNAVAILABLE = "seat_tool_sandbox_unavailable"
 # mkdir ...: Read-only file system").
 _LAUNCHER_DIAGNOSTIC_PREFIXES: tuple[str, ...] = ("bwrap: ",)
 
+# Closed substrings within a ``bwrap: `` diagnostic line that distinguish the two known causes
+# (agent-harness#1473). Never matched against lines without a launcher prefix.
+_READ_ONLY_TREE_MARKERS: tuple[str, ...] = (
+    "read-only file system",
+)
+_NESTED_NAMESPACE_MARKERS: tuple[str, ...] = (
+    "create new namespace",
+    "create a new namespace",
+    "creating new namespace",
+    "user namespace",
+    "unprivileged_userns",
+    "setting up uid map",
+    "setting up gid map",
+)
+
+
+def classify_launcher_diagnostic(output: str) -> str | None:
+    """Classify a sandbox launcher's fatal diagnostic line in probe output (agent-harness#1473).
+
+    Returns ``CAUSE_READ_ONLY_TREE`` or ``CAUSE_NESTED_NAMESPACE`` when a line starting with
+    the launcher's name matches one of the two known causes, ``CAUSE_UNKNOWN`` when a launcher
+    diagnostic line is present with another error, or ``None`` when no launcher diagnostic line
+    is present. Only ever inspect output from the runtime's own ``true`` probe.
+    """
+    matched_launcher = False
+    for line in (output or "").splitlines():
+        if not line.startswith(_LAUNCHER_DIAGNOSTIC_PREFIXES):
+            continue
+        matched_launcher = True
+        lowered = line.lower()
+        if any(marker in lowered for marker in _READ_ONLY_TREE_MARKERS):
+            return CAUSE_READ_ONLY_TREE
+        if any(marker in lowered for marker in _NESTED_NAMESPACE_MARKERS):
+            return CAUSE_NESTED_NAMESPACE
+    return CAUSE_UNKNOWN if matched_launcher else None
+
 
 def launcher_diagnostic_in(output: str) -> bool:
     """Does this output carry a sandbox launcher's own fatal diagnostic (a line that STARTS
     with the launcher's name)? For output the runtime itself asked for -- a probe that runs
     ``true`` -- and never for a model's text."""
-    return any(line.startswith(_LAUNCHER_DIAGNOSTIC_PREFIXES)
-               for line in (output or "").splitlines())
+    return classify_launcher_diagnostic(output) is not None
