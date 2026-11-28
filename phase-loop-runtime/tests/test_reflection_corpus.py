@@ -1373,3 +1373,105 @@ def test_repeated_repo_specific_boilerplate_keeps_generic_sibling_proposal(tmp_p
     assert bundle.count(generic) == 3
     assert "other-repo#12" not in bundle
     assert all(r.improvements_class == "agnostic" and r.excluded is None for r in corpus.admitted)
+
+
+@pytest.mark.parametrize("wrapped_improvements", [
+    "- Fix the defect tracked in other-repo#12 before the plan is frozen.\n  Patch the local wrapper.",
+    "- Patch the local wrapper.\n  See the defect tracked in other-repo#12 before the plan is frozen.",
+])
+def test_boilerplate_on_wrapped_repo_specific_bullet_does_not_leak_continuation(
+    tmp_path, wrapped_improvements
+):
+    root = tmp_path / "skills"
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="", didnt="", improvements=wrapped_improvements,
+        ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert len(boilerplate) == 1
+    assert corpus.admitted == []
+    assert {r.excluded for r in corpus.scanned} == {"improvements_repo_specific"}
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_indented_sibling_bullets_preserve_generic_proposal(tmp_path):
+    root = tmp_path / "skills"
+    text = (
+        "## Run context\n"
+        "- Timestamp: 2026-10-01T00:00:00Z\n"
+        "- Repo: repo\n"
+        "- Branch: branch\n"
+        "- Run: run1\n\n"
+        "## Improvements to SKILL.md\n"
+        "  - Fix agent-harness#1371.\n"
+        "  - Keep the generic pre-check visible.\n"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", text)
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Keep the generic pre-check visible." in bundle
+    assert "agent-harness#1371" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+@pytest.mark.parametrize("improvements", [
+    "- Fix the defect tracked in agent-harness#1371\nby patching the local wrapper.",
+    "- Fix the defect tracked in agent-harness#1371.\n\n  Patch the local wrapper before freezing.",
+])
+def test_lazy_and_indented_paragraph_continuations_are_dropped_with_bullet(tmp_path, improvements):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("improvements", [
+    "```sh\ncat /home/example/private-repo/notes.md\n```",
+    "- Fix agent-harness#1371.\n```sh\n\n```",
+    "- Fix agent-harness#1371.\n- Hosted CI: passed\n  on main.",
+    "- Fix agent-harness#1371.\n+ None.",
+    "- Fix agent-harness#1371.\n- None.\n- None.",
+])
+def test_non_proposal_remnants_after_repo_specific_drop_stay_unarchived(tmp_path, improvements):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert "section_dropped:improvements:repo_specific" in corpus.scanned[0].notes
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("improvements", [
+    "+ None.",
+    "- None.\n- None.",
+    "- Hosted CI: passed\n  on main.",
+    "```sh\n\n```",
+])
+def test_standalone_non_proposal_remnants_are_not_admitted_as_agnostic(tmp_path, improvements):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].excluded == "no_friction_or_proposal"

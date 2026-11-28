@@ -82,9 +82,13 @@ _SHA = re.compile(r"\b[0-9a-f]{40}\b")
 _JSON_BLOB = re.compile(r"\{\".*\}")
 _LEDGER_PREFIXES = ("publication result:", "hosted ci:", "lifecycle warning:")
 _NONE_LEAD = re.compile(
-    r"^\s*[-*]?\s*(?:none(?: required| proposed| needed)?|no (?:skill )?(?:edits?|changes?|improvements?)(?: (?:are |is )?(?:proposed|required|needed))?|n/?a)\b[.:;,]?\s*",
+    r"^\s*(?:[-*+]|\d+[.)])?\s*(?:none(?: required| proposed| needed)?|no (?:skill )?(?:edits?|changes?|improvements?)(?: (?:are |is )?(?:proposed|required|needed))?|n/?a)\b[.:;,]?\s*",
     re.IGNORECASE,
 )
+_LIST_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>(?:[-*+]|\d+[.)]))(?:\s+|$)")
+_FENCE_OPEN_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_THEMATIC_BREAK_RE = re.compile(r"^[ \t]*(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}(?:\s|$)")
 
 
 @dataclass
@@ -199,6 +203,17 @@ def split_skill(skill: str) -> tuple[str, str] | None:
     return None
 
 
+def _strip_blank_edges(lines: Sequence[str]) -> str:
+    """Drop leading/trailing blank lines while preserving first-line indentation."""
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    end = len(lines)
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return "\n".join(lines[start:end]).rstrip()
+
+
 def parse_sections(text: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current: str | None = None
@@ -214,7 +229,7 @@ def parse_sections(text: str) -> dict[str, str]:
             continue
         if current is not None:
             sections[current].append(line)
-    return {key: "\n".join(lines).strip() for key, lines in sections.items()}
+    return {key: _strip_blank_edges(lines) for key, lines in sections.items()}
 
 
 def _run_context_value(run_context: str, name: str) -> str:
@@ -309,42 +324,150 @@ def classify_improvements(text: str) -> str:
     return "agnostic"
 
 
-def _drop_repo_specific_improvement_lines(text: str) -> tuple[str, int]:
-    """Drop repo-specific proposal lines (and indented continuations) from ``Improvements``.
+def _indent_width(line: str) -> int:
+    expanded = line.expandtabs(4)
+    return len(expanded) - len(expanded.lstrip(" "))
 
-    Returns ``(surviving_text, dropped_line_count)`` so generic sibling proposals in
-    the same section still reach the aggregator (agent-harness#1654).
+
+def _fence_open(line: str) -> tuple[str, int] | None:
+    match = _FENCE_OPEN_RE.match(line)
+    if not match:
+        return None
+    fence = match.group("fence")
+    info = match.group("info")
+    # CommonMark: backtick fence info strings cannot contain backticks.
+    if fence[0] == "`" and "`" in info:
+        return None
+    return fence[0], len(fence)
+
+
+def _fence_close(line: str, char: str, length: int) -> bool:
+    stripped = line.strip()
+    return len(stripped) >= length and set(stripped) == {char}
+
+
+def _consume_fence(lines: Sequence[str], start: int) -> tuple[list[str], int]:
+    opener = _fence_open(lines[start])
+    assert opener is not None
+    char, length = opener
+    block = [lines[start]]
+    idx = start + 1
+    while idx < len(lines):
+        block.append(lines[idx])
+        if _fence_close(lines[idx], char, length):
+            return block, idx + 1
+        idx += 1
+    return block, idx
+
+
+def _split_improvement_units(text: str) -> list[list[str]]:
+    """Group ``Improvements`` lines into atomic Markdown proposal units.
+
+    List items include lazy unindented continuations, indented sub-bullets,
+    indented continuation paragraphs after blank lines, and indented fenced
+    code blocks. Standalone fenced code blocks stay atomic so dropping a
+    repo-specific command removes its fence markers too (agent-harness#1654).
     """
     lines = text.splitlines()
-    if not lines:
-        return "", 0
-    items: list[list[str]] = []
+    units: list[list[str]] = []
     idx = 0
     while idx < len(lines):
         line = lines[idx]
         if not line.strip():
-            items.append([line])
+            units.append([line])
             idx += 1
             continue
-        base_indent = len(line) - len(line.lstrip())
+        if _fence_open(line) is not None:
+            block, idx = _consume_fence(lines, idx)
+            units.append(block)
+            continue
+        list_match = _LIST_ITEM_RE.match(line)
+        if list_match is not None and not _THEMATIC_BREAK_RE.match(line):
+            item_indent = _indent_width(line)
+            item = [line]
+            idx += 1
+            while idx < len(lines):
+                cur = lines[idx]
+                if not cur.strip():
+                    # Look ahead past blank lines: a strictly more-indented
+                    # block/paragraph continues this list item.
+                    look = idx
+                    while look < len(lines) and not lines[look].strip():
+                        look += 1
+                    if look < len(lines) and _indent_width(lines[look]) > item_indent:
+                        item.extend(lines[idx:look])
+                        idx = look
+                        continue
+                    break
+                cur_indent = _indent_width(cur)
+                if _fence_open(cur) is not None:
+                    if cur_indent > item_indent:
+                        block, idx = _consume_fence(lines, idx)
+                        item.extend(block)
+                        continue
+                    break
+                if _HEADING_RE.match(cur) or _THEMATIC_BREAK_RE.match(cur):
+                    break
+                next_list = _LIST_ITEM_RE.match(cur)
+                if next_list is not None and cur_indent <= item_indent:
+                    break
+                # Either nested (cur_indent > item_indent) or a CommonMark lazy
+                # continuation line directly following the item with no blank line.
+                item.append(cur)
+                idx += 1
+            units.append(item)
+            continue
+        # Plain (non-bullet, non-fence) line: keep any strictly more-indented
+        # continuation lines attached while keeping same-indent sibling lines separate.
+        base_indent = _indent_width(line)
         item = [line]
         idx += 1
         while idx < len(lines) and lines[idx].strip():
-            next_indent = len(lines[idx]) - len(lines[idx].lstrip())
-            if next_indent > base_indent:
-                item.append(lines[idx])
-                idx += 1
+            cur = lines[idx]
+            if _indent_width(cur) > base_indent:
+                if _fence_open(cur) is not None:
+                    block, idx = _consume_fence(lines, idx)
+                    item.extend(block)
+                else:
+                    item.append(cur)
+                    idx += 1
             else:
                 break
-        items.append(item)
-    kept: list[str] = []
-    dropped = 0
-    for item in items:
-        if any(classify_improvements(line) == "repo_specific" for line in item):
-            dropped += len(item)
-        else:
-            kept.extend(item)
-    return "\n".join(kept).strip(), dropped
+        units.append(item)
+    return units
+
+
+def _strip_list_marker(line: str) -> str:
+    stripped = line.strip()
+    match = _LIST_ITEM_RE.match(stripped)
+    if match is not None and not _THEMATIC_BREAK_RE.match(stripped):
+        return stripped[match.end():].strip()
+    return stripped
+
+
+def _unit_is_ledger(unit: Sequence[str]) -> bool:
+    for line in unit:
+        if line.strip():
+            return _strip_list_marker(line).lower().startswith(_LEDGER_PREFIXES)
+    return False
+
+
+def _unit_is_empty_fence(unit: Sequence[str]) -> bool:
+    non_blank = [line for line in unit if line.strip()]
+    if not non_blank or _fence_open(non_blank[0]) is None:
+        return False
+    char, length = _fence_open(non_blank[0])  # type: ignore[misc]
+    body = non_blank[1:]
+    if body and _fence_close(body[-1], char, length):
+        body = body[:-1]
+    return not body
+
+
+def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
+    non_blank = [line for line in unit if line.strip()]
+    if not non_blank or _unit_is_empty_fence(unit):
+        return True
+    return all(classify_improvements(line) in {"none", "missing"} for line in non_blank)
 
 
 CONTENT_KEYS = ("worked", "didnt", "improvements")
@@ -431,38 +554,67 @@ def apply_quality_filter(
         if reflection.excluded:
             continue
         skill_boilerplate = boilerplate_by_skill.get(reflection.bare_skill, ())
-        stripped_repo_specific = False
-        for key in CONTENT_KEYS:
-            if key not in reflection.sections:
-                continue
-            original = reflection.sections[key].splitlines()
-            kept = original if key == "didnt" else [line for line in original if _norm_line(line) not in skill_boilerplate]
+        if "worked" in reflection.sections:
+            original = reflection.sections["worked"].splitlines()
+            kept = [line for line in original if _norm_line(line) not in skill_boilerplate]
             if len(kept) != len(original):
-                reflection.notes.append(f"boilerplate_stripped:{key}:{len(original) - len(kept)}")
-            if key == "improvements":
-                stripped_repo_specific = any(classify_improvements(line) == "repo_specific" for line in original if line not in kept)
-            reflection.sections[key] = "\n".join(kept).strip()
+                reflection.notes.append(f"boilerplate_stripped:worked:{len(original) - len(kept)}")
+            reflection.sections["worked"] = _strip_blank_edges(kept)
+
+        stripped_repo_specific = False
         dropped_repo_specific = 0
         if "improvements" in reflection.sections:
-            surviving_imp, dropped_repo_specific = _drop_repo_specific_improvement_lines(
-                reflection.sections["improvements"]
-            )
-        else:
-            surviving_imp = ""
-        if dropped_repo_specific or stripped_repo_specific:
-            surviving_class = classify_improvements(redact(surviving_imp, bulleted_ledger=True))
-            if surviving_class == "agnostic":
-                reflection.sections["improvements"] = surviving_imp
+            # Group into Markdown proposal units BEFORE stripping boilerplate lines so
+            # boilerplate removal cannot split a wrapped repo-specific bullet and leave
+            # its continuation behind as a false generic proposal (agent-harness#1654).
+            units = _split_improvement_units(reflection.sections["improvements"])
+            bp_stripped_count = 0
+            surviving_units: list[list[str]] = []
+            for unit in units:
+                bp_lines = [line for line in unit if _norm_line(line) in skill_boilerplate]
+                bp_stripped_count += len(bp_lines)
+                if any(classify_improvements(line) == "repo_specific" for line in bp_lines):
+                    stripped_repo_specific = True
+                if any(classify_improvements(line) == "repo_specific" for line in unit):
+                    dropped_repo_specific += len(unit) - len(bp_lines)
+                    continue
+                if _unit_is_ledger(unit):
+                    continue
+                kept_unit = [line for line in unit if _norm_line(line) not in skill_boilerplate]
+                if _unit_is_empty_fence(kept_unit):
+                    continue
+                if kept_unit:
+                    surviving_units.append(kept_unit)
+            if bp_stripped_count:
+                reflection.notes.append(f"boilerplate_stripped:improvements:{bp_stripped_count}")
+            substantive_units = [unit for unit in surviving_units if not _unit_is_non_proposal(unit)]
+            if substantive_units:
+                reflection.sections["improvements"] = _strip_blank_edges(
+                    [line for unit in surviving_units for line in unit]
+                )
                 reflection.improvements_class = "agnostic"
                 if dropped_repo_specific:
-                    reflection.notes.append(f"lines_dropped:improvements:repo_specific:{dropped_repo_specific}")
-            else:
+                    reflection.notes.append(
+                        f"lines_dropped:improvements:repo_specific:{dropped_repo_specific}"
+                    )
+            elif dropped_repo_specific or stripped_repo_specific:
                 reflection.sections["improvements"] = ""
                 reflection.improvements_class = "repo_specific"
                 reflection.notes.append("improvements_repo_specific")
                 reflection.notes.append("section_dropped:improvements:repo_specific")
+            else:
+                non_blank_remaining = [
+                    line for unit in surviving_units for line in unit if line.strip()
+                ]
+                has_none_marker = any(
+                    classify_improvements(line) == "none" for line in non_blank_remaining
+                )
+                reflection.sections["improvements"] = _strip_blank_edges(
+                    [line for unit in surviving_units for line in unit]
+                ) if has_none_marker else ""
+                reflection.improvements_class = "none" if has_none_marker else "missing"
         else:
-            reflection.improvements_class = classify_improvements(surviving_imp)
+            reflection.improvements_class = "missing"
         for key in CONTENT_KEYS:
             if key in reflection.sections:
                 reflection.sections[key] = redact(
