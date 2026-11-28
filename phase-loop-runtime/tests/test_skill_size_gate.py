@@ -13,11 +13,14 @@ three axes:
   lines but over 9,000 tokens because single paragraphs run past 2,000 chars.
 
 Ratchet. ``ALLOWLIST`` records each current offender with the value it had when
-it was recorded. An allowlisted offender warns. An allowlisted offender that has
-dropped under the limit fails, so the entry is deleted in the PR that fixed it.
-An offender missing from the allowlist (new, or grown past its recorded value)
-warns while ``STRICT`` is ``False`` and fails once it is ``True``; flipping
-``STRICT`` is the one-line change that turns this into a hard gate.
+it was recorded. An allowlisted offender at its recorded value warns. An
+allowlisted offender that has dropped under the limit fails so the entry is
+deleted in the PR that fixed it, and one that shrinks below its recorded value
+while still over the limit also fails so the entry is re-recorded at the lower
+value (agent-harness#1648). An offender missing from the allowlist (new, or
+grown past its recorded value) warns while ``STRICT`` is ``False`` and fails
+once it is ``True``; flipping ``STRICT`` is the one-line change that turns this
+into a hard gate.
 
 Print the current measurements with::
 
@@ -43,7 +46,8 @@ CHARS_PER_TOKEN = 4
 STRICT = False
 
 # (repo-relative SKILL.md path, check) -> value recorded when the entry was added.
-# Delete an entry when its skill drops under the limit; the gate fails until you do.
+# Delete an entry when its skill drops under the limit, or lower it when the skill
+# shrinks while still over the limit; the ratchet fails until you do.
 ALLOWLIST: dict[tuple[str, str], int] = {
     ("skills-src/claude/claude-phase-roadmap-builder/SKILL.md", "tokens"): 6048,
     # Split in agent-harness#1358; what remains is test-pinned normative text.
@@ -110,8 +114,14 @@ def evaluate(
         key = (finding.path, finding.check)
         seen.add(key)
         recorded = allowlist.get(key)
-        if recorded is not None and finding.value <= recorded:
+        if recorded is not None and finding.value == recorded:
             warned.append(f"{finding.describe()} (allowlisted at {recorded})")
+            continue
+        if recorded is not None and finding.value < recorded:
+            errors.append(
+                f"{finding.describe()} (shrunk below allowlisted {recorded}; "
+                f"re-record its ALLOWLIST entry at {finding.value})"
+            )
             continue
         reason = "not allowlisted" if recorded is None else f"grew past allowlisted {recorded}"
         message = f"{finding.describe()} ({reason})"
@@ -184,9 +194,21 @@ class SkillSizeGateTest(unittest.TestCase):
             self.assertEqual((len(warned), errors), (3, []))
 
             # Grown past the recorded value: treated as unlisted.
-            shrunk = {key: value - 1 for key, value in recorded.items()}
-            _, errors = evaluate(findings, shrunk, strict=True)
+            grown = {key: value - 1 for key, value in recorded.items()}
+            _, errors = evaluate(findings, grown, strict=True)
             self.assertEqual(len(errors), 3)
+
+            # Shrunk below the recorded value while still over the limit: fails even when
+            # strict=False so the allowlist ratchets down (agent-harness#1648).
+            inflated = {key: value + 1 for key, value in recorded.items()}
+            for strict_flag in (False, True):
+                with self.subTest(strict=strict_flag):
+                    warned, errors = evaluate(findings, inflated, strict=strict_flag)
+                    self.assertEqual(warned, [])
+                    self.assertEqual(len(errors), 3)
+                    for finding, error in zip(findings, errors):
+                        self.assertIn(f"shrunk below allowlisted {finding.value + 1}", error)
+                        self.assertIn(f"re-record its ALLOWLIST entry at {finding.value}", error)
 
     def test_negative_control_stale_allowlist_entry_fails(self):
         _, errors = evaluate([], {("fixture/SKILL.md", "tokens"): 9000}, strict=False)

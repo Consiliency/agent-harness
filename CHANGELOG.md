@@ -64,6 +64,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `agy-qualification status`) and `agy_integrity.AgyImageUnqualified`, while keeping
   `status`, `code`, admission decisions, QCI, and the agy store key unchanged
   (agent-harness#2053).
+- Tighten the skill size gate ratchet (`test_skill_size_gate.py::evaluate`) to fail and
+  prompt a re-record whenever an allowlisted `SKILL.md` shrinks below its recorded value
+  while remaining over the limit, even when `STRICT = False`, with regression controls
+  (agent-harness#1648).
 - Add focused integration tests in `test_provider_tree_proof.py` driving
   `_run_leg_with_liveness`'s uncapped Gemini-profile init-descriptor adoption path,
   covering duplicate `os.dup`/`adopt_init` transfer, admission failures, `os.dup`
