@@ -360,9 +360,17 @@ def _append_literal_error(
 
 
 def resolve_repo(repo: str | Path | None = None) -> Path:
-    base = Path(repo or os.getcwd()).expanduser().resolve()
+    raw = Path(repo or os.getcwd()).expanduser()
     try:
-        out = subprocess.check_output(["git", "-C", str(base), "rev-parse", "--show-toplevel"], text=True)
+        base = raw.resolve()
+    except (OSError, RuntimeError):
+        base = Path(os.path.abspath(raw))
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(base), "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
         return Path(out.strip()).resolve()
     except Exception:
         return base

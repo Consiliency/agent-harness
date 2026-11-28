@@ -346,3 +346,93 @@ def test_symlinked_repo_and_cross_dir_validate_roadmap_preserve_repo_relative_pa
     err = capsys.readouterr().err
     assert outside.name in err
     assert str(tmp_path) not in err
+
+
+def test_validate_roadmap_preserves_cwd_relative_paths_handles_symlink_loops_and_sanitizes_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    valid_roadmap = (
+        "# Test Roadmap\n\n"
+        "> **Status (2026-10-08): ACTIVE — created this date, nothing executed yet.**\n\n"
+        "## Context\ncontext.\n\n"
+        "## Phases\n\n"
+        "### Phase 1 — Foundation (FOUND)\n"
+        "**Objective**\nDo the thing.\n\n"
+        "**Exit criteria**\n- [ ] it works\n\n"
+        "**Scope notes**\nDecompose into 2 lanes.\n\n"
+        "**Key files**\n- src/a.py\n\n"
+        "**Depends on**\n- (none)\n\n"
+        "**Produces**\n- IF-0-FOUND-1\n\n"
+        "## Top Interface-Freeze Gates\n- IF-0-FOUND-1\n\n"
+        "## Phase Dependency DAG\nFOUND\n\n"
+        "## Execution Notes\nnotes.\n\n"
+        "## Verification\nverify.\n"
+    )
+    checkout = _init_repo(tmp_path / "workspace")
+    specs = checkout / "specs"
+    specs.mkdir(parents=True, exist_ok=True)
+    roadmap_file = specs / "phase-plans-v1.md"
+    roadmap_file.write_text(valid_roadmap, encoding="utf-8")
+    reg = checkout / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+    reg.write_text(
+        '{"schema":"roadmap_status_manifest.v1","selected_roadmap":"specs/phase-plans-v1.md",'
+        '"roadmaps":[{"path":"specs/phase-plans-v1.md","status":"active"}]}\n',
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "add", "-f", "specs/phase-plans-v1.md", roadmap_lint.ROADMAP_STATUS_REGISTRY_REL],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+    )
+
+    # 1. From parent of checkout, cwd-relative paths with --repo still open the file (exit 0).
+    monkeypatch.chdir(checkout.parent)
+    rel_from_parent = f"{checkout.name}/specs/phase-plans-v1.md"
+    assert cli.main(["validate-roadmap", "--repo", checkout.name, "--roadmap", rel_from_parent]) == 0
+    _ = capfd.readouterr()
+    assert cli.main(["validate-roadmap", "--repo", checkout.name, rel_from_parent]) == 0
+    _ = capfd.readouterr()
+
+    # From an unrelated cwd, repo-relative --roadmap still resolves against --repo.
+    other_cwd = tmp_path / "unrelated"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    assert cli.main(["validate-roadmap", "--repo", str(checkout), "--roadmap", "specs/phase-plans-v1.md"]) == 0
+    _ = capfd.readouterr()
+
+    # 2. Self-referential symlink (both inside repo and outside git) returns exit 2 with Fix:, never RuntimeError.
+    loop_in_repo = specs / "phase-plans-loop.md"
+    loop_in_repo.symlink_to(loop_in_repo.name)
+    assert roadmap_lint.main(["validate-roadmap", str(loop_in_repo)], repo=checkout) == 2
+    err = capfd.readouterr().err
+    assert "specs/phase-plans-loop.md" in err
+    assert str(checkout) not in err
+    assert "Fix:" in err
+
+    outside_dir = tmp_path / "outside-git" / "specs"
+    outside_dir.mkdir(parents=True)
+    loop_outside = outside_dir / "loop.md"
+    loop_outside.symlink_to(loop_outside.name)
+    assert cli.main(["validate-roadmap", str(loop_outside)]) == 2
+    err = capfd.readouterr().err
+    assert "loop.md" in err
+    assert str(tmp_path) not in err
+    assert "Fix:" in err
+    assert "Traceback" not in err
+
+    # 3. Nonexistent --repo with valid absolute roadmap does not leak Git fatal stderr on fd 2;
+    # outside-git coherence-skip note does not leak absolute host paths.
+    nonexistent_repo = tmp_path / "does-not-exist-repo"
+    assert cli.main(["validate-roadmap", "--repo", str(nonexistent_repo), "--roadmap", str(roadmap_file)]) == 0
+    captured = capfd.readouterr()
+    assert str(nonexistent_repo) not in captured.err
+    assert "fatal:" not in captured.err
+
+    loose_roadmap = outside_dir / "loose-valid.md"
+    loose_roadmap.write_text(valid_roadmap, encoding="utf-8")
+    assert cli.main(["validate-roadmap", str(loose_roadmap)]) == 0
+    captured = capfd.readouterr()
+    assert "not inside a git work tree" in captured.err
+    assert "loose-valid.md" in captured.err
+    assert str(tmp_path) not in captured.err

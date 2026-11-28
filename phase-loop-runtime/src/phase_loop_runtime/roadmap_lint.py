@@ -538,24 +538,30 @@ def _display_path(path: Path, repo: Optional[Path] = None) -> str:
     base = Path(repo) if repo is not None else Path.cwd()
     raw_abs = Path(os.path.abspath(raw))
     base_abs = Path(os.path.abspath(base))
-    candidates: list[tuple[Path, Path]] = [(raw_abs, base_abs)]
+    try:
+        return raw_abs.relative_to(base_abs).as_posix()
+    except ValueError:
+        pass
     try:
         base_resolved = base.resolve()
-    except OSError:
+    except (OSError, RuntimeError):
         base_resolved = None
     if base_resolved is not None:
-        candidates.append((raw_abs, base_resolved))
+        try:
+            return raw_abs.relative_to(base_resolved).as_posix()
+        except ValueError:
+            pass
         try:
             raw_resolved = raw.resolve()
-        except OSError:
+        except (OSError, RuntimeError):
             raw_resolved = None
         if raw_resolved is not None:
-            candidates.append((raw_resolved, base_resolved))
-    for candidate_path, candidate_base in candidates:
-        try:
-            return candidate_path.relative_to(candidate_base).as_posix()
-        except ValueError:
-            continue
+            try:
+                return raw_resolved.relative_to(base_resolved).as_posix()
+            except ValueError:
+                pass
+    if not raw.is_absolute() and ".." not in raw.parts:
+        return raw.as_posix()
     return raw.name or str(raw)
 
 
