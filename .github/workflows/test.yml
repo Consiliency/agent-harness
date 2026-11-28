@@ -870,7 +870,7 @@ jobs:
       - name: Assert the chronology node is retained on main, nightly, and one matrix lane
         run: |
           python3 - <<'PYEOF'
-          import os, subprocess, sys, yaml
+          import os, re, subprocess, sys, yaml
           node = subprocess.run(
               ["bash", "ci/chronology-scope.sh", "--node"], check=True,
               capture_output=True, text=True,
@@ -911,6 +911,51 @@ jobs:
               )
           if "chronology-scope.sh --node" not in suite:
               sys.exit("chronology retention guard: the suite step no longer takes the node id from the scope script")
+          # agent-harness#1598: assert the junit upload step's if: names every retaining lane
+          # so bumping the matrix or retargeting the retaining lane cannot silently drop the upload.
+          upload_steps = [
+              step for step in pytest_job["steps"]
+              if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+              and "chronology-junit" in str((step.get("with") or {}).get("name", ""))
+          ]
+          if len(upload_steps) != 1:
+              sys.exit(
+                  "chronology retention guard: expected exactly one chronology junit upload step "
+                  f"in pytest job, found {len(upload_steps)}"
+              )
+          upload_with = upload_steps[0].get("with") or {}
+          if upload_with.get("if-no-files-found") != "error":
+              sys.exit(
+                  "chronology retention guard: chronology junit upload step must set "
+                  f"if-no-files-found: error, got {upload_with.get('if-no-files-found')!r}"
+              )
+          upload_if = " ".join(str(upload_steps[0].get("if") or "").split())
+          lane_clause = r"matrix\.python-version\s*==\s*(?:'([^']+)'|\"([^\"]+)\")"
+          m_single = re.fullmatch(rf"always\(\)\s*&&\s*{lane_clause}", upload_if)
+          m_multi = re.fullmatch(
+              rf"always\(\)\s*&&\s*\(\s*{lane_clause}(?:\s*\|\|\s*{lane_clause})+\s*\)",
+              upload_if,
+          )
+          if m_single:
+              upload_lanes = {m_single.group(1) or m_single.group(2)}
+          elif m_multi:
+              upload_lanes = {
+                  m.group(1) or m.group(2)
+                  for m in re.finditer(lane_clause, upload_if)
+              }
+          else:
+              sys.exit(
+                  "chronology retention guard: chronology junit upload step if: must be "
+                  "'always() && matrix.python-version == <v>' or "
+                  "'always() && (matrix.python-version == <v1> || ...)'; "
+                  f"got if={upload_if!r}"
+              )
+          missing_upload_lanes = [v for v in retaining if v not in upload_lanes]
+          if missing_upload_lanes:
+              sys.exit(
+                  "chronology retention guard: chronology junit upload step if: must name every "
+                  f"retaining lane ({retaining}); missing {missing_upload_lanes} in if={upload_if!r}"
+              )
           print(f"chronology node retained on push/schedule/dispatch and in matrix lane(s): {retaining}")
           PYEOF
 
