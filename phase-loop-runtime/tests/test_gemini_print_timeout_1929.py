@@ -129,6 +129,7 @@ def test_jailed_gemini_ndjson_result_print_timeout_named_even_after_long_stream(
             "step_update": {
                 "conversation_id": "conv-1",
                 "step_type": "tool",
+                "tool_name": "read_file",
                 "tool_info": {"note": "x" * 300},
             },
         }),
@@ -721,3 +722,66 @@ def test_heartbeat_qualification_zero_exit_timeout_aligns_detail_and_error_class
     assert rc == 1 and text == ""
     assert log == "Gemini broker native timeout under heartbeat-only"
     assert evidence["provider_error_class"] == "timeout"
+
+
+def test_jailed_nonzero_containment_parity_with_stream_parser(monkeypatch, tmp_path):
+    """Round 3 P2 #1 & #2: nonzero-exit containment scan shares the stream parser's
+    rules: bare system_message does NOT suppress print timeout, refused tool
+    `browser_subagent` DOES suppress print timeout, and unhashable `step_type: []`
+    never raises TypeError."""
+    # 1. Valid bare system_message + timeout -> still names print timeout.
+    bare_system_stream = "\n".join([
+        json.dumps({"event": "init", "conversation_id": "conv-1"}),
+        json.dumps({
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "conv-1",
+                "step_index": 1,
+                "state": "DONE",
+                "step_type": "system_message",
+                "duration_seconds": 0.1,
+            },
+        }),
+    ]) + "\n"
+    status, _text, sink, evidence, _seat = _run_jailed_with(
+        monkeypatch, tmp_path, returncode=1, stdout=bare_system_stream,
+        stderr="Error: timeout waiting for response\n",
+    )
+    assert status == "DEGRADED"
+    assert sink[-1].template == "Gemini broker native print timeout"
+    assert evidence["provider_error_class"] == "timeout"
+
+    # 2. Refused tool `browser_subagent` + timeout -> suppresses print timeout.
+    browser_subagent_stream = "\n".join([
+        json.dumps({"event": "init", "conversation_id": "conv-1"}),
+        json.dumps({
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "conv-1",
+                "step_type": "tool",
+                "tool_name": "browser_subagent",
+            },
+        }),
+    ]) + "\n"
+    status, _text, sink, _ev, _seat = _run_jailed_with(
+        monkeypatch, tmp_path, returncode=1, stdout=browser_subagent_stream,
+        stderr="Error: timeout waiting for response\n",
+    )
+    assert status == "DEGRADED"
+    assert sink[-1].template == "Gemini broker native exit without an accepted review"
+
+    # 3. Malformed unhashable `step_type: []` on nonzero exit -> returns typed failure,
+    # never raises TypeError.
+    malformed_step_stream = "\n".join([
+        json.dumps({"event": "init", "conversation_id": "conv-1"}),
+        json.dumps({
+            "event": "step_update",
+            "step_update": {"conversation_id": "conv-1", "step_type": []},
+        }),
+    ]) + "\n"
+    status, _text, sink, _ev, _seat = _run_jailed_with(
+        monkeypatch, tmp_path, returncode=1, stdout=malformed_step_stream,
+        stderr="Error: timeout waiting for response\n",
+    )
+    assert status == "DEGRADED"
+    assert sink[-1].template == "Gemini broker native print timeout"

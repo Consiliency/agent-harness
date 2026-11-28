@@ -8200,6 +8200,31 @@ def _jailed_gemini_tool_refusal(step: Mapping) -> str | None:
     return None
 
 
+def _gemini_stream_step_violation(step: Mapping[str, object], *, tooled: bool) -> str | None:
+    """Return the closed containment refusal code for a Gemini ``step_update`` payload,
+    or ``None`` when the step is permitted on this route (or is an unhashable malformed value).
+
+    Shared by ``_broker_gemini_stream_result`` and ``_gemini_stream_has_containment_violation``
+    so nonzero-exit containment checks apply the exact same step/tool rules as the stream
+    parser without raising ``TypeError`` on malformed JSON values (agent-harness#1929)."""
+    if tooled:
+        if _jailed_gemini_inert_system_step(step):
+            return None
+        step_type = step.get("step_type")
+        if not isinstance(step_type, str):
+            if isinstance(step_type, (list, dict)):
+                return None
+            return _JAILED_GEMINI_UNKNOWN_EVENT
+        if step_type not in _JAILED_GEMINI_STEP_TYPES or "subagent_info" in step:
+            return _JAILED_GEMINI_UNKNOWN_EVENT
+        if _jailed_gemini_tool_refusal(step) is not None:
+            return _JAILED_GEMINI_UNKNOWN_EVENT
+        return None
+    if step.get("step_type") == "tool" or "tool_info" in step or "subagent_info" in step:
+        return "Gemini broker stream rejected: tool or subagent activity observed"
+    return None
+
+
 def _broker_gemini_stream_result(
     raw: str, protocol: _BrokerGeminiStreamProtocol, *, tooled: bool = False,
 ) -> tuple[int, str, str, dict[str, object]]:
@@ -8259,18 +8284,15 @@ def _broker_gemini_stream_result(
                     conversation_ids.add(step_conversation)
                 if tooled and _jailed_gemini_inert_system_step(step):
                     system_steps += 1
-                elif tooled:
-                    if step.get("step_type") not in _JAILED_GEMINI_STEP_TYPES or "subagent_info" in step:
-                        diagnostic = _JAILED_GEMINI_UNKNOWN_EVENT
-                        raise ValueError("subagent or unrecorded activity observed")
-                    if _jailed_gemini_tool_refusal(step) is not None:
-                        diagnostic = _JAILED_GEMINI_UNKNOWN_EVENT
-                        raise ValueError("refused or invalid tool name")
-                    if step.get("step_type") == "tool":
+                else:
+                    if tooled and isinstance(step.get("step_type"), (list, dict)):
+                        raise ValueError("malformed stream step")
+                    violation = _gemini_stream_step_violation(step, tooled=tooled)
+                    if violation is not None:
+                        diagnostic = violation
+                        raise ValueError("stream containment violation")
+                    if tooled and step.get("step_type") == "tool":
                         tool_steps += 1
-                elif step.get("step_type") == "tool" or "tool_info" in step or "subagent_info" in step:
-                    diagnostic = "Gemini broker stream rejected: tool or subagent activity observed"
-                    raise ValueError("tool or subagent activity observed")
             elif event["event"] == "result":
                 candidate = event.get("result")
                 if not isinstance(candidate, dict):
@@ -19450,8 +19472,8 @@ def _gemini_print_timeout_applies(
 
 
 def _gemini_stream_has_containment_violation(raw: str, *, tooled: bool) -> bool:
-    """True when ``raw`` contains a disallowed Gemini stream event (tool/subagent in a
-    non-tooled brokered run, or subagent/unrecorded step/event in a jailed tooled run).
+    """True when ``raw`` contains a disallowed Gemini stream event, sharing
+    ``_gemini_stream_step_violation`` with ``_broker_gemini_stream_result``.
     Checked across all lines even on nonzero exits so a trailing timeout cannot mask or
     retry a containment refusal (agent-harness#1929)."""
     if not raw:
@@ -19469,12 +19491,7 @@ def _gemini_stream_has_containment_violation(raw: str, *, tooled: bool) -> bool:
         kind = event["event"]
         if kind == "step_update":
             step = event.get("step_update")
-            if not isinstance(step, dict):
-                continue
-            if tooled:
-                if step.get("step_type") not in _JAILED_GEMINI_STEP_TYPES or "subagent_info" in step:
-                    return True
-            elif step.get("step_type") == "tool" or "tool_info" in step or "subagent_info" in step:
+            if isinstance(step, dict) and _gemini_stream_step_violation(step, tooled=tooled) is not None:
                 return True
         elif tooled and kind not in {"init", "result"}:
             return True
