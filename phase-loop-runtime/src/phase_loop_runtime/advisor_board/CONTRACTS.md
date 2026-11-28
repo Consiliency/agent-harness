@@ -27,11 +27,12 @@ equivalence is proven by a test (not asserted in prose).
 - **Per-harness model/effort mapping** — `render_seat_invocation(harness, model,
   effort) -> SeatInvocation`. Freezes how `seat.effort` reaches each CLI, incl.
   the **agy/gemini leg where effort is embedded in the model-name string**
-  (`render_gemini_model` in `panel_invoker.py`). Built-3 lanes are concrete;
-  breadth lanes raise `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI.
-  Default round-trip (proven): claude→`--effort high`, codex→
-  `-c model_reasoning_effort=high`, Gemini NEON→`gemini-4-neon-high`;
-  explicit legacy Pro display names remain compatible.
+  (`render_gemini_model` in `panel_invoker.py`). Built-in homebrew lanes
+  (`claude`, `codex`, `gemini`, `grok`) are concrete; breadth lanes raise
+  `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI. Default round-trip
+  (proven): claude→`--effort high`, codex→`-c model_reasoning_effort=high`,
+  Gemini NEON→`gemini-4-neon-high`, grok→`--reasoning-effort high`; explicit
+  legacy Pro display names remain compatible.
 - **Seat identity for result re-keying** — `Seat.seat_key` is a stable LABEL over
   every distinguishing field (lane, model, effort, lens), so lens-only-different
   seats get distinct keys. It is not a guaranteed-unique id — a board may hold two
