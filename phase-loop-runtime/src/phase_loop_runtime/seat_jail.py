@@ -1969,6 +1969,8 @@ def build_seat_jail(
             if str(provider) != standalone_runtime.subject_source:
                 raise SeatSandboxRefused(refused("identity"), "standalone runtime subject changed")
             provider = Path(standalone_runtime.subject_destination)
+        elif profile.require_projected_runtime:
+            raise SeatSandboxRefused(refused("identity"), "projected runtime required")
         elif not provider.is_absolute() or not provider.is_file():
             raise SeatSandboxRefused(refused("jail_build"), "provider executable not found")
         program = seccomp_program if seccomp_program is not None else build_seccomp_filter(arch)

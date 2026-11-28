@@ -42,6 +42,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import errno
+try:
+    import fcntl
+except ImportError:  # Standalone imports remain supported on non-POSIX hosts.
+    fcntl = None
 import hashlib
 import json
 import os
@@ -473,7 +477,11 @@ def _walk_trusted_dir(
             try:
                 child_fd = os.open(part, _WALK, dir_fd=cur_fd)
             except OSError as exc:
-                if follow_symlinks and exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                if (
+                    follow_symlinks
+                    and not (is_last and strict_leaf)
+                    and exc.errno in (errno.ELOOP, errno.ENOTDIR)
+                ):
                     link_target = _read_owned_symlink(
                         cur_fd, part, owners, f"runtime ancestor {next_path!r}"
                     )
@@ -502,6 +510,12 @@ def _walk_trusted_dir(
                 _close_quietly(child_fd)
                 raise
             stack.append((next_path, child_fd, _dir_identity(info)))
+        if strict_leaf:
+            leaf_path, leaf_fd, _leaf_id = stack[-1]
+            leaf_info = os.fstat(leaf_fd)
+            if not stat.S_ISDIR(leaf_info.st_mode):
+                raise _identity(f"runtime target {leaf_path!r} is not a directory")
+            _require_trusted(leaf_info, owners, "runtime target")
         canonical = Path(stack[-1][0])
         last_index = len(stack) - 1
         held = [
@@ -1051,10 +1065,17 @@ def verify_standalone_projection(
             raise _identity("standalone codex runtime mount descriptor not in pass_fds")
         fds.append(fd)
         try:
+            if fcntl is None or not hasattr(os, "O_ACCMODE"):
+                raise _identity("POSIX fcntl is unavailable on this platform")
+            fd_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
             observed = os.fstat(fd)
             offset = os.lseek(fd, 0, os.SEEK_CUR)
         except OSError as exc:
             raise _identity("standalone codex runtime projection descriptor unavailable") from exc
+        if (fd_flags & os.O_ACCMODE) != os.O_RDONLY:
+            raise _identity(
+                f"standalone codex runtime projection fd for {expected_file.relpath!r} is not read-only"
+            )
         if (
             not stat.S_ISREG(observed.st_mode)
             or observed.st_nlink != 1

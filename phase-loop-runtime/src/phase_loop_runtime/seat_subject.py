@@ -199,7 +199,7 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
 
     try:
         source = Path(found).resolve(strict=True)
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         raise ExecutableDependencyError("subject_mismatch", "provider") from exc
 
     named_target = Path(found)
@@ -231,7 +231,7 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
             break
         try:
             candidate = named_target.resolve(strict=True)
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             if _names_managed_root(named_target):
                 raise ExecutableDependencyError("subject_mismatch", "wrapper target") from exc
             break

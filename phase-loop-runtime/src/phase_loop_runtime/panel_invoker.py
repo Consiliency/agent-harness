@@ -5030,9 +5030,21 @@ def _require_safe_dependency_profile_destinations(
     if broker_socket is not None:
         protected.add(os.path.abspath(broker_socket))
     subject_destination = str(getattr(dependency, "subject_destination"))
+    codex_allowed_slots: frozenset[str] = frozenset()
+    if getattr(dependency, "provider", None) == "codex":
+        from .seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+        from .seat_profile_codex import _runtime_directories
+
+        if subject_destination == CODEX_RUNTIME_DESTINATIONS[0]:
+            codex_allowed_slots = frozenset((*CODEX_RUNTIME_DESTINATIONS, *_runtime_directories()))
+    non_runtime_protected = protected - {"/run/phase-loop-seat"}
     for entry in getattr(dependency, "entries"):
         destination = str(entry.destination)
         if destination == subject_destination == "/run/phase-loop-seat/provider":
+            continue
+        if destination in codex_allowed_slots:
+            if any(_seat_paths_overlap(destination, item) for item in non_runtime_protected):
+                raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
             continue
         if any(_seat_paths_overlap(destination, item) for item in protected):
             raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
@@ -6083,7 +6095,7 @@ def _precreate_seat_output(path):
 def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None,
                           gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
                           readonly_paths=(), replaceable_outputs=(), grok_egress_proxy=None,
-                          standalone_runtime=None):
+                          standalone_runtime=None, dependency=None):
     """The owned seat's command and profile for one launch.
 
     ``grok_egress_proxy`` is the ``grok-review`` proxy a board leg holds for a grok leg on a
@@ -6108,6 +6120,10 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     The Codex writable-tree grant is retired by OD-4; argv inputs are read-only."""
     from .executable_dependency_startup import current_dependency_for_provider
 
+    if standalone_runtime is not None and dependency is not None:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"), "conflicting dependency and standalone runtime"
+        )
     if standalone_runtime is not None:
         from . import seat_codex_runtime as _codex_runtime
 
@@ -6124,6 +6140,19 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
         standalone_runtime.revalidate()
         harness, executable = "codex", standalone_runtime.subject_source
         dependency = None
+    elif dependency is not None:
+        active_lease = current_dependency_for_provider(command=command)
+        if (
+            gemini_profile is not None
+            or (active_lease is not None and active_lease is not dependency)
+            or not command
+            or str(command[0]) != dependency.subject_source
+        ):
+            raise _seat_jail.SeatSandboxRefused(
+                _seat_jail.refused("identity"), "invalid executable dependency"
+            )
+        dependency.revalidate()
+        harness, executable = dependency.provider, dependency.subject_source
     elif gemini_profile is None:
         dependency = current_dependency_for_provider(command=command)
         if dependency is not None:
@@ -6916,7 +6945,7 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
 
 
 def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
-                 executor: bool = False, standalone_runtime=None, **kwargs) -> "subprocess.CompletedProcess[str]":
+                 executor: bool = False, standalone_runtime=None, dependency=None, **kwargs) -> "subprocess.CompletedProcess[str]":
     """THE one place a review provider is started and waited on. See `launch_provider`.
 
     Every argv but a trusted ``nsenter`` observer runs through the seat-launch owner, whose
@@ -6966,6 +6995,7 @@ def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
             command, profile = stack.enter_context(_seat_command_profile(
                 argv, env=env, cwd=cwd, role=SeatLaunchRole.PROVIDER_ADMIN,
                 standalone_runtime=standalone_runtime,
+                dependency=dependency,
             ))
             process = stack.enter_context(launch_owned(
                 command, role=SeatLaunchRole.PROVIDER_ADMIN, profile=profile, **kwargs,

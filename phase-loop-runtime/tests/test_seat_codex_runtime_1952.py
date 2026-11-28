@@ -112,10 +112,40 @@ def test_trusted_operator_symlink_ancestor_resolves_and_validates(tmp_path):
     link_parent = tmp_path / "links"
     link_parent.mkdir(mode=0o755)
     link = link_parent / "current"
-    link.symlink_to(target)
-    resolved = runtime.resolve_runtime(link / "bin/codex")
+    link.symlink_to(real_base)
+    resolved = runtime.resolve_runtime(
+        link / "npm/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
+    )
     assert resolved.target == target.resolve()
     assert resolved.files and resolved.ancestry
+
+
+def test_symlink_at_runtime_target_itself_is_refused_identity(tmp_path):
+    """`strict_leaf=True` refuses even an owned symlink at the runtime target itself."""
+    real_base = tmp_path / "real"
+    real_base.mkdir(mode=0o755)
+    target = _make_target(real_base)
+    vendor = tmp_path / "vendor"
+    vendor.mkdir(mode=0o755)
+    link = vendor / "x86_64-unknown-linux-musl"
+    link.symlink_to(target)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        runtime.resolve_runtime(link / "bin/codex")
+    assert caught.value.code == IDENTITY
+
+
+def test_strict_leaf_dotdot_escape_onto_sticky_dir_is_refused_identity(tmp_path):
+    """If a symlink expansion ends in `..` landing on root-owned sticky `/tmp`, `strict_leaf`
+    still re-verifies the final directory without the sticky-ancestor exception."""
+    sub = tmp_path / "sub"
+    sub.mkdir(mode=0o755)
+    owners = runtime._trusted_owners()
+    # Walk from `/` into `tmp_path` (under `/tmp`) then pop back via `..` to `/tmp` itself:
+    depth_under_tmp = len(tmp_path.relative_to("/tmp").parts)
+    back_to_tmp = Path("/".join([str(tmp_path), *([".."] * depth_under_tmp)]))
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        runtime._walk_trusted_dir(back_to_tmp, owners, follow_symlinks=True, strict_leaf=True)
+    assert caught.value.code == IDENTITY
 
 
 def test_symlink_inside_untrusted_ancestor_is_refused_identity(tmp_path):
@@ -482,3 +512,192 @@ def test_owned_admission_path_rejects_conflicting_session_dependency(tmp_path, m
             ):
                 pass
         assert caught.value.code == IDENTITY
+
+
+def test_projection_verification_refuses_writable_same_inode_descriptor(tmp_path):
+    target = _make_target(tmp_path)
+    with runtime.open_runtime(target / "bin/codex") as admitted:
+        with admitted.reopen_projection() as projection:
+            rw_fd = os.open(target / "bin/codex", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                mounts = list(projection.mount_args())
+                mounts[3] = str(rw_fd)
+                pass_fds = (rw_fd, *projection.pass_fds[1:])
+                with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+                    runtime.verify_standalone_projection(
+                        admitted,
+                        mounts,
+                        pass_fds,
+                        admitted.projection_digest,
+                    )
+                assert caught.value.code == IDENTITY
+            finally:
+                os.close(rw_fd)
+
+
+def test_build_seat_jail_refuses_bare_codex_pathname_without_projection(tmp_path):
+    target = _make_target(tmp_path)
+    directory = tmp_path / "jail"
+    tree = directory / "reviewed-tree"
+    tree.mkdir(parents=True)
+    ca = tmp_path / "ca.pem"
+    ca.write_bytes(b"certificate")
+    bundle = seat_jail.memfd_with("b", b"bundle")
+    instructions = seat_jail.memfd_with("i", b"instructions")
+    try:
+        with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+            seat_jail.build_seat_jail(
+                "codex",
+                directory,
+                target / "bin/codex",
+                tree=tree,
+                bundle_memfd=bundle,
+                instructions_memfd=instructions,
+                seat_ids=(1, 1),
+                egress_ca=ca,
+                egress_proxy="http://fixture:password@127.0.0.1:3128",
+            )
+        assert caught.value.code == IDENTITY
+    finally:
+        os.close(bundle)
+        os.close(instructions)
+
+
+def test_codex_admission_gate_refuses_explicit_executable_without_projection(tmp_path, monkeypatch):
+    target = _make_target(tmp_path)
+    home = tmp_path / "operator"
+    auth = home / ".codex/auth.json"
+    auth.parent.mkdir(parents=True)
+    auth.write_text(json.dumps(_login(claims=_claims(exp=int(time.time()) + 7200))), encoding="utf-8")
+    auth.chmod(0o600)
+    monkeypatch.setattr(cred, "auth_path", lambda env=None: auth)
+    verdict = seat_profile_codex.codex_admission_gate(
+        "codex",
+        {"HOME": str(home)},
+        True,
+        executable=target / "bin/codex",
+    )
+    assert verdict is not None
+    assert verdict.status == "refuses"
+    assert verdict.code == IDENTITY
+
+
+def test_managed_dependency_admission_probe_passes_dependency_without_re_resolving(tmp_path, monkeypatch):
+    target = _make_target(tmp_path)
+    home = tmp_path / "operator"
+    home.mkdir(mode=0o700)
+    cwd = tmp_path / "work"
+    cwd.mkdir(mode=0o755)
+    revalidated: list[bool] = []
+    reopened: list[bool] = []
+
+    class _FakeProjection:
+        def __init__(self, fd: int) -> None:
+            self.fd = fd
+            self.digest = "a" * 64
+            self.pass_fds = (fd,)
+            self.destinations = (runtime.CODEX_RUNTIME_DESTINATIONS[0],)
+            self.files = (SimpleNamespace(destination=runtime.CODEX_RUNTIME_DESTINATIONS[0], fd=fd),)
+
+        def mount_args(self) -> tuple[str, ...]:
+            return ("--perms", "0555", "--ro-bind-data", str(self.fd), runtime.CODEX_RUNTIME_DESTINATIONS[0])
+
+        def close(self) -> None:
+            os.close(self.fd)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self.close()
+
+    class _FakeDependency:
+        provider = "codex"
+        subject_source = str(target / "bin/codex")
+        subject_destination = runtime.CODEX_RUNTIME_DESTINATIONS[0]
+        projection_digest = "a" * 64
+        authority_sha256 = "b" * 64
+        declaration_sha256 = "c" * 64
+        _runtime_euid_owned_sources = False
+        _runtime_euid_writable_sources = False
+        entries = tuple(
+            SimpleNamespace(kind="file", destination=dest)
+            for dest in runtime.CODEX_RUNTIME_DESTINATIONS
+        )
+
+        def revalidate(self) -> None:
+            revalidated.append(True)
+
+        def reopen_projection(self) -> _FakeProjection:
+            reopened.append(True)
+            return _FakeProjection(os.open(target / "bin/codex", os.O_RDONLY | os.O_CLOEXEC))
+
+    dep = _FakeDependency()
+    monkeypatch.setattr(pi, "_require_owner_platform", lambda: None)
+    monkeypatch.setattr(
+        pi,
+        "_seat_provider_source",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("pathname resolution must not run")),
+    )
+    with pi._seat_command_profile(
+        [dep.subject_source, "exec", "--help"],
+        env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+        cwd=cwd,
+        role=pi.SeatLaunchRole.PROVIDER_ADMIN,
+        dependency=dep,
+    ) as (command, profile):
+        assert command[0] == dep.subject_destination
+        assert profile.dependency is dep
+        assert revalidated and reopened
+
+
+def test_resolve_seat_subject_handles_py312_runtime_error_symlink_loop(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(mode=0o755)
+    codex_bin = bin_dir / "codex"
+    codex_bin.write_bytes(b"\x7fELF")
+    codex_bin.chmod(0o755)
+    real_resolve = Path.resolve
+
+    def _boom(self, strict=False):
+        if self == codex_bin:
+            raise RuntimeError("Symlink loop from codex")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", _boom)
+    with pytest.raises(ExecutableDependencyError, match="subject_mismatch"):
+        seat_subject.resolve_seat_subject("codex", {"PATH": str(bin_dir)})
+
+
+def test_qualification_closes_memfds_when_direct_codex_build_fails(tmp_path, monkeypatch):
+    import contextlib
+    from phase_loop_runtime import seat_jail_qualification as qualification
+
+    target = _make_target(tmp_path)
+    allocated: list[int] = []
+    real_memfd = seat_jail.memfd_with
+
+    def _track_memfd(name: str, data: bytes) -> int:
+        fd = real_memfd(name, data)
+        allocated.append(fd)
+        return fd
+
+    monkeypatch.setattr(seat_jail, "memfd_with", _track_memfd)
+    monkeypatch.setattr(qualification.seat_uid, "subordinate_range", lambda _: SimpleNamespace(count=65536))
+    monkeypatch.setattr(qualification.seat_uid, "lease_seat_id", lambda _: contextlib.nullcontext(7))
+    monkeypatch.setattr(qualification.sandbox_egress, "isolated_network", lambda **k: contextlib.nullcontext(("fixture",)))
+    monkeypatch.setattr(qualification.seat_uid, "holder_pid_from_prefix", lambda _: 42)
+    subject = SeatSubject("codex", "standalone", target / "bin/codex", None, None)
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (subject, None))
+    monkeypatch.setattr(
+        seat_jail,
+        "build_seat_jail",
+        lambda *a, **k: (_ for _ in ()).throw(seat_jail.SeatSandboxRefused(IDENTITY, "injected build failure")),
+    )
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        qualification._run_probe_in_jail("codex", tmp_path / "qual", {}, None, None)
+    assert caught.value.code == IDENTITY
+    assert len(allocated) == 2
+    for fd in allocated:
+        with pytest.raises(OSError):
+            os.fstat(fd)

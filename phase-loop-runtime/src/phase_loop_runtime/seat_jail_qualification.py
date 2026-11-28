@@ -36,6 +36,7 @@ the outcome is the parent's own observation.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -475,12 +476,28 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
                 sandbox_egress.isolated_network(timeout_s=900, required=True, seat_uid_map=True) as egress:
             token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
             holder = seat_uid.holder_pid_from_prefix(egress)
-            jail = seat_jail.build_seat_jail(
-                leg, seat_dir, provider or Path("/usr/bin/python3"), tree=tree,
-                bundle_memfd=seat_jail.memfd_with("b", b"B"),
-                instructions_memfd=seat_jail.memfd_with("i", b"I"),
-                token_fd=seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None,
-                seat_ids=(n, n), **shape)
+            probe_subject_hook = seat_jail._QUALIFICATION_PROBE_SUBJECT.get()
+            with contextlib.ExitStack() as input_stack:
+                bundle_fd = seat_jail.memfd_with("b", b"B")
+                if probe_subject_hook is None:
+                    input_stack.callback(os.close, bundle_fd)
+                instructions_fd = seat_jail.memfd_with("i", b"I")
+                if probe_subject_hook is None:
+                    input_stack.callback(os.close, instructions_fd)
+                token_fd = seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None
+                if token_fd is not None and probe_subject_hook is None:
+                    input_stack.callback(os.close, token_fd)
+                try:
+                    jail = seat_jail.build_seat_jail(
+                        leg, seat_dir, provider or Path("/usr/bin/python3"), tree=tree,
+                        bundle_memfd=bundle_fd,
+                        instructions_memfd=instructions_fd,
+                        token_fd=token_fd,
+                        seat_ids=(n, n), **shape)
+                except BaseException:
+                    pi._EGRESS_LAUNCH_PREFIX.reset(token)
+                    raise
+                input_stack.pop_all()
             try:
                 if grok is not None:
                     grok.stub_mount_points(jail)

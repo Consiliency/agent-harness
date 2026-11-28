@@ -206,17 +206,28 @@ def codex_admission_gate(
             else:
                 return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
             executable = Path(runtime.subject_source)
+        if dependency is None and runtime is None:
+            return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
         if runtime is not None:
             if not isinstance(runtime, seat_codex_runtime.AdmittedStandaloneRuntime):
                 return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
             if executable is None or str(executable) != runtime.subject_source:
                 return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
             runtime.revalidate()
+        elif dependency is not None:
+            if hasattr(dependency, "subject_source") and (
+                executable is None or str(executable) != str(dependency.subject_source)
+            ):
+                return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+            if callable(getattr(dependency, "revalidate", None)):
+                dependency.revalidate()
         if executable is None:
             return seat_admission.Verdict(leg, "refuses", code="seat_provider_unavailable")
         for args in (("exec", "--help"), ("features", "list")):
             if runtime is not None:
                 runtime.revalidate()
+            elif dependency is not None and callable(getattr(dependency, "revalidate", None)):
+                dependency.revalidate()
             done = pi.run_provider(
                 [str(executable), *args],
                 env=dict(env),
@@ -224,6 +235,7 @@ def codex_admission_gate(
                 text=True,
                 timeout=30,
                 **({"standalone_runtime": runtime} if runtime is not None else {}),
+                **({"dependency": dependency} if dependency is not None else {}),
             )
             texts.append(done.stdout if done.returncode == 0 else "")
     except FileNotFoundError:
@@ -260,7 +272,7 @@ CODEX_PROFILE = JailProfile(
         "codex_seat_token_scope_excess", "codex_seat_token_in_output",
         "codex_seat_token_refreshed_in_jail", "codex_seat_cli_shape",
         "codex_seat_tools_unavailable", "codex_seat_unknown_event",
-    }), window=CODEX_WINDOW_ROWS,
+    }), window=CODEX_WINDOW_ROWS, require_projected_runtime=True,
 )
 
 
