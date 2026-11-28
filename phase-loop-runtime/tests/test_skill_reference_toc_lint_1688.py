@@ -52,11 +52,19 @@ _HTML_TYPE6_START = re.compile(
     r"thead|title|tr|track|ul)(?:[ \t]|$|/?>)",
     re.IGNORECASE,
 )
+# CommonMark 0.31.2 §4.6 HTML block type 7 (complete open/close tag alone on a line;
+# cannot interrupt a paragraph; terminates on a blank line).
+_HTML_TAG_NAME = r"[A-Za-z][A-Za-z0-9-]*"
+_HTML_ATTR_NAME = r"[A-Za-z_:][A-Za-z0-9_.:-]*"
+_HTML_ATTR_VAL = r"(?:[^ \t\"'=<>`]+|'[^']*'|\"[^\"]*\")"
+_HTML_ATTR = rf"[ \t]+{_HTML_ATTR_NAME}(?:[ \t]*=[ \t]*{_HTML_ATTR_VAL})?"
+_HTML_TYPE7_START = re.compile(
+    rf"^ {{0,3}}(?:<{_HTML_TAG_NAME}(?:{_HTML_ATTR})*[ \t]*/?>|</{_HTML_TAG_NAME}[ \t]*>)[ \t]*$"
+)
 
 # Inline Markdown stripping patterns for GitHub heading plain-text slugging.
 _INLINE_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 _INLINE_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
-_INLINE_CODE_RE = re.compile(r"(`+)(.+?)\1")
 _INLINE_STRIKE_RE = re.compile(r"(?<!\\)~~(.+?)(?<!\\)~~")
 _INLINE_STRONG_STAR_RE = re.compile(r"(?<!\\)\*\*(.+?)(?<!\\)\*\*")
 _INLINE_EM_STAR_RE = re.compile(r"(?<!\\)\*(.+?)(?<!\\)\*")
@@ -111,19 +119,92 @@ def _commonmark_lines(text: str) -> list[str]:
     return lines
 
 
-def _heading_plain_text(heading: str) -> str:
-    """Render CommonMark inline spans in a heading to plain text for GitHub slugging."""
-    text = _INLINE_LINK_RE.sub(r"\1", heading)
+def _find_matching_backticks(text: str, start: int) -> tuple[int, int] | None:
+    """CommonMark §6.1 code-span scan starting at a backtick run."""
+    n = len(text)
+    end_open = start
+    while end_open < n and text[end_open] == "`":
+        end_open += 1
+    tick_len = end_open - start
+    pos = end_open
+    while pos < n:
+        if text[pos] == "`":
+            close_end = pos
+            while close_end < n and text[close_end] == "`":
+                close_end += 1
+            if close_end - pos == tick_len:
+                return end_open, close_end
+            pos = close_end
+        else:
+            pos += 1
+    return None
+
+
+def _render_non_code_inline(fragment: str) -> str:
+    text = _INLINE_LINK_RE.sub(lambda m: _heading_plain_text(m.group(1)), fragment)
     text = _INLINE_HTML_TAG_RE.sub("", text)
-    # Protect inline-code spans while stripping emphasis/strikethrough outside them.
+    return _strip_emphasis(text)
+
+
+def _heading_plain_text(heading: str) -> str:
+    """Render CommonMark inline spans in a heading to plain text for GitHub slugging.
+
+    Code spans are tokenized first so literal content such as ``<Widget>`` inside
+    backticks is preserved rather than stripped as raw HTML.
+    """
     parts: list[str] = []
-    pos = 0
-    for match in _INLINE_CODE_RE.finditer(text):
-        before = text[pos : match.start()]
-        parts.append(_strip_emphasis(before))
-        parts.append(match.group(2))
-        pos = match.end()
-    parts.append(_strip_emphasis(text[pos:]))
+    buf: list[str] = []
+    i = 0
+    n = len(heading)
+    while i < n:
+        if heading[i] == "\\" and i + 1 < n:
+            buf.append(heading[i : i + 2])
+            i += 2
+            continue
+        if heading[i] == "`":
+            span = _find_matching_backticks(heading, i)
+            if span is not None:
+                if buf:
+                    parts.append(_render_non_code_inline("".join(buf)))
+                    buf.clear()
+                content_start, span_end = span
+                tick_len = content_start - i
+                code = heading[content_start : span_end - tick_len]
+                if len(code) >= 2 and code.startswith(" ") and code.endswith(" ") and code.strip(" "):
+                    code = code[1:-1]
+                parts.append(code)
+                i = span_end
+                continue
+        if heading[i] in ("!", "["):
+            # Handle inline link/image whose label itself may contain code spans.
+            label_start = i + 2 if heading.startswith("![", i) else (i + 1 if heading[i] == "[" else -1)
+            if label_start != -1:
+                j = label_start
+                while j < n:
+                    if heading[j] == "\\" and j + 1 < n:
+                        j += 2
+                        continue
+                    if heading[j] == "`":
+                        inner_span = _find_matching_backticks(heading, j)
+                        if inner_span is not None:
+                            j = inner_span[1]
+                            continue
+                    if heading[j] == "]":
+                        break
+                    j += 1
+                if j + 1 < n and heading[j] == "]" and heading[j + 1] == "(":
+                    close_paren = heading.find(")", j + 2)
+                    if close_paren != -1:
+                        if buf:
+                            parts.append(_render_non_code_inline("".join(buf)))
+                            buf.clear()
+                        parts.append(_heading_plain_text(heading[label_start:j]))
+                        i = close_paren + 1
+                        continue
+        buf.append(heading[i])
+        i += 1
+    if buf:
+        parts.append(_render_non_code_inline("".join(buf)))
     return "".join(parts)
 
 
@@ -203,7 +284,7 @@ def _fence_language(info: str) -> str:
     return _ASCII_WS_SPLIT_RE.split(stripped, maxsplit=1)[0].lower()
 
 
-def _html_block_end_kind(line: str) -> str | None:
+def _html_block_end_kind(line: str, *, allow_type7: bool = True) -> str | None:
     if _HTML_TYPE1_START.match(line):
         return "type1"
     if _HTML_TYPE2_START.match(line):
@@ -216,7 +297,25 @@ def _html_block_end_kind(line: str) -> str | None:
         return "type5"
     if _HTML_TYPE6_START.match(line):
         return "type6"
+    if allow_type7 and _HTML_TYPE7_START.match(line):
+        return "type6"
     return None
+
+
+def _line_interrupts_paragraph(line: str) -> bool:
+    """Return True if ``line`` can interrupt a CommonMark paragraph (not blank, not lazy continuation)."""
+    if not line.strip(" \t"):
+        return True
+    if _ATX_HEADING_RE.match(line) or _THEMATIC_BREAK_RE.match(line) or _BLOCKQUOTE_RE.match(line):
+        return True
+    open_match = _OPEN_FENCE_RE.match(line)
+    if open_match and not (open_match.group(2)[0] == "`" and "`" in open_match.group(3)):
+        return True
+    if _html_block_end_kind(line, allow_type7=False) is not None:
+        return True
+    if _LIST_START_RE.match(line):
+        return True
+    return False
 
 
 def _html_block_closed(kind: str, line: str) -> bool:
@@ -374,8 +473,8 @@ def _parse_document(
                 i += 1
                 continue
 
-        # 7. HTML block start (CommonMark §4.6).
-        html_kind = _html_block_end_kind(line)
+        # 7. HTML block start (CommonMark §4.6; type 7 cannot interrupt a paragraph).
+        html_kind = _html_block_end_kind(line, allow_type7=not para_lines)
         if html_kind is not None:
             para_lines.clear()
             if html_kind == "type6" or not _html_block_closed(html_kind, line):
@@ -436,27 +535,49 @@ def _parse_document(
 
             is_bullet_item = marker in {"-", "*", "+"}
             capture_bullet = (in_contents or collect_nested_bullets) and is_bullet_item
-            if capture_bullet and rest_after_ws:
-                toc_bullets.append((lineno, rest_after_ws.strip(" \t")))
 
             item_lines: list[str] = [first_body_line]
+            first_para_open = bool(rest_after_ws) and not _line_interrupts_paragraph(first_body_line)
             i += 1
             pending_blanks: list[str] = []
             while i < total:
                 next_line = lines[i]
                 if not next_line.strip(" \t"):
                     pending_blanks.append("")
+                    first_para_open = False
                     i += 1
                     continue
                 if _leading_columns(next_line) >= content_indent:
                     item_lines.extend(pending_blanks)
                     pending_blanks.clear()
-                    item_lines.append(_strip_leading_columns(next_line, content_indent))
+                    stripped_next = _strip_leading_columns(next_line, content_indent)
+                    if first_para_open and (
+                        _line_interrupts_paragraph(stripped_next) or _SETEXT_UNDERLINE_RE.match(stripped_next)
+                    ):
+                        first_para_open = False
+                    item_lines.append(stripped_next)
+                    i += 1
+                    continue
+                # CommonMark §5.2 lazy paragraph continuation line (only while the first paragraph is still open).
+                if first_para_open and not pending_blanks and not _line_interrupts_paragraph(next_line):
+                    item_lines.append(next_line.strip(" \t"))
                     i += 1
                     continue
                 break
             # Rewind trailing blank lines that were not followed by indented item content.
             i -= len(pending_blanks)
+
+            if capture_bullet and rest_after_ws:
+                if _line_interrupts_paragraph(first_body_line):
+                    bullet_text = rest_after_ws.strip(" \t")
+                else:
+                    para_parts: list[str] = [item_lines[0].strip(" \t")]
+                    for cont in item_lines[1:]:
+                        if not cont.strip(" \t") or _line_interrupts_paragraph(cont) or _SETEXT_UNDERLINE_RE.match(cont):
+                            break
+                        para_parts.append(cont.strip(" \t"))
+                    bullet_text = " ".join(part for part in para_parts if part)
+                toc_bullets.append((lineno, bullet_text))
 
             nested = _parse_document(
                 "\n".join(item_lines),
@@ -751,6 +872,49 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         )
         self.assertEqual(reference_toc_findings(setext, "fixture/setext.md"), [])
 
+        # 7. Type-7 raw HTML block (`<widget>`) hides `## Ghost` inside it.
+        html_type7 = (
+            "# Ref\n\n"
+            "## Contents\n\n"
+            "- [Ghost](#ghost)\n\n"
+            "<widget>\n"
+            "## Ghost\n"
+            "</widget>\n"
+        )
+        findings = reference_toc_findings(html_type7, "fixture/html-type7.md")
+        self.assertEqual(len(findings), 1)
+        self.assertIn("#ghost", findings[0].message)
+
+        # 8. Wrapped TOC bullets validate the full rendered bullet text (both indented and lazy wrap).
+        wrapped_stale = (
+            "# Ref\n\n"
+            "## Contents\n\n"
+            "- Real\n"
+            "  stale words\n\n"
+            "## Real\n"
+        )
+        findings = reference_toc_findings(wrapped_stale, "fixture/wrapped-stale.md")
+        self.assertEqual(len(findings), 1)
+        self.assertIn("Real stale words", findings[0].message)
+
+        wrapped_match = (
+            "# Ref\n\n"
+            "## Contents\n\n"
+            "- Real\n"
+            "  stale words\n\n"
+            "## Real stale words\n"
+        )
+        self.assertEqual(reference_toc_findings(wrapped_match, "fixture/wrapped-match.md"), [])
+
+        lazy_wrapped_match = (
+            "# Ref\n\n"
+            "## Contents\n\n"
+            "- Real\n"
+            "lazy words\n\n"
+            "## Real lazy words\n"
+        )
+        self.assertEqual(reference_toc_findings(lazy_wrapped_match, "fixture/lazy-wrapped-match.md"), [])
+
     def test_anchor_slug_allocation_emphasis_blockquotes_and_template_separation(self) -> None:
         # 1. Heading inside an md template satisfies plain bullet, NEVER #anchor.
         tpl_anchor = (
@@ -767,7 +931,8 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         self.assertIn("#example", findings[0].message)
 
         # 2. Emphasis markers (`_Real_`, `*Star*`, `**Bold**`) strip cleanly while
-        # intraword underscores (`foo_bar`) are preserved; blockquote headings (`> ## Quoted`) resolve.
+        # intraword underscores (`foo_bar`) and code-span literals (``Call `<Widget>` ``)
+        # are preserved; blockquote headings (`> ## Quoted`) resolve.
         formatted = (
             "# Ref\n\n"
             "## Contents\n\n"
@@ -775,11 +940,13 @@ class SkillReferenceTocLintTest(unittest.TestCase):
             "- [Star](#star)\n"
             "- [Bold](#bold)\n"
             "- [Snake](#foo_bar)\n"
+            "- [Widget](#call-widget)\n"
             "- [Quoted](#quoted)\n\n"
             "## _Real_\n\n"
             "## *Star*\n\n"
             "## **Bold**\n\n"
             "## foo_bar\n\n"
+            "## Call `<Widget>`\n\n"
             "> ## Quoted\n"
         )
         self.assertEqual(reference_toc_findings(formatted, "fixture/formatted.md"), [])
