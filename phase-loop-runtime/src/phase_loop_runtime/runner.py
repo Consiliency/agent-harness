@@ -1265,10 +1265,11 @@ def _governed_not_live_warning(run_mode: str) -> str | None:
             "phase-loop: NOTE — run_mode=governed: the planning and pre-merge gates are "
             "LIVE and FAIL-CLOSED. The pre-merge gate reviews the exact staged index "
             "(git diff --cached) inside the closeout, before the commit, via the real "
-            "subscription panel (codex+gemini+Claude TUI when available). A block, an "
-            "unparseable verdict, or no disjoint reviewer HOLDS the merge as a non-human "
-            "review_gate_block. Caveat: a held phase is not auto-repaired (the "
-            "findings-driven re-dispatch is the remaining thread). Track model-routing-v2."
+            "subscription panel (codex+gemini+claude+grok when available; Claude defaults "
+            "to print). A block, an unparseable verdict, or no disjoint reviewer HOLDS "
+            "the merge as a non-human review_gate_block. Caveat: a held phase is not "
+            "auto-repaired (the findings-driven re-dispatch is the remaining thread). "
+            "Track model-routing-v2."
         )
     return None
 

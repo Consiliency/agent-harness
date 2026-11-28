@@ -646,3 +646,58 @@ class TestIgnoredOutputAudit(unittest.TestCase):
                     self.assertEqual(sum(l.startswith("action: ") for l in lines), 1, (entry, argv, lines))
                     self.assertTrue(lines[-1].startswith("action: "), (entry, argv, lines))
                     self.assertIn("terminal_status=blocked and blocker_class=dirty_worktree_conflict", lines[-1])
+
+    def test_help_flag_prints_usage_and_exits_zero_without_running_audit(self):
+        """agent-harness#1613: --help / -h prints usage and exits 0 without touching
+        the working directory or running declared producers, through both main and
+        console_main."""
+        import contextlib
+        import io
+        import sys
+        import phase_loop_runtime.closeout_classifier as cc
+
+        def forbidden(*_a, **_k):
+            raise AssertionError("audit or producer recording must not run for --help")
+
+        orig_audit = cc.audit_ignored_outputs
+        orig_record = cc.generated_outputs.run_declared_producers
+        cc.audit_ignored_outputs = forbidden
+        cc.generated_outputs.run_declared_producers = forbidden
+        try:
+            for entry in ("module", "console"):
+                for argv in (
+                    ["--help"],
+                    ["-h"],
+                    ["--repo", "/nonexistent", "--record-outputs", "--help"],
+                ):
+                    buf = io.StringIO()
+                    with contextlib.redirect_stdout(buf):
+                        if entry == "console":
+                            saved = sys.argv
+                            sys.argv = ["phase-loop-closeout-audit", *argv]
+                            try:
+                                code = cc.console_main()
+                            finally:
+                                sys.argv = saved
+                        else:
+                            code = cc.main(argv)
+                    out = buf.getvalue()
+                    self.assertEqual(code, 0, (entry, argv, out))
+                    self.assertIn("usage: phase-loop-closeout-audit", out)
+                    self.assertIn("--repo", out)
+                    self.assertIn("--record-outputs", out)
+                    self.assertIn("--phase", out)
+                    self.assertNotIn("action: exit", out)
+        finally:
+            cc.audit_ignored_outputs = orig_audit
+            cc.generated_outputs.run_declared_producers = orig_record
+
+    def test_help_flag_as_option_value_does_not_trigger_help(self):
+        """Passing -h or --help as the value of --phase or --repo is treated as that
+        option's value, not a help request."""
+        import phase_loop_runtime.closeout_classifier as cc
+
+        self.assertFalse(cc._wants_help(["--phase", "-h"]))
+        self.assertFalse(cc._wants_help(["--repo", "--help"]))
+        self.assertFalse(cc._wants_help(["--", "--help"]))
+        self.assertTrue(cc._wants_help(["--phase", "CORE", "--help"]))
