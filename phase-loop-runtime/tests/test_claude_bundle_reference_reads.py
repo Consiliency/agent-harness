@@ -161,6 +161,15 @@ class ClaudeBundleReferenceReadsTest(unittest.TestCase):
             (linked_target / "loop").symlink_to(linked_target, target_is_directory=True)
             self.assertEqual(digest("claude-execute-phase", exec_dir), after_linked)
 
+            # Distinct non-cyclic directory alias (two paths to the same directory) changes the digest.
+            real_sub = exec_dir / "scripts" / "a_real"
+            real_sub.mkdir()
+            (real_sub / "helper.sh").write_text("#!/bin/sh\necho alias-helper\n", encoding="utf-8")
+            before_alias = digest("claude-execute-phase", exec_dir)
+            (exec_dir / "scripts" / "z_alias").symlink_to(real_sub, target_is_directory=True)
+            after_alias = digest("claude-execute-phase", exec_dir)
+            self.assertNotEqual(after_alias, before_alias)
+
 
 if __name__ == "__main__":
     unittest.main()

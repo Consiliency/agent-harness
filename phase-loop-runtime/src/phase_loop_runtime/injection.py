@@ -687,34 +687,40 @@ def _skill_bodies(
 def _iter_subdir_files(base: Path, *, ignore_bytecode: bool) -> list[tuple[str, Path]]:
     """Yield ``(relpath_under_base, path)`` following directory symlinks (matching ``copytree``).
 
-    Tracks visited ``(st_dev, st_ino)`` directory identities so cyclic symlinks terminate
-    without looping.
+    Tracks directory ``(st_dev, st_ino)`` identities along the current ancestry so cyclic
+    symlinks terminate while distinct non-cyclic directory aliases (e.g. ``scripts/z_alias``
+    pointing to ``scripts/a_real``) are each included under their own relative paths.
     """
     if not base.is_dir():
         return []
     entries: list[tuple[str, Path]] = []
-    visited: set[tuple[int, int]] = set()
-    for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
-        dir_p = Path(dirpath)
+    stack: list[tuple[Path, frozenset[tuple[int, int]]]] = [(base, frozenset())]
+    while stack:
+        dir_p, ancestors = stack.pop()
         try:
             st = os.stat(dir_p)
         except OSError:
-            dirnames[:] = []
             continue
         ident = (st.st_dev, st.st_ino)
-        if ident in visited:
-            dirnames[:] = []
+        if ident in ancestors:
             continue
-        visited.add(ident)
-        dirnames[:] = sorted(
-            d for d in dirnames if not (ignore_bytecode and d == "__pycache__")
-        )
-        for filename in sorted(filenames):
-            if ignore_bytecode and filename.endswith(".pyc"):
-                continue
-            file_p = dir_p / filename
-            if file_p.is_file():
-                entries.append((file_p.relative_to(base).as_posix(), file_p))
+        next_ancestors = ancestors | {ident}
+        try:
+            children = sorted(dir_p.iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        subdirs: list[Path] = []
+        for child in children:
+            name = child.name
+            if child.is_dir():
+                if not (ignore_bytecode and name == "__pycache__"):
+                    subdirs.append(child)
+            elif child.is_file():
+                if ignore_bytecode and name.endswith(".pyc"):
+                    continue
+                entries.append((child.relative_to(base).as_posix(), child))
+        for sub in reversed(subdirs):
+            stack.append((sub, next_ancestors))
     return entries
 
 
