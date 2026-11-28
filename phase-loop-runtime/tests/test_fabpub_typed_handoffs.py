@@ -1038,6 +1038,89 @@ def test_qa_interruption_before_ambiguity_append_leaves_observation_durable_and_
     key = next(iter(obs_rows))
     assert m.live.post_ambiguity_effect_refusal(store_root, key) is not None
 
+    # Round-3 P2: retry through owner recovery completes the adapter-exception
+    # row referenced by the authenticated observation (not unsealed-adapter-start-owner)
+    # and replays the preserved PR URL on both the recovery retry and later retries.
+    monkeypatch.setattr(m.evidence.BrokerEvidenceStore, "_append_locked", original_append)
+    pr_url = "https://gh/pr/1"
+    for retry in (publish(), publish()):
+        assert len(adapter.calls) == 1
+        assert retry["status"] == "publication_blocked", retry
+        assert retry["reason"] == "effect_observed_after_ambiguity", retry
+        assert retry["provider_call_made"] is False
+        assert retry["observed_after_ambiguity"]["durable"] is True
+        assert retry["observed_after_ambiguity"]["evidence_reference"] == pr_url
+        handoff = retry["handoff"]
+        assert handoff["required_disposition"] == "observed_landed"
+        assert handoff["forbidden_disposition"] == "attested_not_landed"
+        assert handoff["attestation_inputs"]["evidence_url"] == pr_url
+    assert _evidence_states(repo) == ["provider_call_in_flight", "outcome_ambiguous_blocked"]
+    replayed = m.evidence.BrokerEvidenceStore(store_root).replay()[key]
+    assert replayed.evidence_reference == "adapter-exception"
+
+
+@pytest.mark.parametrize("fence_at", ["during_observation", "after_observation"])
+def test_qa_fence_during_observation_or_before_ambiguity_append_refuses_without_appending(
+    tmp_path, monkeypatch, fence_at,
+):
+    """Round-3 P1: WriterGenerationBlocked (an OSError subclass) during the
+    observation write or right before the ambiguity append must propagate rather
+    than being caught by ``except OSError`` and appending under a DRAINING latch."""
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+
+    original_seal = m.verbs.BrokerService._record_terminal_and_seal_owner
+
+    def wrapped_seal(self, *args, **kwargs):
+        try:
+            return original_seal(self, *args, **kwargs)
+        except m.live.WriterGenerationBlocked:
+            _latch(repo).resume_active()
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "_record_terminal_and_seal_owner", wrapped_seal)
+
+    original_obs_append = m.evidence.append_post_ambiguity_observation
+
+    def fenced_obs_append(root, observation, *, authorize=None, lock_held=False):
+        if fence_at == "during_observation":
+            _drain(repo)
+            return original_obs_append(root, observation, authorize=authorize, lock_held=lock_held)
+        out = original_obs_append(root, observation, authorize=authorize, lock_held=lock_held)
+        _drain(repo)
+        return out
+
+    monkeypatch.setattr(m.evidence, "append_post_ambiguity_observation", fenced_obs_append)
+
+    first = publish()
+    pr_url = "https://gh/pr/1"
+    assert len(adapter.calls) == 1
+    assert first["status"] == "publication_blocked", first
+    assert first["reason"] == "repository_publication_authority_refused", first
+    assert first["provider_call_made"] is True
+    assert first["pr_url"] == pr_url
+    assert _evidence_states(repo) == ["provider_call_in_flight"]
+
+    store_root = _store_root(repo)
+    obs_rows = m.evidence.read_post_ambiguity_observations(store_root)
+    if fence_at == "during_observation":
+        assert obs_rows == {}
+    else:
+        assert obs_rows and obs_rows is not m.evidence.UNREADABLE
+        # Once ACTIVE again, retrying through owner recovery completes the
+        # adapter-exception row and surfaces the saved PR URL immediately.
+        _latch(repo).resume_active()
+        retry = publish()
+        assert len(adapter.calls) == 1
+        assert retry["status"] == "publication_blocked", retry
+        assert retry["reason"] == "effect_observed_after_ambiguity", retry
+        assert retry["provider_call_made"] is False
+        assert retry["handoff"]["attestation_inputs"]["evidence_url"] == pr_url
+        assert retry["handoff"]["forbidden_disposition"] == "attested_not_landed"
+
 
 def test_qa_non_durable_observation_preserves_pr_url_and_warns_honestly(tmp_path, monkeypatch):
     """Round-2 P2: when appending the post-ambiguity observation fails with

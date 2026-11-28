@@ -1076,15 +1076,73 @@ class BrokerService:
                     )
                 if current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
                     self.evidence_store._append_locked(
-                        EvidenceRecord(
-                            current_owner.effect_key,
-                            TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED,
-                            "unsealed-adapter-start-owner",
-                        )
+                        self._recovery_ambiguity_record(current_owner)
                     )
                 return True
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
+
+    @staticmethod
+    def _evidence_row_digest(record: EvidenceRecord) -> str:
+        """Exact sha256 of ``record``'s serialized ``evidence.jsonl`` line."""
+        return hashlib.sha256(
+            json.dumps(asdict(record), sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def _recovery_ambiguity_record(
+        self, current_owner: AdapterStartOwnership
+    ) -> EvidenceRecord:
+        """Choose the ambiguity row owner recovery should write for ``current_owner``.
+
+        agent-harness#1701: ``_record_ambiguity_with_observation`` persists a
+        ``PostAmbiguityObservation`` bound to the ``adapter-exception`` row's
+        digest before appending that row.  If a crash, generation fence, or I/O
+        error interrupts between the two writes, an unsealed owner left behind
+        with an authenticated observation matching ``current_owner`` and that
+        digest completes the ``adapter-exception`` row so retries replay the
+        preserved PR URL instead of mismatching on ``unsealed-adapter-start-owner``.
+        """
+        adapter_exception = EvidenceRecord(
+            current_owner.effect_key,
+            TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED,
+            "adapter-exception",
+        )
+        expected_digest = self._evidence_row_digest(adapter_exception)
+        observations = evidence_module.read_post_ambiguity_observations(
+            self.evidence_store.root
+        )
+        if observations is not evidence_module.UNREADABLE:
+            for obs in observations.get(current_owner.effect_key, ()):
+                if (
+                    obs.transaction_id == current_owner.transaction_id
+                    and obs.owner_nonce == current_owner.owner_nonce
+                    and obs.head_sha == current_owner.committed_head
+                    and obs.ambiguity_digest == expected_digest
+                ):
+                    return adapter_exception
+        return EvidenceRecord(
+            current_owner.effect_key,
+            TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED,
+            "unsealed-adapter-start-owner",
+        )
+
+    def _replay_recovered_observation(
+        self,
+        request: BrokerRequest,
+        key: str,
+        blocked_owner: AdapterStartOwnership,
+    ) -> BrokerExecutionResult | None:
+        """Replay an observation-backed row just completed by owner recovery."""
+        if blocked_owner.effect_key != key:
+            return None
+        current = self.evidence_store.replay().get(key)
+        if (
+            current is not None
+            and current.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
+            and self._stored_post_ambiguity_observation(key) is not None
+        ):
+            return self._replay(request, key, current)
+        return None
 
     def _record_terminal_and_seal_owner(
         self,
@@ -1213,6 +1271,7 @@ class BrokerService:
         discarding the returned PR URL.
         """
         import fcntl
+        from .live import WriterGenerationBlocked
 
         root = self.evidence_store.root
         key = record.idempotency_key
@@ -1236,9 +1295,7 @@ class BrokerService:
                 ambiguous_record = EvidenceRecord(
                     key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"
                 )
-                expected_digest = hashlib.sha256(
-                    json.dumps(asdict(ambiguous_record), sort_keys=True).encode("utf-8")
-                ).hexdigest()
+                expected_digest = self._evidence_row_digest(ambiguous_record)
                 observation = PostAmbiguityObservation(
                     idempotency_key=key,
                     observed_state=record.state.value,
@@ -1255,6 +1312,8 @@ class BrokerService:
                         root, repository_identity=owner.repository_identity
                     )
                     owner_bound = current_owner == owner and not current_owner.sealed
+                except WriterGenerationBlocked:
+                    raise
                 except OSError:
                     owner_bound = False
                 if owner_bound:
@@ -1265,10 +1324,13 @@ class BrokerService:
                             authorize=self.evidence_store._authorize,
                             lock_held=True,
                         )
+                    except WriterGenerationBlocked:
+                        raise
                     except OSError:
                         durable = False
                     if durable:
                         observation = PostAmbiguityObservation(**observation.row(), durable=True)
+                self.evidence_store._authorize()
                 terminal = self.evidence_store._append_locked(ambiguous_record)
                 return terminal, observation
             finally:
@@ -1653,6 +1715,9 @@ class BrokerService:
         )
         if existing_owner is not None and not existing_owner.sealed:
             if self._block_unsealed_owner(existing_owner):
+                replayed = self._replay_recovered_observation(request, key, existing_owner)
+                if replayed is not None:
+                    return replayed
                 raise _unsealed_owner_refusal(existing_owner)
         if self.evidence_store.epoch_blocked:
             raise self._epoch_blocked_refusal()
@@ -1721,6 +1786,9 @@ class BrokerService:
                 if foreign_owner is None:
                     break
                 if self._block_unsealed_owner(foreign_owner):
+                    replayed = self._replay_recovered_observation(request, key, foreign_owner)
+                    if replayed is not None:
+                        return replayed
                     raise _unsealed_owner_refusal(foreign_owner)
             else:
                 # A retired owner was replaced by another live publisher between the
