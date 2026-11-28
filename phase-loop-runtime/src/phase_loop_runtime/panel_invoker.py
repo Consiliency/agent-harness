@@ -5018,8 +5018,8 @@ def _require_safe_dependency_profile_destinations(
     """
     if dependency is None:
         return
-    protected = {
-        *(_SEAT_PROFILE_PROTECTED_DESTINATIONS),
+    static_protected = set(_SEAT_PROFILE_PROTECTED_DESTINATIONS)
+    caller_protected = {
         os.path.abspath(cwd),
         os.path.abspath(private_home),
         *(os.path.abspath(path) for path in readonly_paths),
@@ -5028,7 +5028,8 @@ def _require_safe_dependency_profile_destinations(
         *(os.path.abspath(path) for path in output_dirs),
     }
     if broker_socket is not None:
-        protected.add(os.path.abspath(broker_socket))
+        caller_protected.add(os.path.abspath(broker_socket))
+    protected = static_protected | caller_protected
     subject_destination = str(getattr(dependency, "subject_destination"))
     codex_allowed_slots: frozenset[str] = frozenset()
     if getattr(dependency, "provider", None) == "codex":
@@ -5037,7 +5038,7 @@ def _require_safe_dependency_profile_destinations(
 
         if subject_destination == CODEX_RUNTIME_DESTINATIONS[0]:
             codex_allowed_slots = frozenset((*CODEX_RUNTIME_DESTINATIONS, *_runtime_directories()))
-    non_runtime_protected = protected - {"/run/phase-loop-seat"}
+    non_runtime_protected = (static_protected - {"/run/phase-loop-seat"}) | caller_protected
     for entry in getattr(dependency, "entries"):
         destination = str(entry.destination)
         if destination == subject_destination == "/run/phase-loop-seat/provider":

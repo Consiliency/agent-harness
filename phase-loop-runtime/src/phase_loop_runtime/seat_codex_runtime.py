@@ -534,12 +534,27 @@ def _walk_trusted_dir(
         raise
 
 
+def _logical_remaining_depth(parts: Sequence[str]) -> int:
+    norm: list[str] = []
+    for item in parts:
+        if item == ".":
+            continue
+        if item == "..":
+            if norm:
+                norm.pop()
+            continue
+        norm.append(item)
+    return len(norm)
+
+
 def _open_trusted_leaf(
     path: Path,
     owners: frozenset[int],
     *,
     follow_symlinks: bool = True,
     follow_leaf_symlink: bool = True,
+    no_symlink_tail_dirs: int = 0,
+    _symlink_min_depth_out: list[int | None] | None = None,
     what: str = "runtime file",
 ) -> tuple[Path, int, os.stat_result]:
     """Walk ``path`` from ``/`` checking every ancestor and open its regular, unlinked leaf."""
@@ -556,6 +571,7 @@ def _open_trusted_leaf(
     root_path, root_fd, root_id = _open_root_dir(owners)
     stack: list[tuple[str, int, RuntimeDirIdentity]] = [(root_path, root_fd, root_id)]
     hops = 0
+    last_symlink_min_depth: int | None = None
     try:
         while True:
             part = pending.pop(0)
@@ -585,6 +601,9 @@ def _open_trusted_leaf(
                             raise _identity("too many symbolic links in runtime path") from exc
                         if "\x00" in link_target:
                             raise _identity("runtime symlink target contains NUL byte") from exc
+                        rem_depth = _logical_remaining_depth(pending)
+                        if last_symlink_min_depth is None or rem_depth < last_symlink_min_depth:
+                            last_symlink_min_depth = rem_depth
                         target_parts = [item for item in link_target.split("/") if item]
                         if link_target.startswith("/"):
                             while len(stack) > 1:
@@ -617,6 +636,7 @@ def _open_trusted_leaf(
                         raise _identity("too many symbolic links in runtime path") from exc
                     if "\x00" in link_target:
                         raise _identity("runtime symlink target contains NUL byte") from exc
+                    last_symlink_min_depth = None
                     target_parts = [item for item in link_target.split("/") if item]
                     if link_target.startswith("/"):
                         while len(stack) > 1:
@@ -632,6 +652,14 @@ def _open_trusted_leaf(
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise _identity(f"{what} {next_path!r} is not one regular, unlinked file")
                 _require_trusted(info, owners, f"{what} {next_path!r}")
+                if (
+                    no_symlink_tail_dirs > 0
+                    and last_symlink_min_depth is not None
+                    and last_symlink_min_depth <= no_symlink_tail_dirs
+                ):
+                    raise _identity(f"{what} target or bin directory cannot be a symbolic link")
+                if _symlink_min_depth_out is not None:
+                    _symlink_min_depth_out.append(last_symlink_min_depth)
                 return Path(next_path), leaf_fd, info
             except BaseException:
                 _close_quietly(leaf_fd)
@@ -694,11 +722,13 @@ def resolve_trusted_codex_lookup(
     current = Path(found)
     chain: list[tuple[str, RuntimeStatIdentity]] = []
     for _hop in range(5):
+        symlink_depth: list[int | None] = []
         canonical, fd, info = _open_trusted_leaf(
             current,
             owners,
             follow_symlinks=True,
             follow_leaf_symlink=True,
+            _symlink_min_depth_out=symlink_depth,
             what="codex lookup entry",
         )
         try:
@@ -723,6 +753,7 @@ def resolve_trusted_codex_lookup(
                             owners,
                             follow_symlinks=True,
                             follow_leaf_symlink=False,
+                            no_symlink_tail_dirs=2,
                             what="codex native image",
                         )
                     except seat_jail.SeatSandboxRefused as exc:
@@ -743,6 +774,8 @@ def resolve_trusted_codex_lookup(
                 return native_path, tuple(chain)
             if canonical.name.lower() != "codex" or not _is_elf_fd(fd):
                 raise _unavailable("codex executable is not a native ELF image")
+            if symlink_depth and symlink_depth[0] is not None and symlink_depth[0] <= 2:
+                raise _identity("codex runtime target or bin directory cannot be a symbolic link")
             return canonical, tuple(chain)
         finally:
             _close_quietly(fd)

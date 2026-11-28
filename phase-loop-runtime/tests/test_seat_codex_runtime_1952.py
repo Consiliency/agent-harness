@@ -701,3 +701,99 @@ def test_qualification_closes_memfds_when_direct_codex_build_fails(tmp_path, mon
     for fd in allocated:
         with pytest.raises(OSError):
             os.fstat(fd)
+
+
+def test_path_discovery_refuses_owned_symlink_at_target_or_bin_dir(tmp_path):
+    from phase_loop_runtime.seat_subject import ExecutableDependencyError, resolve_seat_subject
+
+    real_target = _make_target(tmp_path, "real-target")
+    good = resolve_seat_subject("codex", {"PATH": str(real_target / "bin")})
+    assert good.subject_path == real_target / "bin/codex"
+
+    sym_target = tmp_path / "sym-target"
+    os.symlink(real_target, sym_target)
+    with pytest.raises(ExecutableDependencyError):
+        resolve_seat_subject("codex", {"PATH": str(sym_target / "bin")})
+
+    target_with_sym_bin = tmp_path / "sym-bin-target"
+    target_with_sym_bin.mkdir(mode=0o755)
+    os.symlink(real_target / "bin", target_with_sym_bin / "bin")
+    with pytest.raises(ExecutableDependencyError):
+        resolve_seat_subject("codex", {"PATH": str(target_with_sym_bin / "bin")})
+
+    # Also through the npm codex.js launcher route when vendor/<triple> or bin is a symlink.
+    machine = os.uname().machine
+    triple = f"{machine}-unknown-linux-musl"
+    pkg = tmp_path / "npm-pkg"
+    (pkg / "bin").mkdir(parents=True, mode=0o755)
+    launcher = pkg / "bin/codex.js"
+    launcher.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    path_dir = tmp_path / "npm-path"
+    path_dir.mkdir(mode=0o755)
+    os.symlink(launcher, path_dir / "codex")
+    vendor = pkg / "vendor"
+    vendor.mkdir(mode=0o755)
+    os.symlink(real_target, vendor / triple)
+    with pytest.raises(ExecutableDependencyError):
+        resolve_seat_subject("codex", {"PATH": str(path_dir)})
+
+
+def test_qualification_closes_first_memfd_and_resets_egress_on_partial_allocation(tmp_path, monkeypatch):
+    import contextlib
+    from types import SimpleNamespace
+    from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime import seat_jail, seat_jail_qualification as qualification
+
+    allocated: list[int] = []
+    real_memfd = seat_jail.memfd_with
+
+    def _fail_second_memfd(name: str, data: bytes) -> int:
+        if allocated:
+            raise OSError("injected second memfd allocation failure")
+        fd = real_memfd(name, data)
+        allocated.append(fd)
+        return fd
+
+    monkeypatch.setattr(seat_jail, "memfd_with", _fail_second_memfd)
+    monkeypatch.setattr(qualification.seat_uid, "subordinate_range", lambda _: SimpleNamespace(count=65536))
+    monkeypatch.setattr(qualification.seat_uid, "lease_seat_id", lambda _: contextlib.nullcontext(7))
+    monkeypatch.setattr(qualification.sandbox_egress, "isolated_network", lambda **k: contextlib.nullcontext(("fixture",)))
+    monkeypatch.setattr(qualification.seat_uid, "holder_pid_from_prefix", lambda _: 42)
+    before_prefix = pi._EGRESS_LAUNCH_PREFIX.get()
+    hook_token = seat_jail._QUALIFICATION_PROBE_SUBJECT.set(lambda _leg: (Path("/unused"), None))
+    try:
+        with pytest.raises(OSError, match="injected second memfd allocation failure"):
+            qualification._run_probe_in_jail("codex", tmp_path / "qual", {}, None, None)
+    finally:
+        seat_jail._QUALIFICATION_PROBE_SUBJECT.reset(hook_token)
+    assert pi._EGRESS_LAUNCH_PREFIX.get() == before_prefix
+    assert len(allocated) == 1
+    with pytest.raises(OSError):
+        os.fstat(allocated[0])
+
+
+def test_codex_dependency_destination_still_rejects_caller_supplied_seat_root(tmp_path):
+    from types import SimpleNamespace
+    from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime import sandbox_egress
+    from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
+
+    dep = SimpleNamespace(
+        provider="codex",
+        subject_destination=CODEX_RUNTIME_DESTINATIONS[0],
+        entries=tuple(SimpleNamespace(destination=dest) for dest in CODEX_RUNTIME_DESTINATIONS),
+    )
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified):
+        pi._require_safe_dependency_profile_destinations(
+            dep,
+            cwd="/run/phase-loop-seat",
+            private_home=str(tmp_path / "home"),
+        )
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified):
+        pi._require_safe_dependency_profile_destinations(
+            dep,
+            cwd=str(tmp_path / "work"),
+            private_home=str(tmp_path / "home"),
+            readonly_paths=("/run/phase-loop-seat",),
+        )

@@ -475,48 +475,43 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
         with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
                 sandbox_egress.isolated_network(timeout_s=900, required=True, seat_uid_map=True) as egress:
             token = pi._EGRESS_LAUNCH_PREFIX.set(tuple(egress))
-            holder = seat_uid.holder_pid_from_prefix(egress)
-            probe_subject_hook = seat_jail._QUALIFICATION_PROBE_SUBJECT.get()
-            with contextlib.ExitStack() as input_stack:
-                bundle_fd = seat_jail.memfd_with("b", b"B")
-                if probe_subject_hook is None:
+            try:
+                holder = seat_uid.holder_pid_from_prefix(egress)
+                with contextlib.ExitStack() as input_stack:
+                    bundle_fd = seat_jail.memfd_with("b", b"B")
                     input_stack.callback(os.close, bundle_fd)
-                instructions_fd = seat_jail.memfd_with("i", b"I")
-                if probe_subject_hook is None:
+                    instructions_fd = seat_jail.memfd_with("i", b"I")
                     input_stack.callback(os.close, instructions_fd)
-                token_fd = seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None
-                if token_fd is not None and probe_subject_hook is None:
-                    input_stack.callback(os.close, token_fd)
-                try:
+                    token_fd = seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None
+                    if token_fd is not None:
+                        input_stack.callback(os.close, token_fd)
                     jail = seat_jail.build_seat_jail(
                         leg, seat_dir, provider or Path("/usr/bin/python3"), tree=tree,
                         bundle_memfd=bundle_fd,
                         instructions_memfd=instructions_fd,
                         token_fd=token_fd,
                         seat_ids=(n, n), **shape)
-                except BaseException:
-                    pi._EGRESS_LAUNCH_PREFIX.reset(token)
-                    raise
-                input_stack.pop_all()
-            try:
-                if grok is not None:
-                    grok.stub_mount_points(jail)
-                if mutate is not None:
-                    mutate(jail)
-                else:
-                    # The probe runs in the canonical jail and nowhere else.
-                    pi._require_canonical_jail(jail)
-                if getattr(jail, "standalone_runtime", None) is not None:
-                    seat_jail.verify_standalone_runtime_projection(jail)
-                prefix = pi._compose_seat_jail_prefix(jail)
-                done = subprocess.run(
-                    [*prefix, "/usr/bin/python3", "-I", "-c", _PROBE_SOURCE, json.dumps(config)],
-                    capture_output=True, text=True, timeout=600, pass_fds=jail.pass_fds,
-                    env=pi._jail_launch_env(), stdin=subprocess.DEVNULL)
+                    input_stack.pop_all()
+                try:
+                    if grok is not None:
+                        grok.stub_mount_points(jail)
+                    if mutate is not None:
+                        mutate(jail)
+                    else:
+                        # The probe runs in the canonical jail and nowhere else.
+                        pi._require_canonical_jail(jail)
+                    if getattr(jail, "standalone_runtime", None) is not None:
+                        seat_jail.verify_standalone_runtime_projection(jail)
+                    prefix = pi._compose_seat_jail_prefix(jail)
+                    done = subprocess.run(
+                        [*prefix, "/usr/bin/python3", "-I", "-c", _PROBE_SOURCE, json.dumps(config)],
+                        capture_output=True, text=True, timeout=600, pass_fds=jail.pass_fds,
+                        env=pi._jail_launch_env(), stdin=subprocess.DEVNULL)
+                finally:
+                    seat_jail.close_jail_fds(jail)
+                    for parent in (review, seat_dir):
+                        seat_uid.teardown_in_h(holder, str(parent))
             finally:
-                seat_jail.close_jail_fds(jail)
-                for parent in (review, seat_dir):
-                    seat_uid.teardown_in_h(holder, str(parent))
                 pi._EGRESS_LAUNCH_PREFIX.reset(token)
     finally:
         if standalone_runtime is not None:

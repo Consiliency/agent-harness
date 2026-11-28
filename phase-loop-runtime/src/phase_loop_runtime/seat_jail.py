@@ -2053,14 +2053,6 @@ def build_seat_jail(
             dependency_projection.close()
         if standalone_projection is not None:
             standalone_projection.close()
-        if resolve_probe_subject is not None:
-            # The frozen probe only gains ownership of these inputs after a successful build.
-            for fd in (bundle_memfd, instructions_memfd, token_fd):
-                if fd is not None:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
         raise
 
 
