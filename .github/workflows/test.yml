@@ -714,7 +714,8 @@ jobs:
           unset GH_TOKEN GITHUB_TOKEN
           PYTHONPATH=src:tests python -c '
           import test_legible_roadmap_contract as m
-          assert m._canonical_repo_ready(), "expected canonical source checkout for LEGIBLE live probes"
+          if not m._canonical_repo_ready():
+              raise SystemExit("expected canonical source checkout for LEGIBLE live probes")
           '
           LEGIBLE_LIVE_NODES=(
             "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A1-PIN-TAG]"
@@ -730,7 +731,7 @@ jobs:
             "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A4-DISCOVERY]"
             "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A4-PER-ENTRY]"
           )
-          PYTHONPATH=src:tests python -m pytest -q \
+          PYTHONPATH=src:tests python -m pytest -q -p no:cacheprovider \
             --junitxml="$RUNNER_TEMP/junit-legible-live-probes.xml" \
             "${LEGIBLE_LIVE_NODES[@]}"
           python - "$RUNNER_TEMP/junit-legible-live-probes.xml" "${LEGIBLE_LIVE_NODES[@]}" <<'PY'
@@ -742,15 +743,17 @@ jobs:
           root = ET.parse(junit_path).getroot()
           cases = root.findall(".//testcase")
           actual = [c.attrib.get("name", "") for c in cases]
-          assert len(actual) == len(expected) and set(actual) == set(expected), (
-              f"LEGIBLE live probe JUnit mismatch: expected={expected}, actual={actual}"
-          )
+          if len(actual) != len(expected) or set(actual) != set(expected):
+              raise SystemExit(
+                  f"LEGIBLE live probe JUnit mismatch: expected={expected}, actual={actual}"
+              )
           bad = [
               c.attrib.get("name")
               for c in cases
               if c.find("failure") is not None or c.find("error") is not None or c.find("skipped") is not None
           ]
-          assert not bad, f"unexpected non-passing LEGIBLE live probe cases: {bad}"
+          if bad:
+              raise SystemExit(f"unexpected non-passing LEGIBLE live probe cases: {bad}")
           PY
 
       - name: Wheel smoke — grok status from an installed wheel without the extra
