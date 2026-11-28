@@ -354,8 +354,9 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "seat_tool_denied": (
         "tool use denied", "agy auto-denied a tool",
         "on a jailed review profile this is a defect; inspect the private leg record"),
-    # agent-harness#1335 / #1473: from the runtime's own probe of the CLI's command sandbox,
-    # made before the seat runs. Cause-specific refinements live in TOOL_SANDBOX_CAUSE_NOTICES.
+    # agent-harness#1335 / agent-harness#1473: from the runtime's own probe of the CLI's
+    # command sandbox, made before the seat runs. Cause-specific refinements live in
+    # TOOL_SANDBOX_CAUSE_NOTICES.
     "seat_tool_sandbox_unavailable": (
         "leg degraded; the seat was not run and is not counted as a review",
         "the CLI's own command sandbox could not start in the seat's view when the runtime "
