@@ -984,7 +984,9 @@ def proxy_diagnostics(tmp_path, monkeypatch):
     def popen(args, *rest, **kwargs):
         if (isinstance(args, (list, tuple)) and len(args) > 1
                 and str(args[1]).endswith("proxy.mjs")
-                and kwargs.get("stderr") is subprocess.DEVNULL):
+                and kwargs.get("stdin") is subprocess.PIPE
+                and kwargs.get("start_new_session") is True
+                and kwargs.get("stderr") in (subprocess.DEVNULL, subprocess.PIPE)):
             path = directory / f"proxy-{len(diagnostics.files)}.stderr"
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             diagnostics.files.append(path)

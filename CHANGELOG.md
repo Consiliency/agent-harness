@@ -39,6 +39,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   standalone `verify_launch_context` binds every issued `LaunchContext` mark directly to
   the live namespace holder and proxy pair instead of relying solely on outer board-leg
   and `launch_owned` checks (agent-harness#2035).
+- Retain the seat egress proxy's exit status and a bounded, sanitized stderr tail on
+  startup failures (`seat_egress_proxy._start_proxy`, draining and discarding stderr in
+  steady state so the pipe never blocks or grows unbounded) so intermittent proxy start
+  failures surface their cause instead of an opaque `EgressLayerUnavailable`
+  (agent-harness#2034).
 - Capture the real launch-boundary keyword arguments in `test_seat_argv_bound_paths_1441.py`
   (`_captured_launches` / `fake_liveness`) so Grok mount qualification directly asserts no
   `writable_tree` / `writable_trees` grant is requested (with a mutation falsifier), make the
