@@ -224,7 +224,7 @@ def _seed_default_gate(monkeypatch, runners):
     ``default_board_auth_ok`` reaches ``auth_ok_for`` through the capability registry's own
     closure and probe tuples; seeding its cache through that same function is what a real
     probe run leaves behind, without starting a vendor CLI."""
-    passing = lambda _probe: _completed(0, 'logged in {"loggedIn": true}')  # noqa: E731
+    passing = lambda probe: _completed(0, '{"loggedIn": true}' if probe.startswith("claude") else "logged in")  # noqa: E731
     for vendor in ("grok", "claude", "codex", "gemini"):
         probes = capability_registry()[vendor].auth_preflight_probes
         ea.auth_ok_for(vendor, probes, runner=runners.get(vendor, passing))

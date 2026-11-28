@@ -19,13 +19,14 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
-import re
 import shlex
 import shutil
+import stat
 import subprocess
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 # Executor -> availability-probe CLI binary. Mirrors the advisor-board harness
@@ -67,9 +68,9 @@ _PROBE_TIMEOUT_SECONDS = 10.0
 # credential/token refresh race on a healthy host. One bounded retry recovers the
 # transient blip without masking a real sign-out or delaying healthy probes.
 _CLAUDE_AUTH_RETRY_DELAY_S = 0.25
-_PROBE_STDERR_EXCERPT_MAX_CHARS = 512
+_PROBE_STDERR_SCAN_CAP_CHARS = 8192
+_PROBE_DIAG_KEEP = 50
 _CLAUDE_AUTH_METHODS = frozenset({"claude.ai", "oauth_token", "apiKey", "none"})
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # (executor, probes) -> (captured_at_monotonic, ok). Keyed by the probe tuple too,
 # so a call with a changed probe set never reuses a prior executor's verdict.
 _auth_cache: dict[tuple[str, tuple[str, ...]], tuple[float, bool]] = {}
@@ -146,7 +147,9 @@ def _typed_refusal_code(exc: BaseException) -> str | None:
 def _claude_status_fields(stdout: str) -> tuple[bool | None, str | None]:
     """Closed boolean ``loggedIn`` and allowlisted ``authMethod`` from ``claude auth status``.
 
-    Never returns email, orgId, orgName, tokens, or raw stdout (agent-harness#1585).
+    Requires a parsed top-level JSON object with a strict boolean ``loggedIn`` field;
+    malformed or truncated JSON never opens the gate, and email, orgId, orgName, tokens,
+    and raw stdout are never returned (agent-harness#1585).
     """
     text = (stdout or "").strip()
     if not text:
@@ -154,11 +157,6 @@ def _claude_status_fields(stdout: str) -> tuple[bool | None, str | None]:
     try:
         payload = json.loads(text)
     except (ValueError, TypeError):
-        compact = text.lower().replace(" ", "")
-        if '"loggedin":true' in compact:
-            return True, None
-        if '"loggedin":false' in compact:
-            return False, None
         return None, None
     if not isinstance(payload, dict):
         return None, None
@@ -174,22 +172,75 @@ def _claude_status_fields(stdout: str) -> tuple[bool | None, str | None]:
     return logged_in_bool, method
 
 
-def _redacted_stderr_excerpt(stderr: str) -> str:
-    """Redact credentials, known identity values, and email shapes over the FULL text
-    before bounding to ``_PROBE_STDERR_EXCERPT_MAX_CHARS``."""
-    raw = stderr or ""
-    if not raw.strip():
-        return ""
-    try:
-        from .credential_redaction import PLACEHOLDER, redact_text
+def _classify_probe_stderr(stderr: str) -> tuple[str, int]:
+    """Closed diagnostic category and byte count for probe stderr (agent-harness#1585).
 
-        redacted = redact_text(raw)
-        redacted = _EMAIL_RE.sub(PLACEHOLDER, redacted).strip()
-        if len(redacted) > _PROBE_STDERR_EXCERPT_MAX_CHARS:
-            return redacted[-_PROBE_STDERR_EXCERPT_MAX_CHARS:]
-        return redacted
-    except Exception:
-        return ""
+    Never returns raw CLI text, paths, emails, org identifiers, or tokens. Scans at most
+    ``_PROBE_STDERR_SCAN_CAP_CHARS`` characters with linear substring checks only.
+    """
+    raw = stderr or ""
+    byte_count = len(raw.encode("utf-8", errors="replace"))
+    if not raw.strip():
+        return "empty", byte_count
+    sample = raw[:_PROBE_STDERR_SCAN_CAP_CHARS].lower()
+    if (
+        "not logged in" in sample
+        or "not signed in" in sample
+        or "please run /login" in sample
+        or "please run `claude" in sample
+    ):
+        return "not_logged_in", byte_count
+    if "token" in sample and any(word in sample for word in ("expired", "refresh", "revoked", "invalid")):
+        return "token_refresh_or_expiry", byte_count
+    if any(word in sample for word in ("lock", "busy", "eagain", "temporarily unavailable")):
+        return "lock_or_transient", byte_count
+    if any(word in sample for word in ("keychain", "keyring", "credential", "secret service")):
+        return "credential_store", byte_count
+    if "timeout" in sample or "timed out" in sample or "etimedout" in sample:
+        return "timeout", byte_count
+    if any(word in sample for word in ("econnrefused", "enotfound", "eai_again", "network", "dns", "connection")):
+        return "network", byte_count
+    if any(word in sample for word in ("eacces", "eperm", "permission denied", "read-only")):
+        return "permission", byte_count
+    if "rate limit" in sample or "429" in sample or "too many requests" in sample:
+        return "rate_limit", byte_count
+    if any(word in sample for word in ("401", "403", "unauthorized", "forbidden")):
+        return "auth_http_error", byte_count
+    if "command not found" in sample or "enoent" in sample or "no such file" in sample:
+        return "missing_executable_or_file", byte_count
+    return "unclassified", byte_count
+
+
+def _prune_probe_diagnostics(root: Path, *, keep: int = _PROBE_DIAG_KEEP, exclude: Path | None = None) -> None:
+    """Bound ``probe-*.json`` retention under ``root`` without touching sibling records."""
+    if keep < 1:
+        return
+    try:
+        uid = os.getuid()
+        candidates: list[tuple[int, str, Path]] = []
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if not (entry.name.startswith("probe-") and entry.name.endswith(".json")):
+                    continue
+                path = Path(entry.path)
+                if exclude is not None and path == exclude:
+                    continue
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != uid:
+                    continue
+                candidates.append((info.st_mtime_ns, entry.name, path))
+        allowed_older = max(keep - (1 if exclude is not None else 0), 0)
+        candidates.sort(reverse=True)
+        for _mtime, _name, old_path in candidates[allowed_older:]:
+            try:
+                old_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _record_probe_diagnostic(
@@ -207,12 +258,14 @@ def _record_probe_diagnostic(
     exception: str | None = None,
     code: str | None = None,
 ) -> None:
-    """Persist a private 0600 redacted diagnostic record for failed or retry-recovered
+    """Persist a closed-field private 0600 diagnostic record for failed or retry-recovered
     auth probes (agent-harness#1585). Best-effort: never raises or alters gate verdicts."""
     try:
         from .president_adapter import write_private_record
 
         known_executor = executor if executor in _EXECUTOR_CLI else "other"
+        first_stderr_class, first_stderr_bytes = _classify_probe_stderr(first_stderr)
+        final_stderr_class, final_stderr_bytes = _classify_probe_stderr(final_stderr)
         record: dict[str, object] = {
             "schema": "auth_probe_diag.v1",
             "timestamp_utc": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
@@ -222,14 +275,17 @@ def _record_probe_diagnostic(
             "attempts": int(attempts),
             "first_returncode": first_returncode if type(first_returncode) is int else None,
             "final_returncode": final_returncode if type(final_returncode) is int else None,
-            "first_stderr_excerpt": _redacted_stderr_excerpt(first_stderr),
-            "final_stderr_excerpt": _redacted_stderr_excerpt(final_stderr),
+            "first_stderr_class": first_stderr_class,
+            "first_stderr_bytes": first_stderr_bytes,
+            "final_stderr_class": final_stderr_class,
+            "final_stderr_bytes": final_stderr_bytes,
             "claude_logged_in": claude_logged_in if type(claude_logged_in) is bool else None,
             "claude_auth_method": claude_auth_method,
             "exception": exception,
             "code": code,
         }
-        write_private_record(f"probe-{uuid.uuid4().hex}.json", record)
+        written = write_private_record(f"probe-{uuid.uuid4().hex}.json", record)
+        _prune_probe_diagnostics(written.parent, keep=_PROBE_DIAG_KEEP, exclude=written)
     except Exception:
         pass
 

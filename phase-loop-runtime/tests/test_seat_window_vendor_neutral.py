@@ -2962,7 +2962,8 @@ def test_k1_bot_the_board_launch_past_the_auth_ttl_reuses_the_bound_composition(
         argv = command.split() if isinstance(command, str) else list(command)
         seat_profiles.window_provider_start(argv)
         probes.append(argv[0])
-        return sp.CompletedProcess(argv, 0, '{"loggedIn": true} Logged in using ChatGPT', "")
+        stdout = '{"loggedIn": true}' if argv and argv[0] == "claude" else "Logged in using ChatGPT"
+        return sp.CompletedProcess(argv, 0, stdout, "")
     monkeypatch.setattr(availability, "_run_probe", probe)
     real_compose = composition.compose_review_board_report
     monkeypatch.setattr(composition, "compose_review_board_report",
