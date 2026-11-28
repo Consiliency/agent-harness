@@ -35,6 +35,21 @@ from phase_loop_runtime import review_stage
 def _grok_definition_fixture(monkeypatch):
     monkeypatch.setattr(pi, "grok_tool_gate", lambda *a: True)
 
+
+@pytest.fixture(autouse=True)
+def _isolate_git_environment(monkeypatch):
+    """Isolate fixture and runtime git subprocesses from inherited GIT_* and host git config."""
+    for key in list(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "t")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@e.st")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@e.st")
+
+
 TREE = review_stage.REVIEW_STAGE_TREE_DIRNAME
 
 needs_owner = pytest.mark.skipif(
@@ -42,17 +57,33 @@ needs_owner = pytest.mark.skipif(
     reason="needs bubblewrap and a non-root operator")
 
 
+def _git_env() -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_AUTHOR_NAME"] = "t"
+    env["GIT_AUTHOR_EMAIL"] = "t@e.st"
+    env["GIT_COMMITTER_NAME"] = "t"
+    env["GIT_COMMITTER_EMAIL"] = "t@e.st"
+    return env
+
+
 def _staged_tree(tmp_path: Path) -> Path:
     """A sandbox the runtime really staged: ``<review>/reviewed-tree`` with its marker."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.st"], check=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    git_env = _git_env()
+    subprocess.run(["git", "init", "-q", str(repo)], env=git_env, check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.st"], env=git_env, check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], env=git_env, check=True)
     (repo / "source.txt").write_text("TREE-CONTENT\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
-    subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"],
-                   check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-f", "source.txt"], env=git_env, check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+         "commit", "-qm", "c"],
+        env=git_env,
+        check=True,
+    )
     review_dir = tmp_path / "review"
     review_dir.mkdir()
     staged = review_stage.stage_review_tree(repo, tmp_path / "scratch")
@@ -243,10 +274,12 @@ def test_the_launched_seat_finds_every_host_path_its_argv_names(tmp_path, case):
         try:
             out, err = process.communicate(timeout=60)
         finally:
-            pi._terminate_process_group(process)
-            for stream in (process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
+            try:
+                pi._terminate_process_group(process)
+            finally:
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
     assert process.returncode == 0, (case, out, err)
 
 

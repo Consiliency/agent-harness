@@ -97,10 +97,12 @@ def test_an_owned_seat_runs_below_a_linked_workspace(tmp_path):
         try:
             _out, err = process.communicate(timeout=60)
         finally:
-            pi._terminate_process_group(process)
-            for stream in (process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
+            try:
+                pi._terminate_process_group(process)
+            finally:
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
     assert process.returncode == 0, err
     assert pi._read_seat_text(output) == "BUNDLE-CONTENT\n"
 
@@ -137,10 +139,12 @@ def test_a_working_directory_named_only_in_the_argv_is_in_the_seat_view(tmp_path
         try:
             out, err = process.communicate(timeout=60)
         finally:
-            pi._terminate_process_group(process)
-            for stream in (process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
+            try:
+                pi._terminate_process_group(process)
+            finally:
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
     assert process.returncode == 0, err
     assert out == b"WRITE-DENIED\n"
     assert pi._read_seat_text(output) == "TREE-CONTENT\n"
