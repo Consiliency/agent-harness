@@ -204,7 +204,7 @@ def build_phase_loop_closeout(
     pipeline_phase_id = source_bundle.phase_id if source_bundle else (metadata.pipeline_phase_id if metadata else None)
 
     raw_artifact_paths = dict(artifact_paths or terminal.get("artifact_paths") or {})
-    effective_repo_root = _infer_repo_root(repo_root, plan_path, raw_artifact_paths)
+    effective_repo_root = _infer_repo_root(repo_root, plan_path)
     plan_path_text = _relativize_repo_path(plan_path, effective_repo_root)
     if isinstance(source_bundle_path, (str, Path)):
         source_bundle_path = _relativize_repo_path(source_bundle_path, effective_repo_root)
@@ -851,46 +851,35 @@ def _policy_source(assignment: Mapping[str, Any]) -> str | None:
 def _infer_repo_root(
     repo_root: str | Path | None,
     plan_path: str | Path,
-    artifact_paths: Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Resolve the repository root used to relativize serialized closeout paths.
 
-    Uses an explicit ``repo_root`` when provided; otherwise walks ancestors of
-    absolute ``plan_path`` and ``artifact_paths`` entries to locate the nearest
-    directory containing ``.git`` or ``.phase-loop`` so repo-scoped paths never
-    leak host-private prefixes (such as ``/home/<user>/...``) into closeout
-    payloads (agent-harness#1941).
+    Uses an explicit ``repo_root`` when provided; otherwise resolves ``plan_path``
+    (using the same working directory used to read it) and walks its ancestors to
+    locate the nearest directory containing ``.git`` or ``.phase-loop``. Never
+    infers a root from ``artifact_paths`` alone (agent-harness#1941).
     """
     if repo_root is not None and str(repo_root).strip():
         return Path(repo_root)
-    candidates: list[Path] = []
-    if plan_path and str(plan_path).strip():
-        candidate = Path(plan_path)
-        if candidate.is_absolute():
-            candidates.append(candidate)
-    if isinstance(artifact_paths, Mapping):
-        for raw in artifact_paths.values():
-            if isinstance(raw, (str, Path)) and str(raw).strip():
-                candidate = Path(raw)
-                if candidate.is_absolute():
-                    candidates.append(candidate)
-    for candidate in candidates:
+    if not plan_path or not str(plan_path).strip():
+        return None
+    try:
+        start = Path(plan_path).resolve()
+    except OSError:
+        return None
+    search_root = start if start.is_dir() else start.parent
+    for ancestor in (search_root, *search_root.parents):
         try:
-            start = candidate.resolve()
+            if (ancestor / ".git").exists() or (ancestor / ".phase-loop").is_dir():
+                return ancestor
         except OSError:
-            start = candidate
-        search_root = start if start.is_dir() else start.parent
-        for ancestor in (search_root, *search_root.parents):
-            try:
-                if (ancestor / ".git").exists() or (ancestor / ".phase-loop").is_dir():
-                    return ancestor
-            except OSError:
-                continue
+            continue
     return None
 
 
 def _relativize_repo_path(value: str | Path, repo_root: Path | None) -> str:
-    """Convert an absolute path inside ``repo_root`` into a repo-relative POSIX path."""
+    """Convert an absolute path whose resolved target stays inside ``repo_root``
+    into a repo-relative POSIX path; preserve ``value`` unchanged otherwise."""
     text = str(value)
     if not text or repo_root is None:
         return text
@@ -898,11 +887,9 @@ def _relativize_repo_path(value: str | Path, repo_root: Path | None) -> str:
     if not candidate.is_absolute():
         return text
     try:
-        return candidate.relative_to(repo_root).as_posix()
-    except ValueError:
-        pass
-    try:
-        return candidate.resolve().relative_to(repo_root.resolve()).as_posix()
+        resolved_root = repo_root.resolve()
+        resolved_candidate = candidate.resolve()
+        return resolved_candidate.relative_to(resolved_root).as_posix()
     except (OSError, ValueError):
         return text
 

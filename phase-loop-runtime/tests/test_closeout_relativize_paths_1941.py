@@ -1,14 +1,15 @@
 """Regression tests for Consiliency/agent-harness#1941:
 Relativize repo-scoped closeout paths against ``repo_root`` (or an inferred
-``.git``/``.phase-loop`` ancestor) so repositories under ``/home/<user>/...`` or
-``/Users/<user>/...`` do not trigger ``absolute_private_path`` in
-``metadata_redaction_diagnostic`` while external private paths remain rejected.
+``.git``/``.phase-loop`` ancestor anchored to ``plan_path``) using resolved
+containment so repositories under ``/home/<user>/...`` or ``/Users/<user>/...``
+do not trigger ``absolute_private_path`` in ``metadata_redaction_diagnostic``,
+while symlinks/parent traversals escaping the repo and unrelated checkouts
+remain rejected.
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 from phase_loop_runtime import runner as runner_mod
 from phase_loop_runtime.closeout import (
@@ -117,7 +118,6 @@ def test_build_closeout_relativizes_through_symlinked_repo_root(tmp_path):
 
 def test_external_private_path_outside_repo_root_remains_rejected(tmp_path):
     repo = tmp_path / "home" / "alice" / "proj"
-    repo.mkdir(parents=True)
     plan = repo / "plans" / "plan.md"
     plan.parent.mkdir(parents=True)
     plan.write_text("# plan\n", encoding="utf-8")
@@ -141,3 +141,129 @@ def test_external_private_path_outside_repo_root_remains_rejected(tmp_path):
     diagnostic = phase_loop_closeout_diagnostic(closeout)
     assert diagnostic is not None
     assert "absolute_private_path" in diagnostic["message"]
+
+
+def test_in_repo_symlink_and_parent_escape_are_not_relativized(tmp_path):
+    outside = tmp_path / "home" / "alice" / "private"
+    outside.mkdir(parents=True)
+    secret = outside / "secret.txt"
+    secret.write_text("top secret", encoding="utf-8")
+
+    repo = tmp_path / "home" / "alice" / "proj"
+    (repo / "plans").mkdir(parents=True)
+    plan = repo / "plans" / "plan.md"
+    plan.write_text("# plan\n", encoding="utf-8")
+    escape_link = repo / "plans" / "escape-link.txt"
+    escape_link.symlink_to(secret)
+    parent_escape = f"{repo}/plans/../../private/secret.txt"
+
+    for label, escaping_path in (("symlink", str(escape_link)), ("parent", parent_escape)):
+        closeout = build_phase_loop_closeout(
+            phase_alias="P1",
+            plan_path=plan,
+            terminal_summary={
+                "terminal_status": "complete",
+                "verification_status": "passed",
+                "artifact_paths": {label: escaping_path},
+            },
+            automation={
+                "status": "complete",
+                "verification_status": "passed",
+                "human_required": False,
+            },
+            repo_root=repo,
+        )
+        assert closeout["artifacts"]["artifact_paths"][label] == escaping_path
+        diagnostic = phase_loop_closeout_diagnostic(closeout)
+        assert diagnostic is not None
+        assert "absolute_private_path" in diagnostic["message"]
+
+
+def test_inferred_root_is_anchored_to_plan_and_ignores_unrelated_artifact_checkout(
+    tmp_path, monkeypatch
+):
+    # Relative plan in a directory with no .git/.phase-loop cannot establish a repo root.
+    plain_dir = tmp_path / "plain"
+    (plain_dir / "plans").mkdir(parents=True)
+    (plain_dir / "plans" / "plan.md").write_text("# plan\n", encoding="utf-8")
+
+    unrelated_repo = tmp_path / "home" / "alice" / "other-checkout"
+    unrelated_run = unrelated_repo / ".phase-loop" / "runs" / "r1"
+    unrelated_run.mkdir(parents=True)
+
+    monkeypatch.chdir(plain_dir)
+    closeout = build_phase_loop_closeout(
+        phase_alias="P1",
+        plan_path="plans/plan.md",
+        terminal_summary={
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "artifact_paths": {"root": str(unrelated_run)},
+        },
+        automation={
+            "status": "complete",
+            "verification_status": "passed",
+            "human_required": False,
+        },
+    )
+
+    assert closeout["artifacts"]["artifact_paths"]["root"] == str(unrelated_run)
+    diagnostic = phase_loop_closeout_diagnostic(closeout)
+    assert diagnostic is not None
+    assert "absolute_private_path" in diagnostic["message"]
+
+
+def test_missing_in_repo_verification_artifact_and_log_keep_blocked_closeout(tmp_path):
+    repo = tmp_path / "home" / "alice" / "proj"
+    (repo / "plans").mkdir(parents=True)
+    plan = repo / "plans" / "phase-plan-v1-RG.md"
+    plan.write_text("# RG plan\nIF-0-RG-1\n", encoding="utf-8")
+
+    missing_run = repo / ".phase-loop" / "runs" / "missing-run"
+    missing_run.mkdir(parents=True)
+    missing_artifact_closeout = build_phase_loop_closeout(
+        phase_alias="RG",
+        plan_path=plan,
+        terminal_summary={
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "artifact_paths": {"root": str(missing_run)},
+        },
+        automation={
+            "status": "complete",
+            "verification_status": "passed",
+            "human_required": False,
+        },
+        repo_root=repo,
+    )
+    assert missing_artifact_closeout["terminal_status"] == "blocked"
+    result_missing_artifact = missing_artifact_closeout["verification"]["results"][0]
+    assert result_missing_artifact["code"] == "malformed_artifact"
+    assert result_missing_artifact["artifact_path"] == (
+        ".phase-loop/runs/missing-run/verification.json"
+    )
+    assert phase_loop_closeout_diagnostic(missing_artifact_closeout) is None
+
+    missing_log_run = repo / ".phase-loop" / "runs" / "missing-log-run"
+    run_verification(repo, missing_log_run, [[sys.executable, "-c", "print('ok')"]], None, None, 5)
+    (missing_log_run / "verification.log").unlink()
+    missing_log_closeout = build_phase_loop_closeout(
+        phase_alias="RG",
+        plan_path=plan,
+        terminal_summary={
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "artifact_paths": {"root": str(missing_log_run)},
+        },
+        automation={
+            "status": "complete",
+            "verification_status": "passed",
+            "human_required": False,
+        },
+        repo_root=repo,
+    )
+    assert missing_log_closeout["terminal_status"] == "blocked"
+    result_missing_log = missing_log_closeout["verification"]["results"][0]
+    assert result_missing_log["code"] == "missing_log"
+    assert result_missing_log["log_path"] == ".phase-loop/runs/missing-log-run/verification.log"
+    assert phase_loop_closeout_diagnostic(missing_log_closeout) is None
