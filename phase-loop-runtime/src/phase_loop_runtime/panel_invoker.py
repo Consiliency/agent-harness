@@ -3106,6 +3106,14 @@ _ENV_FAILURE_LABEL_RE = re.compile(
     r"[Dd]irectory .{1,1000}? is not (?:a directory \(may be an attacker-planted symlink\)|"
     r"readable \()"
 )
+# agent-harness#1821: Grok CLI's "Not signed in" error banner (e.g.
+# `Not signed in. To authenticate without a browser, run:\n  grok login --device-code`
+# or `Error: Not signed in. ...`). Anchored at line start after ANSI stripping and evaluated
+# ONLY on an already-failed Grok leg (`status != "OK"`), never on a conforming review.
+_GROK_NOT_SIGNED_IN_RE = re.compile(
+    r"(?:^|\n)\s*(?:error:\s*)?not signed in\b",
+    re.IGNORECASE,
+)
 # The provider's own reset time when it prints one: codex " or try again at <time>" with
 # the time alone ("%-I:%M %p", same local day) or dated ("%b %-d<ordinal>, %Y %-I:%M %p").
 _LEG_FAILURE_LOG_TAIL_LINES = 20
@@ -3830,9 +3838,34 @@ def _env_failure_template(text: str) -> str:
     return "env_failure: sandbox command could not be built"
 
 
+def _grok_not_signed_in(rc: int | None, review_text: str, log_text: str) -> bool:
+    """Whether an already-failed Grok leg failed because the Grok CLI reported
+    ``Not signed in`` (agent-harness#1821).
+
+    Process facts (timeout, signal), runtime-emitted ``_HarnessCode`` details, and
+    higher-precedence non-auth labels (``usage_limit``, ``env_failure``, ``tool_denied``)
+    always take precedence. An ``rc == 0`` leg with non-empty stdout is never reclassified
+    from text so non-conforming review prose cannot be mistaken for a CLI sign-in banner.
+    """
+    if type(rc) is not int or rc == 124 or rc < 0:
+        return False
+    if type(log_text) is _HarnessCode:
+        return False
+    if _leg_failure_kind(rc, review_text, log_text) in ("usage_limit", "env_failure", "tool_denied"):
+        return False
+    if rc == 0:
+        if str(review_text or "").strip():
+            return False
+        haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text))
+    else:
+        haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + _log_tail(review_text))
+    return bool(_GROK_NOT_SIGNED_IN_RE.search(haystack))
+
+
 def _leg_failure_detail(
     status: str, rc: int | None, review_text: str, log_text: str,
     known: Sequence[str | os.PathLike[str]] = (),
+    *, leg: str | None = None,
 ) -> _LegFailure | None:
     """``PanelLegResult.detail`` for a failed leg, in OUR vocabulary only: a harness code the
     runtime itself emitted, or a failure template whose only fields are validated (a reset
@@ -3846,6 +3879,8 @@ def _leg_failure_detail(
         # Provenance by TYPE: a diagnostic this runtime itself produced (never CLI text
         # that merely looks like one — agent-harness#1102 r8).
         return _LegFailure(log_text)
+    if leg == "grok" and _grok_not_signed_in(rc, review_text, log_text):
+        return _LegFailure(_HarnessCode("grok_seat_credential_missing"))
     kind = _leg_failure_kind(rc, review_text, log_text)
     if kind == "unknown" and rc == 0 and str(review_text).strip():
         return None
@@ -15582,7 +15617,10 @@ def _exec_jailed_grok_leg(
         status = "OK" if proc.returncode == 0 else _classify_leg(proc.returncode, review,
                                                                  proc.stderr, "review")
         return status, review
-    return _classify_leg(proc.returncode, review, proc.stderr, "review"), review
+    status = _classify_leg(proc.returncode, review, proc.stderr, "review")
+    if status != "OK" and _grok_not_signed_in(proc.returncode, review, proc.stderr):
+        return _jailed_failure("grok_seat_credential_missing", failure_detail_sink)
+    return status, review
 
 
 def _require_gemini_proxy_token(holder: _JailedSeat | _seat_egress_proxy.SeatEgressProxy) -> bytes:
@@ -21326,7 +21364,13 @@ def _default_spawn(
                     elif leg != "gemini":
                         leg_detail = _leg_failure_detail(
                             status, rc, text, log, _seat_paths(base, review_dir, out_dir, resolved_repo_dir),
+                            leg=leg,
                         )
+                        if (leg == "grok" and status != "OK"
+                                and isinstance(leg_detail, _LegFailure)
+                                and leg_detail.template == "grok_seat_credential_missing"):
+                            status, text = "DEGRADED", ""
+                            seat_notices.append("grok_seat_credential_missing")
                     if qualify_agy and (status == "OK" or review_monitor.cancel.is_set()):
                         broker.evidence.pop("provider_error_class", None)
                     elif qualify_agy:
@@ -21445,7 +21489,16 @@ def _default_spawn(
         detail = _leg_failure_detail(
             status, rc, review_text, log_text,
             _seat_paths(base, review_dir, out_dir, resolved_repo_dir),
+            leg=leg,
         )
+        if (leg == "grok" and status != "OK"
+                and isinstance(detail, _LegFailure)
+                and detail.template == "grok_seat_credential_missing"):
+            status, review_text = "DEGRADED", ""
+            seat_notices.append("grok_seat_credential_missing")
+            return _with_placement(_BrokeredSpawnResult(
+                status, review_text, detail, seat_notices=_dedupe(seat_notices),
+            ))
         if detail:
             return _with_placement((status, review_text, detail))
         return _with_placement((status, review_text))
