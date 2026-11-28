@@ -77,7 +77,7 @@ class ShippedPolicyTest(unittest.TestCase):
     def test_roadmap_is_max(self):
         self.assertEqual(_resolve("roadmap", "codex", model_policy=True)[1], "max")
 
-    def test_execute_claude_becomes_sonnet_high(self):
+    def test_execute_claude_becomes_sonnet_5_5_medium(self):
         self.assertEqual(_resolve("execute", "claude", model_policy=True), ("claude-sonnet-5-5", "medium"))
 
     def test_review_claude_uses_reviewer_ultra(self):
