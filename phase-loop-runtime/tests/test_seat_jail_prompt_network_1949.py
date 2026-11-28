@@ -107,6 +107,10 @@ def _run_jailed_default_spawn(monkeypatch, tmp_path: Path, leg: str) -> str:
         monkeypatch.setattr(pi, "_prepare_jailed_claude", lambda *a, **k: fake_seat)
         monkeypatch.setattr(pi, "_jailed_claude_login_proof", lambda *a, **k: SimpleNamespace())
         monkeypatch.setattr(pi, "_exec_jailed_claude_leg", record_prompt)
+    elif leg == "grok":
+        fake_grok_seat = SimpleNamespace(seat=fake_seat, notices=())
+        monkeypatch.setattr(pi, "_prepare_jailed_grok", lambda *a, **k: fake_grok_seat)
+        monkeypatch.setattr(pi, "_exec_jailed_grok_leg", record_prompt)
     else:
         raise AssertionError(f"unsupported leg {leg}")
 
@@ -157,6 +161,14 @@ def test_default_spawn_jailed_codex_receives_model_only_network_prompt(
 
 def test_default_spawn_jailed_gemini_receives_model_only_network_prompt(tmp_path, monkeypatch):
     prompt = _run_jailed_default_spawn(monkeypatch, tmp_path, "gemini")
+    assert "There is no network beyond your own model:" in prompt
+    assert "PUBLIC internet" not in prompt
+
+
+def test_default_spawn_jailed_grok_receives_model_only_network_prompt(
+    tmp_path, monkeypatch, grok_profile
+):
+    prompt = _run_jailed_default_spawn(monkeypatch, tmp_path, "grok")
     assert "There is no network beyond your own model:" in prompt
     assert "PUBLIC internet" not in prompt
 
