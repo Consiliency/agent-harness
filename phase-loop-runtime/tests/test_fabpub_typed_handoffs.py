@@ -986,3 +986,97 @@ def test_returned_no_effect_then_fence_carries_evidence_reference(tmp_path, monk
     source = handoff["next_step_source"]
     assert "the provider returned (no effect (github-observed))" in source
     assert "no pull request URL" not in source
+    assert "returned no effect (github-observed)" in handoff["attestation_evidence"]
+    assert "unknown outcome" not in handoff["attestation_evidence"]
+
+
+def test_qa_interruption_before_ambiguity_append_leaves_observation_durable_and_unrotatable(
+    tmp_path, monkeypatch,
+):
+    """Round-2 P1: observation is written BEFORE outcome_ambiguous_blocked under
+    one lock; interrupting right before the ambiguity append leaves the ledger
+    in provider_call_in_flight with the durable observation already on disk, so
+    even after promotion, rotation still refuses attested_not_landed."""
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+
+    original_seal = m.verbs.BrokerService._record_terminal_and_seal_owner
+
+    def wrapped_seal(self, *args, **kwargs):
+        try:
+            return original_seal(self, *args, **kwargs)
+        except m.live.WriterGenerationBlocked:
+            _latch(repo).resume_active()
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "_record_terminal_and_seal_owner", wrapped_seal)
+
+    original_append = m.evidence.BrokerEvidenceStore._append_locked
+
+    class _InterruptedBeforeAmbiguity(BaseException):
+        pass
+
+    def interrupt_on_ambiguity(self, record):
+        if record.state is m.evidence.TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED:
+            raise _InterruptedBeforeAmbiguity("simulated crash after observation write")
+        return original_append(self, record)
+
+    monkeypatch.setattr(m.evidence.BrokerEvidenceStore, "_append_locked", interrupt_on_ambiguity)
+
+    with pytest.raises(_InterruptedBeforeAmbiguity):
+        publish()
+
+    # The ambiguity row was NOT written yet (still provider_call_in_flight), AND
+    # the effect observation IS already durably on disk!
+    assert _evidence_states(repo) == ["provider_call_in_flight"]
+    store_root = _store_root(repo)
+    obs_rows = m.evidence.read_post_ambiguity_observations(store_root)
+    assert obs_rows and obs_rows is not m.evidence.UNREADABLE
+    key = next(iter(obs_rows))
+    assert m.live.post_ambiguity_effect_refusal(store_root, key) is not None
+
+
+def test_qa_non_durable_observation_preserves_pr_url_and_warns_honestly(tmp_path, monkeypatch):
+    """Round-2 P2: when appending the post-ambiguity observation fails with
+    ENOSPC/EIO, the initial handoff still preserves the PR URL and head SHA,
+    marks observation_durable=False, and states honestly that retries/preflight
+    will not automatically enforce it."""
+    import errno
+
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+
+    original_seal = m.verbs.BrokerService._record_terminal_and_seal_owner
+
+    def wrapped_seal(self, *args, **kwargs):
+        try:
+            return original_seal(self, *args, **kwargs)
+        except m.live.WriterGenerationBlocked:
+            _latch(repo).resume_active()
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "_record_terminal_and_seal_owner", wrapped_seal)
+    monkeypatch.setattr(
+        m.evidence,
+        "append_post_ambiguity_observation",
+        lambda *a, **k: (_ for _ in ()).throw(OSError(errno.ENOSPC, "No space left on device")),
+    )
+
+    first = publish()
+    assert len(adapter.calls) == 1
+    pr_url = "https://gh/pr/1"
+    assert first["status"] == "publication_blocked", first
+    assert first["reason"] == "effect_observed_after_ambiguity", first
+    assert first["observed_after_ambiguity"]["durable"] is False
+    assert first["observed_after_ambiguity"]["evidence_reference"] == pr_url
+    handoff = first["handoff"]
+    assert handoff["observation_durable"] is False
+    assert handoff["attestation_inputs"]["evidence_url"] == pr_url
+    assert "could not be recorded durably" in handoff["rotate_requires"]
+    assert "attested_not_landed is refused for this key" not in handoff["rotate_requires"]

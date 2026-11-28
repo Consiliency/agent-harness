@@ -1518,18 +1518,32 @@ def _observed_after_ambiguity_handoff(
         "owner_nonce": observation.get("owner_nonce"),
         "transaction_id": observation.get("transaction_id"),
     }
-    fields: dict[str, Any] = {
-        "required_disposition": "observed_landed",
-        "forbidden_disposition": "attested_not_landed",
-        "attestation_inputs": inputs,
-        "rotate_requires": (
+    durable = bool(observation.get("durable", True))
+    if durable:
+        rotate_requires = (
             "a reviewed PartitionRotationAttestation.v1 disposing the blocked effect "
             f"observed_landed with observed_head {inputs['observed_head']} and evidence_url "
             f"{inputs['evidence_url']} (the provider reported this effect after the key was "
             "blocked), and a read-only preflight verdict of ready; attested_not_landed is "
             "refused for this key, and a later remote absence is not proof that the effect "
             "did not land"
-        ),
+        )
+    else:
+        rotate_requires = (
+            "a reviewed PartitionRotationAttestation.v1 disposing the blocked effect "
+            f"observed_landed with observed_head {inputs['observed_head']} and evidence_url "
+            f"{inputs['evidence_url']} (the provider reported this effect after the key was "
+            "blocked, but this observation could not be recorded durably so retries and "
+            "rotation preflight will not automatically repeat or enforce it — keep this "
+            "result and never attest attested_not_landed), and a read-only preflight verdict "
+            "of ready; a later remote absence is not proof that the effect did not land"
+        )
+    fields: dict[str, Any] = {
+        "required_disposition": "observed_landed",
+        "forbidden_disposition": "attested_not_landed",
+        "observation_durable": durable,
+        "attestation_inputs": inputs,
+        "rotate_requires": rotate_requires,
     }
     if Path(snapshot.store_root) == Path(snapshot.container):
         # The stdlib builder digests the generation-0 container only.
@@ -1887,7 +1901,18 @@ def _human_publication_handoff(
                         ", and its pr_url is the provider's returned pull request, which "
                         "the retry's handoff does not repeat"
                         if pr_url
-                        else " with an unknown outcome"
+                        else (
+                            f", and the provider returned no effect ({evidence_reference})"
+                            if execute_returned
+                            and terminal_state == TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN.value
+                            and evidence_reference
+                            else (
+                                ", and the provider returned no effect"
+                                if execute_returned
+                                and terminal_state == TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN.value
+                                else " with an unknown outcome"
+                            )
+                        )
                     )
                     + "; it is not evidence that the provider was never entered"
                 ),

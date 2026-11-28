@@ -6,7 +6,7 @@ import functools
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -1153,10 +1153,15 @@ class BrokerService:
         """Bind ``record`` to the blocked row and this attempt's owner; append if still ours.
 
         Caller holds ``admissions.lock`` and has run ``_authorize()``.  Never
-        raises for a lost binding: a different or sealed owner, or a side file
-        that cannot take a row, returns the observation with ``durable=False``.
+        raises for a lost binding or I/O read/append error: a different or
+        sealed owner, or a ledger/side file that cannot be read or written,
+        returns the observation with ``durable=False``.
         """
         root = self.evidence_store.root
+        try:
+            digest = evidence_module.ambiguity_digest(root, record.idempotency_key) or ""
+        except OSError:
+            digest = ""
         observation = PostAmbiguityObservation(
             idempotency_key=record.idempotency_key,
             observed_state=record.state.value,
@@ -1165,76 +1170,109 @@ class BrokerService:
             branch=branch,
             transaction_id=owner.transaction_id,
             owner_nonce=owner.owner_nonce,
-            ambiguity_digest=evidence_module.ambiguity_digest(root, record.idempotency_key) or "",
+            ambiguity_digest=digest,
         )
-        current_owner = evidence_module.read_adapter_start_owner(
-            root, repository_identity=owner.repository_identity
-        )
+        try:
+            current_owner = evidence_module.read_adapter_start_owner(
+                root, repository_identity=owner.repository_identity
+            )
+        except OSError:
+            return observation
         if current_owner != owner or current_owner.sealed or not observation.ambiguity_digest:
             return observation
-        durable = evidence_module.append_post_ambiguity_observation(
-            root,
-            observation,
-            authorize=functools.partial(self.evidence_store._authorize, allow_draining=True),
-            lock_held=True,
-        )
+        try:
+            durable = evidence_module.append_post_ambiguity_observation(
+                root,
+                observation,
+                authorize=functools.partial(self.evidence_store._authorize, allow_draining=True),
+                lock_held=True,
+            )
+        except OSError:
+            return observation
         return PostAmbiguityObservation(**observation.row(), durable=durable)
 
-    def _record_post_ambiguity_observation(
+    def _record_ambiguity_with_observation(
         self,
         owner: AdapterStartOwnership,
         record: EvidenceRecord,
         *,
         branch: str = "",
-    ) -> PostAmbiguityObservation:
-        """Record a post-ambiguity observation after ``outcome_ambiguous_blocked`` is durable.
+    ) -> tuple[EvidenceRecord, PostAmbiguityObservation | None]:
+        """Atomically persist the returned observation before ``outcome_ambiguous_blocked``.
 
-        agent-harness#1701: when ``adapter.execute`` returned a definite outcome, the
-        initial terminal write failed, and the fallback ``outcome_ambiguous_blocked``
-        record was then admitted, durably bind that returned outcome under
-        ``admissions.lock`` so both this call and retries require ``observed_landed``
-        (for an effect) and forbid ``attested_not_landed``.  If the side-file write is
-        later refused or fails with an ``OSError``, return the in-memory observation
-        with ``durable=False`` rather than discarding the returned PR URL.
+        agent-harness#1701: when ``adapter.execute`` returned a definite outcome
+        (effect or no-effect), the initial terminal write failed, and the
+        fallback ``outcome_ambiguous_blocked`` write is admitted, both writes run
+        under one ``admissions.lock`` acquisition.  The observation is written
+        first (bound to the exact precomputed ``ambiguity_digest`` of the
+        ``adapter-exception`` row) and the ambiguity row second, so neither a
+        concurrent retry nor a crash between the two files can leave a rotatable
+        ``outcome_ambiguous_blocked`` row without the known result.  If owner
+        binding is lost or the side-file write fails with an ``OSError``, the
+        in-memory observation is returned with ``durable=False`` rather than
+        discarding the returned PR URL.
         """
-        from .live import WriterGenerationBlocked
+        import fcntl
 
         root = self.evidence_store.root
-        observation = PostAmbiguityObservation(
-            idempotency_key=record.idempotency_key,
-            observed_state=record.state.value,
-            evidence_reference=record.evidence_reference,
-            head_sha=owner.committed_head,
-            branch=branch,
-            transaction_id=owner.transaction_id,
-            owner_nonce=owner.owner_nonce,
-            ambiguity_digest=evidence_module.ambiguity_digest(root, record.idempotency_key) or "",
-            durable=False,
-        )
-        if not observation.ambiguity_digest:
-            return observation
-
-        class _OwnerBindingLost(Exception):
-            pass
-
-        def authorize_and_bind() -> None:
-            self.evidence_store._authorize(allow_draining=True)
-            current_owner = evidence_module.read_adapter_start_owner(
-                root, repository_identity=owner.repository_identity
-            )
-            if current_owner != owner or current_owner.sealed:
-                raise _OwnerBindingLost()
-
-        try:
-            durable = evidence_module.append_post_ambiguity_observation(
-                root,
-                observation,
-                authorize=authorize_and_bind,
-                lock_held=False,
-            )
-        except (_OwnerBindingLost, WriterGenerationBlocked, OSError):
-            return observation
-        return PostAmbiguityObservation(**observation.row(), durable=durable)
+        key = record.idempotency_key
+        self.evidence_store._authorize()
+        with self.evidence_store.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                self.evidence_store._authorize()
+                current = self.evidence_store.replay().get(key)
+                if current is not None and current.state in (
+                    TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+                    TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
+                ):
+                    return current, None
+                if current is not None and current.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED:
+                    return current, self._post_ambiguity_observation_locked(owner, record, branch)
+                if current is None:
+                    current = self.evidence_store._append_locked(
+                        EvidenceRecord(key, TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT)
+                    )
+                ambiguous_record = EvidenceRecord(
+                    key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"
+                )
+                expected_digest = hashlib.sha256(
+                    json.dumps(asdict(ambiguous_record), sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                observation = PostAmbiguityObservation(
+                    idempotency_key=key,
+                    observed_state=record.state.value,
+                    evidence_reference=record.evidence_reference,
+                    head_sha=owner.committed_head,
+                    branch=branch,
+                    transaction_id=owner.transaction_id,
+                    owner_nonce=owner.owner_nonce,
+                    ambiguity_digest=expected_digest,
+                    durable=False,
+                )
+                try:
+                    current_owner = evidence_module.read_adapter_start_owner(
+                        root, repository_identity=owner.repository_identity
+                    )
+                    owner_bound = current_owner == owner and not current_owner.sealed
+                except OSError:
+                    owner_bound = False
+                if owner_bound:
+                    try:
+                        durable = evidence_module.append_post_ambiguity_observation(
+                            root,
+                            observation,
+                            authorize=self.evidence_store._authorize,
+                            lock_held=True,
+                        )
+                    except OSError:
+                        durable = False
+                    if durable:
+                        observation = PostAmbiguityObservation(**observation.row(), durable=True)
+                terminal = self.evidence_store._append_locked(ambiguous_record)
+                return terminal, observation
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
     def _owner_and_admission_under_one_lock(
         self,
@@ -1831,14 +1869,29 @@ class BrokerService:
                 # whether the adapter returned (its terminal record was refused)
                 # and carries the returned result (agent-harness#1684).  Every
                 # other error from these writes propagates unchanged.
-                ambiguity_record_admitted = False
+                recorded_observation: PostAmbiguityObservation | None = None
                 try:
-                    if current is None:
-                        self.evidence_store.record_intent(key)
-                        current = self.evidence_store.replay().get(key)
-                    if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
-                        current = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
-                        ambiguity_record_admitted = True
+                    if (
+                        provider_returned
+                        and returned_record is not None
+                        and returned_record.state in (
+                            TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+                            TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
+                        )
+                        and (
+                            current is None
+                            or current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT
+                        )
+                    ):
+                        current, recorded_observation = self._record_ambiguity_with_observation(
+                            recorded_owner, returned_record, branch=request.branch
+                        )
+                    else:
+                        if current is None:
+                            self.evidence_store.record_intent(key)
+                            current = self.evidence_store.replay().get(key)
+                        if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
+                            current = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
                 except WriterGenerationBlocked as refused:
                     raise _provider_effect_refusal(
                         refused,
@@ -1861,20 +1914,19 @@ class BrokerService:
                     raise RuntimeError(
                         f"effect key {key!r} has no evidence row after provider entry"
                     ) from error
-                if (
-                    ambiguity_record_admitted
-                    and provider_returned
-                    and returned_record is not None
-                    and current.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
-                    and returned_record.state in (
-                        TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
-                        TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
-                    )
+                if current.state in (
+                    TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+                    TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
                 ):
-                    observation = self._record_post_ambiguity_observation(
-                        recorded_owner, returned_record, branch=request.branch
+                    replayed = self._replay(request, key, current)
+                    return BrokerExecutionResult(
+                        replayed.accepted,
+                        replayed.evidence,
+                        result if replayed.accepted and result is not None else replayed.publish_result,
+                        provider_call_made=True,
                     )
-                    return self._observed_after_ambiguity_result(key, current, observation)
+                if recorded_observation is not None:
+                    return self._observed_after_ambiguity_result(key, current, recorded_observation)
                 return BrokerExecutionResult(False, BrokerTerminalEvidence(key, current.state.value, current.evidence_reference), reason="outcome_ambiguous", provider_call_made=True)
         finally:
             for descriptor in liveness:
