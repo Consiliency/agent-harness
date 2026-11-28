@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Mapping
+import contextlib
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from hashlib import sha256
@@ -996,6 +997,16 @@ class ParentUnixBroker:
             current = ppid
         return False
 
+    @contextlib.contextmanager
+    def _active_connection(self, conn: socket.socket):
+        try:
+            with conn:
+                yield conn
+        finally:
+            with self._conn_lock:
+                if self._connection is conn:
+                    self._connection = None
+
     def serve_once(
         self,
         adapter: _BrokerInferenceAdapter,
@@ -1007,51 +1018,46 @@ class ParentUnixBroker:
             conn = self._accept_connection()
         except _BrokerShutdownStop:
             return
-        try:
-            with conn:
-                if not hasattr(socket, "SO_PEERCRED"): raise ValueError("peer credentials unavailable")
-                peer = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
-                pid, uid, gid = struct.unpack("3i", peer)
-                if uid != os.getuid() or gid != os.getgid() or not self._descends_from(pid, expected_pid, expected_start): raise ValueError("broker peer ancestry mismatch")
-                self.evidence.update({"peer_pid": pid, "peer_uid": uid, "peer_gid": gid, "peer_ancestry_verified": True})
-                if time.monotonic_ns() >= self.authorization.expires_monotonic_ns: raise ValueError("broker authorization expired")
-                try:
-                    raw = self._recv_request_frame(conn, _BROKER_MAX_BYTES)
-                except _BrokerShutdownStop:
-                    return
-                data = json.loads(raw)
-                if set(data) != {"schema","operation","nonce","harness","model","purpose","input_sha256"}: raise ValueError("broker request grammar")
-                if self._used or data != {"schema":PARENT_UNIX_BROKER_V1,"operation":self.authorization.operation,"nonce":self.nonce,"harness":self.harness,"model":self.model,"purpose":self.authorization.purpose,"input_sha256":self.authorization.input_sha256}: raise ValueError("broker request binding")
-                with self._conn_lock:
-                    if self._shutdown_connection is conn:
-                        return
-                self._admission_remaining()
-                self._used = True
-                conn.settimeout(None)
-                try:
-                    status, text = adapter.invoke()
-                except BaseException as exc:
-                    # The adapter's own outcome, apart from every transport and cleanup error
-                    # (agent-harness#1823): recorded before the connection closes on the way out.
-                    self._adapter_failure = (exc, time.monotonic_ns())
-                    raise
-                if (
-                    status not in _BROKER_RESPONSE_STATUSES
-                    or not isinstance(text, str)
-                    or len(text.encode()) > _BROKER_RESPONSE_MAX_BYTES
-                ):
-                    raise ValueError("broker response grammar")
-                # The response schema has no control channel: text is opaque inference
-                # prose, while redirect/auth/session/provider/tool/command metadata has
-                # no representable field and is rejected by the exact-key check below.
-                self._send_response_frame(
-                    conn,
-                    json.dumps({"schema":PARENT_UNIX_BROKER_V1,"status":status,"text":text}, separators=(",", ":")).encode(),
-                )
-        finally:
+        with self._active_connection(conn):
+            if not hasattr(socket, "SO_PEERCRED"): raise ValueError("peer credentials unavailable")
+            peer = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+            pid, uid, gid = struct.unpack("3i", peer)
+            if uid != os.getuid() or gid != os.getgid() or not self._descends_from(pid, expected_pid, expected_start): raise ValueError("broker peer ancestry mismatch")
+            self.evidence.update({"peer_pid": pid, "peer_uid": uid, "peer_gid": gid, "peer_ancestry_verified": True})
+            if time.monotonic_ns() >= self.authorization.expires_monotonic_ns: raise ValueError("broker authorization expired")
+            try:
+                raw = self._recv_request_frame(conn, _BROKER_MAX_BYTES)
+            except _BrokerShutdownStop:
+                return
+            data = json.loads(raw)
+            if set(data) != {"schema","operation","nonce","harness","model","purpose","input_sha256"}: raise ValueError("broker request grammar")
+            if self._used or data != {"schema":PARENT_UNIX_BROKER_V1,"operation":self.authorization.operation,"nonce":self.nonce,"harness":self.harness,"model":self.model,"purpose":self.authorization.purpose,"input_sha256":self.authorization.input_sha256}: raise ValueError("broker request binding")
             with self._conn_lock:
-                if self._connection is conn:
-                    self._connection = None
+                if self._shutdown_connection is conn:
+                    return
+            self._admission_remaining()
+            self._used = True
+            conn.settimeout(None)
+            try:
+                status, text = adapter.invoke()
+            except BaseException as exc:
+                # The adapter's own outcome, apart from every transport and cleanup error
+                # (agent-harness#1823): recorded before the connection closes on the way out.
+                self._adapter_failure = (exc, time.monotonic_ns())
+                raise
+            if (
+                status not in _BROKER_RESPONSE_STATUSES
+                or not isinstance(text, str)
+                or len(text.encode()) > _BROKER_RESPONSE_MAX_BYTES
+            ):
+                raise ValueError("broker response grammar")
+            # The response schema has no control channel: text is opaque inference
+            # prose, while redirect/auth/session/provider/tool/command metadata has
+            # no representable field and is rejected by the exact-key check below.
+            self._send_response_frame(
+                conn,
+                json.dumps({"schema":PARENT_UNIX_BROKER_V1,"status":status,"text":text}, separators=(",", ":")).encode(),
+            )
 
     def run_credentialless_client(
         self, adapter: _BrokerInferenceAdapter, *, deadline_s: float | None,
