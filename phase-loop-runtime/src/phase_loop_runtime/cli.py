@@ -1614,9 +1614,18 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     if command == "validate-roadmap":
         from . import roadmap_lint
 
-        candidate = getattr(args, "roadmap_path", None) or args.roadmap
+        explicit_candidate = getattr(args, "roadmap_path", None) or args.roadmap
+        display_repo = resolve_repo(args.repo) if getattr(args, "repo", None) else None
+        candidate = explicit_candidate
+        if candidate and display_repo is not None:
+            raw_candidate = Path(candidate).expanduser()
+            if not raw_candidate.is_absolute() and not os.path.lexists(raw_candidate):
+                repo_candidate = display_repo / raw_candidate
+                if os.path.lexists(repo_candidate):
+                    candidate = repo_candidate
         if not candidate:
-            repo = resolve_repo(args.repo or ".")
+            repo = display_repo or resolve_repo(".")
+            display_repo = repo
             candidate = select_roadmap(repo, None)
         if not candidate:
             parser.error("validate-roadmap requires a roadmap path (positional, --roadmap, or auto-detectable)")
@@ -1626,7 +1635,11 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             # whose repo cannot be inferred (or that carries no
             # specs/roadmap-status.json at all) is a silent no-op.
             candidate_path = Path(candidate)
-            status_repo = candidate_path.resolve().parent.parent
+            try:
+                resolved_candidate = candidate_path.resolve()
+            except (OSError, RuntimeError):
+                resolved_candidate = Path(os.path.abspath(candidate_path))
+            status_repo = resolved_candidate.parent.parent
             # The repository is inferred as the roadmap's grandparent
             # (<repo>/specs/<roadmap>.md). Outside a git work tree that guess is
             # not a repository at all -- a roadmap loose in a tempdir made it
@@ -1634,8 +1647,9 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             # skip with a note rather than validate a shared system directory
             # (agent-harness#987 / #1053, maintainer decision 2026-09-25).
             if _confirmed_outside_git_work_tree(status_repo):
+                display_candidate = roadmap_lint._display_path(candidate_path, repo=display_repo)
                 print(
-                    f"validate-roadmap: note: {status_repo} is not inside a git work tree; "
+                    f"validate-roadmap: note: {display_candidate} is not inside a git work tree; "
                     "skipping the repository roadmap-status coherence check",
                     file=sys.stderr,
                 )
@@ -1648,7 +1662,11 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         if getattr(args, "check_assumptions", False):
             from . import roadmap_assumptions
 
-            status_repo = Path(candidate).resolve().parent.parent
+            try:
+                resolved_candidate = Path(candidate).resolve()
+            except (OSError, RuntimeError):
+                resolved_candidate = Path(os.path.abspath(candidate))
+            status_repo = resolved_candidate.parent.parent
             verdicts = roadmap_assumptions.audit_roadmap_assumptions(status_repo)
             failed = 0
             for probe_id in sorted(verdicts):
@@ -1661,7 +1679,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             if failed:
                 return 1
         argv_extra = ["--train"] if getattr(args, "train", False) else []
-        return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)])
+        return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)], repo=display_repo)
     if command == "attest":
         from . import legible_evidence
 
