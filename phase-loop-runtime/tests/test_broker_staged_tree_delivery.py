@@ -365,7 +365,9 @@ def test_a_seat_that_cannot_act_is_not_told_that_it_can(tmp_path):
     So "run the test, check the history" is not a useless suggestion to those seats, it is
     an instruction to zero themselves.
     """
-    assert panel_invoker.sandbox_usable_by("codex", brokered=True) is True
+    assert panel_invoker.sandbox_usable_by("codex", brokered=True) is False
+    assert panel_invoker.sandbox_usable_by("codex", brokered=True, jailed=True) is True
+    assert panel_invoker.sandbox_usable_by("codex", brokered=False) is True
     assert panel_invoker.sandbox_usable_by("grok", brokered=True) is True
     assert panel_invoker.sandbox_usable_by("claude", brokered=True) is False
     assert panel_invoker.sandbox_usable_by("gemini", brokered=True) is False

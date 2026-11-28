@@ -2112,24 +2112,18 @@ def _publish_seat_preflight(
     if not pointer_brief:
         return ()
     brokered_route = mode == "review" and review_authorization is not None
-    jailed_by_leg: dict[str, list[bool]] = {}
-    for seat in board.seats:
+    jailed_by_position: dict[int, bool] = {}
+    for position, seat in enumerate(board.seats):
         leg = (getattr(seat, "harness", None) or "").lower()
         key = str(getattr(seat, "seat_key", "") or leg)
         brokered = (brokered_route
                     and not _has_injected_review_execution_seam(leg=leg))
         if leg == "claude" and seat.model is not None and _under_claude_code(base_env):
             continue
-        jailed_by_leg.setdefault(leg, []).append(_seat_jailed_at_launch(
+        jailed_by_position[position] = _seat_jailed_at_launch(
             leg, review_authorization, brokered=brokered, seat_key=key, env=base_env,
             timeout_s=(timeouts_by_leg or {}).get(leg),
-        ))
-
-    def _usable_by(leg: str | None, brokered: bool) -> bool:
-        # agent-harness#1132: a seat whose launch takes the jailed route has its tools in
-        # the staged tree, so it CAN read the brief's files.
-        jailed = bool(leg and jailed_by_leg.get(leg) and all(jailed_by_leg[leg]))
-        return sandbox_usable_by(leg, brokered, jailed=jailed)
+        )
 
     notices = _seat_preflight.pointer_brief_preflight(
         board.seats,
@@ -2139,7 +2133,8 @@ def _publish_seat_preflight(
                               and not _has_injected_review_execution_seam(leg=leg)),
         native_fill=lambda seat, leg: (
             leg == "claude" and seat.model is not None and _under_claude_code(base_env)),
-        sandbox_usable_by=_usable_by,
+        sandbox_usable_by=sandbox_usable_by,
+        jailed_at_position=lambda position, _seat, _leg: jailed_by_position.get(position, False),
     )
     for notice in notices:
         logging.getLogger(__name__).warning("seat preflight: %s", notice.render())
@@ -7112,6 +7107,11 @@ def _sandbox_evidence() -> dict[str, object]:
 #
 # `claude` brokered runs with `--tools "" --allowedTools ""` and an explicit disallow list
 # (`_broker_claude_tui_command`), so every capability the sandbox preamble names is absent.
+# `codex` brokered runs `_brokered_codex_command` with `--disable shell_tool`,
+# `--sandbox read-only`, and `--cd <out_dir>` (agent-harness#1916, agent-harness#1930), so
+# the retained non-jailed brokered route is sealed and never reads or acts on a staged tree
+# (jailed Codex review seats pass `jailed=True`; non-brokered/research Codex routes pass
+# `brokered=False`).
 # `gemini` brokered is worse than absent: `_brokered_agy_environment` denies `read_file(*)`
 # and `command(*)`, and the brokered argv omits `--dangerously-skip-permissions`, which this
 # file documents as the difference between a review and a dead leg -- the first auto-denied
@@ -7119,15 +7119,15 @@ def _sandbox_evidence() -> dict[str, object]:
 # unusable suggestion, it is an instruction to zero itself.
 #
 # So the preamble is chosen by what the seat can DO, never by what was staged.
-_SANDBOX_INCAPABLE_BROKERED_LEGS: frozenset[str] = frozenset({"claude", "gemini"})
+_SANDBOX_INCAPABLE_BROKERED_LEGS: frozenset[str] = frozenset({"claude", "codex", "gemini"})
 
 
 def sandbox_usable_by(leg: str | None, brokered: bool, *, jailed: bool = False) -> bool:
     """Can this leg act on a staged sandbox on this route?
 
-    ``jailed`` is the per-launch fact (agent-harness#1132): a claude seat launched inside
-    its per-seat jail has its full tool set and CAN act on the tree. Without it the answer
-    is today's, byte-for-byte."""
+    ``jailed`` is the per-launch fact (agent-harness#1132): a seat launched inside its
+    per-seat jail has its full tool set and CAN act on the tree. Without it the answer
+    reflects whether the non-jailed route's own command surface can use a staged tree."""
     if leg is None:
         return True
     if jailed:

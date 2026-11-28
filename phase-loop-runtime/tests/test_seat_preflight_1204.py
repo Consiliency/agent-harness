@@ -44,7 +44,9 @@ def _preflight(legs, *, staged=True, review=True, under_claude_code=False):
 
 def test_brokered_seats_without_file_tools_are_warned_on_a_staged_tree():
     notices = _preflight(["codex", "claude", "gemini", "grok"])
-    assert [(n.leg, n.code) for n in notices] == [("claude", UNREADABLE), ("gemini", UNREADABLE)]
+    assert [(n.leg, n.code) for n in notices] == [
+        ("codex", UNREADABLE), ("claude", UNREADABLE), ("gemini", UNREADABLE),
+    ]
 
 
 def test_a_native_fill_claude_seat_has_file_access():
@@ -111,15 +113,16 @@ def test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_st
     monkeypatch.delenv("CLAUDECODE", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     result, events = _chunker114_board(tmp_path)
-    assert events[0] == ("preflight", ["claude", "gemini"])           # before ANY launch
+    assert events[0] == ("preflight", ["claude", "codex", "gemini"])  # before ANY launch
     assert sorted(leg for kind, leg in events[1:] if kind == "launch") == sorted(
         s.harness for s in DEFAULT_BOARD.seats)                         # every seat still runs
     by_leg = {leg.leg: leg for leg in result.legs}
     assert all(leg.usable for leg in result.legs)
     assert not by_leg["claude"].source_grounded and not by_leg["gemini"].source_grounded
-    assert by_leg["codex"].source_grounded and by_leg["grok"].source_grounded
+    assert not by_leg["codex"].source_grounded and by_leg["grok"].source_grounded
     assert [n.code for n in by_leg["claude"].seat_preflight_notices] == [UNREADABLE]
-    assert {leg.leg for leg in result.grounded_usable_legs} == {"codex", "grok"}
+    assert [n.code for n in by_leg["codex"].seat_preflight_notices] == [UNREADABLE]
+    assert {leg.leg for leg in result.grounded_usable_legs} == {"grok"}
 
 
 def test_without_a_pointer_brief_nothing_is_warned_or_marked(tmp_path, staged_tree):
@@ -501,22 +504,38 @@ def _jailed_route(leg, **_k):
 
 
 @pytest.mark.parametrize("qualified, unreadable", [
-    (True, ["gemini"]),               # the jailed Claude seat reads its brief
-    (False, ["claude", "gemini"]),    # a jail that cannot be qualified: the seat runs sealed
+    (True, ["gemini"]),                       # jailed Claude and Codex seats read their brief
+    (False, ["claude", "gemini", "codex"]),   # a jail that cannot be qualified: the seats run sealed
 ])
-def test_a_jailed_claude_seat_is_not_marked_unreadable(monkeypatch, qualified, unreadable):
-    from phase_loop_runtime import seat_jail_autoqualify as aq
+def test_a_jailed_claude_seat_is_not_marked_unreadable(tmp_path, monkeypatch, qualified, unreadable):
+    import dataclasses
+
+    from phase_loop_runtime import (
+        sandbox_egress, seat_egress_proxy, seat_jail_autoqualify as aq, seat_profiles, seat_route,
+    )
     from test_seat_login_wait_a3_1166 import _route_claude_jailed
 
     _route_claude_jailed(monkeypatch)
+    codex_profile = dataclasses.replace(
+        seat_profiles.profile_for("codex"),
+        credential_present=lambda *_a, **_k: True,
+        preconditions=(),
+        require_projected_runtime=False,
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "codex", codex_profile)
+    monkeypatch.setattr(sandbox_egress, "egress_required", lambda: True)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
+    monkeypatch.setattr(seat_route, "_allowlist_digest_for_launch", lambda _profile: "e" * 64)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
                         lambda *a, **k: aq.Outcome(aq.QUALIFIED) if qualified
                         else aq.Outcome(aq.FAILED, "falsifiers_failed"))
+    empty_home = str(tmp_path / "no-login-home")
     board = types.SimpleNamespace(seats=[_seat("claude"), _seat("gemini"), _seat("codex")])
     notices = pi._publish_seat_preflight(
         board, pointer_brief=True, mode="review",
         review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
-        base_env={}, stream_dir=None, on_seat_preflight=None)
+        base_env={"HOME": empty_home, "CODEX_HOME": str(tmp_path / "no-codex")},
+        stream_dir=None, on_seat_preflight=None)
     assert [n.leg for n in notices] == unreadable
     assert all(n.code == UNREADABLE for n in notices)
 
