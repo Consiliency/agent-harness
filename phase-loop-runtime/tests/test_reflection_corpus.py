@@ -1825,3 +1825,65 @@ def test_multiline_setext_heading_above_rejected_bullet_does_not_trigger_archiva
     assert corpus.scanned[0].improvements_class == "repo_specific"
     assert corpus.scanned[0].excluded == "improvements_repo_specific"
     assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [
+        "  ```sh\n  ```",
+        "  - Hosted CI: all checks passed for publication on agent-harness#1371.",
+    ],
+)
+def test_skipped_block_before_horizontal_rule_does_not_erase_generic_proposal(tmp_path, separator):
+    root = tmp_path / "skills"
+    improvements = (
+        "- Fix agent-harness#1371.\n"
+        "- None.\n\n"
+        "  Require bounded retries.\n"
+        f"{separator}\n"
+        "  ---"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries." in bundle
+    assert "agent-harness#1371" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+def test_plain_text_improvements_setext_scan_is_linear_time(tmp_path):
+    import time
+
+    root = tmp_path / "skills"
+    plain_lines = [f"Retry cap step {i}." for i in range(1200)]
+    plain_lines[600] = "Fix agent-harness#1371 before merging."
+    improvements = "\n".join(plain_lines)
+    assert len(improvements.encode("utf-8")) < 32_768
+
+    start = time.monotonic()
+    units = rc._split_improvement_units(improvements)
+    split_elapsed = time.monotonic() - start
+
+    assert len(units) == 1200
+    assert split_elapsed < 0.25
+
+    indented_unit = ["- None."] + [f"  Retry cap step {i}." for i in range(1200)]
+    start = time.monotonic()
+    assert not rc._unit_is_non_proposal(indented_unit)
+    non_prop_elapsed = time.monotonic() - start
+    assert non_prop_elapsed < 0.25
+
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+    corpus, _ = rc.collect([root], min_reflections=1)
+    assert len(corpus.admitted) == 1
+    assert corpus.admitted[0].improvements_class == "agnostic"
+    assert "agent-harness#1371" not in corpus.admitted[0].sections["improvements"]
+    assert "Retry cap step 0." in corpus.admitted[0].sections["improvements"]
+    assert "Retry cap step 1199." in corpus.admitted[0].sections["improvements"]

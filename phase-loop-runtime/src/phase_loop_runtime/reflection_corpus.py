@@ -490,6 +490,7 @@ def _split_improvement_units(text: str) -> list[list[str]]:
     lines = text.splitlines()
     units: list[list[str]] = []
     idx = 0
+    no_setext_before = 0
     while idx < len(lines):
         line = lines[idx]
         if not line.strip():
@@ -554,7 +555,8 @@ def _split_improvement_units(text: str) -> list[list[str]]:
         # attached while keeping same-indent sibling lines separate.
         base_indent = _indent_width(line)
         if (
-            base_indent <= 3
+            idx >= no_setext_before
+            and base_indent <= 3
             and not _THEMATIC_BREAK_RE.match(line)
             and not _HEADING_RE.match(line)
             and not _SETEXT_UNDERLINE_RE.match(line)
@@ -574,10 +576,9 @@ def _split_improvement_units(text: str) -> list[list[str]]:
                 ):
                     break
                 look += 1
-            else:
-                pass
             if idx == look + 1:
                 continue
+            no_setext_before = look
         item = [line]
         idx += 1
         while idx < len(lines) and lines[idx].strip():
@@ -666,6 +667,8 @@ def _strip_nested_ledger_lines(unit: Sequence[str]) -> tuple[list[str], list[str
                         break
                 removed.append(cur)
                 idx += 1
+            if kept and kept[-1].strip():
+                kept.append("")
             continue
         kept.append(line)
         idx += 1
@@ -739,6 +742,7 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
                     body = body[:-1]
                 if body:
                     return False
+                residual.append("")
                 idx = next_idx
                 continue
         else:
@@ -758,6 +762,7 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
                     body = body[:-1]
                 if body:
                     return False
+                residual.append("")
                 idx = next_idx
                 continue
         residual.append(line)
@@ -766,10 +771,12 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
     # paragraph lines immediately underlined by `===` / `---` with no blank line).
     filtered_residual: list[str] = []
     r_idx = 0
+    no_setext_before = 0
     while r_idx < len(residual):
         line = residual[r_idx]
         if (
-            line.strip()
+            r_idx >= no_setext_before
+            and line.strip()
             and _list_item_content_indent(line) is None
             and not _THEMATIC_BREAK_RE.match(line)
             and not re.match(r"^[ \t]*#{1,6}(?:\s|$)", line)
@@ -790,6 +797,7 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
                 look += 1
             if r_idx == look + 1:
                 continue
+            no_setext_before = look
         filtered_residual.append(line)
         r_idx += 1
     return all(_line_is_non_proposal_marker(line) for line in filtered_residual)
