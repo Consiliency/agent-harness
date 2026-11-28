@@ -89,6 +89,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   placement deadline headroom (and assert `not decision.placement._launch_failed`) so
   loaded hosted runners no longer suffer incidental driver timeouts before the injected
   rejection runs (agent-harness#2096).
+- Use a four-backtick outer markdown fence in
+  `claude-phase-roadmap-builder/references/roadmap-template.md` (and regenerate the
+  `phase-loop-skills` and `skills_bundle` copies) so inner triple-backtick code fences no
+  longer close the outer template block early (agent-harness#1689).
 - Update `phase-loop-runtime/README.md` contributor test guidance to accurately distinguish
   runtime `pytest` from the opt-in `test` dependency group (`build`, `setuptools`, `pip`,
   `agy-watch`, `grok-catalog`) and `visual` extra, and use an absolute `PYTHONPATH`,
