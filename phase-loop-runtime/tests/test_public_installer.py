@@ -103,6 +103,9 @@ elif name == 'mv':
     late = os.environ.get('INSTALL_TEST_RACE_BEFORE_PUBLISH')
     if late:  # an EMPTY home appears in the instant before publication
         os.makedirs(late, exist_ok=True)
+    if os.environ.get('INSTALL_TEST_BSD_MV') and '-T' in args:
+        sys.stderr.write('mv: illegal option -- T\\nusage: mv [-f | -i | -n] [-hv] source target\\n')
+        sys.exit(64)
     os.execv('/bin/mv', ['/bin/mv', *args])
 elif name == 'uv' and os.environ.get('INSTALL_TEST_UV_RC'):
     sys.exit(int(os.environ['INSTALL_TEST_UV_RC']))
@@ -404,5 +407,45 @@ def test_an_empty_home_created_just_before_publication_is_not_replaced(installat
     result = run_installer(env)
     assert result.returncode != 0 and "appeared during installation" in result.stderr
     assert marker.is_dir() and list(marker.iterdir()) == [], "the foreign empty home was replaced"
+    assert _stages(env) == []
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_fresh_install_succeeds_under_bsd_mv(installation):
+    # agent-harness#1605: BSD/macOS `mv` has no `-T`; the portable no-replace fallback
+    # publishes the staged checkout cleanly.
+    env, template, git_run = installation
+    env["INSTALL_TEST_BSD_MV"] = "1"
+    expected = git_run("-C", str(template), "rev-parse", "v1.2.3^{commit}").stdout.strip()
+    result = run_installer(env)
+    assert result.returncode == 0, result.stderr
+    target = Path(env["AGENT_HARNESS_HOME"])
+    assert git_run("-C", str(target), "rev-parse", "HEAD").stdout.strip() == expected
+    assert _resolved_install(env) == expected
+    assert (Path(env["AGENT_HARNESS_SKILL_DEST"]) / "codex-plan-detailed").is_dir()
+    assert _stages(env) == []
+
+
+def test_bsd_mv_refuses_empty_home_created_just_before_publication(installation):
+    # agent-harness#1605: under BSD `mv` (no `-T`), an empty directory created right
+    # before publish must neither be overwritten nor have the stage moved inside it.
+    env, _, _ = installation
+    env["INSTALL_TEST_BSD_MV"] = "1"
+    env["INSTALL_TEST_RACE_BEFORE_PUBLISH"] = env["AGENT_HARNESS_HOME"]
+    marker = Path(env["AGENT_HARNESS_HOME"])
+    result = run_installer(env)
+    assert result.returncode != 0 and "appeared during installation" in result.stderr
+    assert marker.is_dir() and list(marker.iterdir()) == [], "the foreign empty home was replaced or polluted"
+    assert _stages(env) == []
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_bsd_mv_refuses_home_created_during_staging(installation):
+    env, _, _ = installation
+    env["INSTALL_TEST_BSD_MV"] = "1"
+    env["INSTALL_TEST_RACE_CREATE"] = env["AGENT_HARNESS_HOME"]
+    result = run_installer(env)
+    assert result.returncode != 0 and "appeared during installation" in result.stderr
+    assert Path(env["AGENT_HARNESS_HOME"], "sentinel").read_text() == "not ours"
     assert _stages(env) == []
     assert not any(call[0] == "uv" and "install" in call for call in effects(env))
