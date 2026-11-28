@@ -18609,7 +18609,20 @@ def _probe_codex_command_sandbox(cmd: "Sequence[str]", *, cwd, env, retain_caps=
         return None  # inconclusive; the leg's own launch reports its own refusal
     if run.returncode == 0:
         return None
-    return _seat_tool_evidence.classify_launcher_diagnostic(run.stderr)
+    words = [os.fspath(word) for word in cmd]
+    sandbox_mode: str | None = None
+    workdir: str | None = None
+    try:
+        sandbox_mode = words[words.index("--sandbox") + 1]
+    except (ValueError, IndexError):
+        pass
+    try:
+        workdir = words[words.index("--cd") + 1]
+    except (ValueError, IndexError):
+        pass
+    return _seat_tool_evidence.classify_launcher_diagnostic(
+        run.stderr, sandbox_mode=sandbox_mode, workdir=workdir,
+    )
 
 
 def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retain_caps=(),
@@ -22303,6 +22316,11 @@ def _write_incremental_verdict(
         if result.review_monitoring is not None:
             # agent-harness#1176: heartbeat_only only; metadata, never provider text.
             payload["review_monitoring"] = dict(result.review_monitoring)
+        notices = [notice.as_json() for notice in result.seat_notices]
+        if notices:
+            # agent-harness#1473: preserve rendered literal notices (including cause-specific
+            # why/fix lines) in streamed per-leg verdict files as well as consolidated JSON.
+            payload["notices"] = notices
         # Atomic publish: write a temp sibling then os.replace, so a directory
         # watcher never observes/parses a partially-written verdict file.
         body = json.dumps(payload, indent=2, sort_keys=True)
