@@ -1280,18 +1280,21 @@ def test_v2_final_recheck_source_control(v2_operator, monkeypatch, mutated):
 
 def test_unified_diff_hunk_line_counts_and_removed_dashes(worker_case):
     # Consiliency/agent-harness#1960 item 1: removed lines starting with '-- ' (producing
-    # '--- ...' inside a hunk) must not be misparsed as file headers, while headers
-    # immediately after a completed hunk must still be validated.
+    # '--- ...' inside a hunk) must not be misparsed as file headers, non-LF characters
+    # inside hunk lines stay content, and headers immediately after a completed hunk or
+    # unterminated hunk lines must still be rejected.
     valid = (
-        b"diff --git a/file b/file\n"
-        b"--- a/file\n"
-        b"+++ b/file\n"
-        b"@@ -1,2 +1,2 @@\n"
-        b"--- not-a-header\n"
-        b"\\ No newline at end of file\n"
-        b" ctx\n"
-        b"+++ also-not-a-header\n"
-    )
+        "diff --git a/file b/file\n"
+        "--- a/file\n"
+        "+++ b/file\n"
+        "@@ -1,3 +1,3 @@\n"
+        "--- not-a-header\n"
+        "\\ No newline at end of file\n"
+        "-hello\x0bworld\u2028old\n"
+        " ctx\n"
+        "+hello\x0bworld\u2028changed\n"
+        "+++ also-not-a-header\n"
+    ).encode("utf-8")
     worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(valid) + ")\n")
     ok = run(worker_case)
     assert ok.proposal.status == "returned"
@@ -1322,6 +1325,55 @@ def test_unified_diff_hunk_line_counts_and_removed_dashes(worker_case):
     worker_case.envelope["attempt_id"] += "-truncated"
     worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(truncated_hunk) + ")\n")
     assert run(worker_case).proposal.status == "withheld_malformed"
+
+    missing_final_lf = (
+        b"diff --git a/file b/file\n"
+        b"--- a/file\n"
+        b"+++ b/file\n"
+        b"@@ -1 +1 @@\n"
+        b"-old\n"
+        b"+new"
+    )
+    worker_case.envelope["attempt_id"] += "-no-lf"
+    worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(missing_final_lf) + ")\n")
+    assert run(worker_case).proposal.status == "withheld_malformed"
+
+
+def test_elf_descriptor_mismatch_refuses_cleanly_through_run_patch_return(worker_case, monkeypatch):
+    # Consiliency/agent-harness#1960 item 2: if the ELF binary at argv[0] is replaced
+    # between _descriptor_image and before_spawn (even with identical bytes/digest),
+    # run_patch_return must refuse executable_changed before recording running.
+    case = worker_case
+    elf_bytes = b"\x7fELF" + b"\x00" * 60
+    case.executable.write_bytes(elf_bytes)
+    case.executable.chmod(0o700)
+    case.config.template_path.write_text(json.dumps(["{executable}"]))
+    prepared = prepare(case)
+    assert hasattr(prepared, "view"), prepared
+
+    replacement = case.root / "elf-replacement"
+    replacement.write_bytes(elf_bytes)
+    replacement.chmod(0o700)
+
+    original_digest = worker._executable_digest
+    swapped = []
+
+    def swap_before_digest(path):
+        if not swapped and Path(path) == case.executable:
+            swapped.append(1)
+            os.replace(replacement, case.executable)
+        return original_digest(path)
+
+    monkeypatch.setattr(worker, "_executable_digest", swap_before_digest)
+    result = worker.run_patch_return(
+        prepared, config_bytes=case.config.config_path.read_bytes(), state_root=case.state,
+    )
+    assert swapped == [1]
+    assert result.state == "refused" and result.refusal == "executable_changed"
+    assert result.worker_invocations == 0 and result.journal_complete and result.journal_anchor is not None
+    root = rs.open_journal_root(case.state / "journal", create=False)
+    observed = projection.attempt_status(root, case.envelope["attempt_id"])
+    assert observed.state == "refused" and observed.refusal.reason == "executable_changed"
 
 
 def test_w1_group_reclaim_kills_same_group_grandchild_holding_stdout(worker_case):
@@ -1360,23 +1412,22 @@ def test_w1_group_reclaim_kills_same_group_grandchild_holding_stdout(worker_case
     grandchild_pid = None
     try:
         result = run(case)
-        grandchild_pid = int(pidfile.read_text())
+        expected_pid = int(pidfile.read_text())
+        grandchild_pid = expected_pid
         assert result.state == "finished" and result.termination.reason == "completed"
         assert result.proposal.status == "returned"
-        # Reap the reparented grandchild killed by process-group SIGKILL; it must already be dead.
-        waited_pid, _status = os.waitpid(grandchild_pid, 0)
-        assert waited_pid == grandchild_pid
-        with pytest.raises(ProcessLookupError):
-            os.kill(grandchild_pid, 0)
+        # Reap the reparented grandchild and clear grandchild_pid immediately so cleanup
+        # can never signal a reused PID; verify SIGKILL directly from wait status.
+        waited_pid, status = os.waitpid(expected_pid, 0)
         grandchild_pid = None
+        assert waited_pid == expected_pid
+        assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
     finally:
         if grandchild_pid is not None:
             try:
                 os.kill(grandchild_pid, signal.SIGKILL)
                 os.waitpid(grandchild_pid, 0)
-            except ChildProcessError:
-                pass
-            except ProcessLookupError:
+            except (ChildProcessError, ProcessLookupError):
                 pass
         assert library.prctl(36, previous.value, 0, 0, 0) == 0
 
@@ -1399,33 +1450,49 @@ def test_w4_open_journal_root_refusal_stops_without_side_effects(worker_case, mo
 
 def test_w10_repeat_cancel_while_attempt_nonterminal(worker_case):
     # Consiliency/agent-harness#1960 item 3 (W10): repeating cancel_attempt while the
-    # attempt is still nonterminal returns cancel_pending then cancelled once terminal.
+    # attempt is explicitly gated nonterminal delivers both signals and returns
+    # cancel_pending then cancelled once released.
     import time
 
     case = worker_case
     case.config.template_path.write_text('["{executable}", "wait"]')
-    process, commands = _start_launcher(case, mode="queued")
+    process, commands = _start_launcher(case, mode="queued_gate")
     try:
         root = _await_state(case, "queued")
         deadline = time.monotonic() + 5
         while not (case.root / "ready").exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert (case.root / "ready").exists()
+
+        delivered = []
+
+        def first_guard(send):
+            send()
+            delivered.append("first")
+
         first = worker.cancel_attempt(
             state_root=case.state, attempt_id=case.envelope["attempt_id"],
-            launcher_commands=commands, wait_seconds=0.05,
+            launcher_commands=commands, wait_seconds=0.5, signal_guard=first_guard,
         )
-        assert first == "cancel_pending"
+        assert first == "cancel_pending" and delivered == ["first"]
         assert projection.attempt_status(root, case.envelope["attempt_id"]).state == "queued"
+
+        def second_guard(send):
+            assert projection.attempt_status(root, case.envelope["attempt_id"]).state == "queued"
+            send()
+            delivered.append("second")
+            (case.root / "release").write_text("go")
+
         second = worker.cancel_attempt(
             state_root=case.state, attempt_id=case.envelope["attempt_id"],
-            launcher_commands=commands, wait_seconds=5,
+            launcher_commands=commands, wait_seconds=5, signal_guard=second_guard,
         )
-        assert second == "cancelled"
+        assert second == "cancelled" and delivered == ["first", "second"]
         _finish_launcher(process)
         record = json.loads((case.root / "result.json").read_bytes())
         assert record["state"] == "refused" and record["refusal"] == "cancelled_before_start"
     finally:
+        (case.root / "release").write_text("go")
         if process.poll() is None:
             process.terminate()
             _finish_launcher(process)

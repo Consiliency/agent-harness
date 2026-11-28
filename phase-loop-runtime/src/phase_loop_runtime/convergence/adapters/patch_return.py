@@ -31,7 +31,7 @@ from ... import run_status as journal
 from ... import run_status_projection as projection
 from ...supervised_launch import Refused, consume_admission, classify_workspace, trusted_bytes
 from .base import (PROPOSAL_CAP_MAX, CaptureRequest, SpawnRefused,
-                   run_bounded_capture, worker_child_environment)
+                   run_bounded_capture, verify_active_descriptor_image, worker_child_environment)
 
 CANCEL_WAIT_SECONDS = 10
 PRODUCTION_LAUNCHER_COMMANDS = (tuple(seat_uid.trusted_module_argv(
@@ -304,8 +304,16 @@ def _paths(proposal):
             raise ValueError("proposal_path")
         if header and text not in paths:
             paths.append(text)
-    for line in proposal.decode("utf-8").splitlines():
+    text = proposal.decode("utf-8")
+    has_trailing_lf = text.endswith("\n")
+    raw_lines = text.split("\n")
+    if has_trailing_lf:
+        raw_lines.pop()
+    last_index = len(raw_lines) - 1
+    for index, line in enumerate(raw_lines):
         if old_rem or new_rem:
+            if index == last_index and not has_trailing_lf:
+                raise ValueError("proposal_hunk")
             if line.startswith("\\"):
                 continue
             if line.startswith("-"):
@@ -498,6 +506,8 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                         return SpawnRefused(reason)
                 except (OSError, ValueError):
                     return SpawnRefused(reason)
+            if not verify_active_descriptor_image(inputs.argv[0]):
+                return SpawnRefused("executable_changed")
             writer.call("state", "running", worker_invocations=1)
             return SpawnRefused("journal_unavailable") if writer.failed else None
 

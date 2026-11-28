@@ -30,6 +30,12 @@ def audit(*args):
         if job["mode"] == "queued":
             (root / "ready").write_text("queued")
             time.sleep(.5)
+        if job["mode"] == "queued_gate":
+            (root / "ready").write_text("queued")
+            release = root / "release"
+            deadline = time.monotonic() + 15
+            while not release.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
     return original(*args)
 
 worker._audit = audit

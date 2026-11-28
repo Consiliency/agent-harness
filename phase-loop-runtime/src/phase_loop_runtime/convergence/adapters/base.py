@@ -29,6 +29,7 @@ reported as success.
 """
 from __future__ import annotations
 from contextlib import ExitStack
+import contextvars
 
 import hashlib
 import json
@@ -357,6 +358,36 @@ def _nofollow_stat(path: str | os.PathLike[str]) -> os.stat_result | None:
     return leaf if stat.S_ISREG(leaf.st_mode) else None
 
 
+_ACTIVE_DESCRIPTOR: contextvars.ContextVar[list[object] | None] = contextvars.ContextVar(
+    "_ACTIVE_DESCRIPTOR", default=None,
+)
+
+
+def _descriptor_matches_path(image: int, path: str | os.PathLike[str]) -> bool:
+    try:
+        held = os.fstat(image)
+    except OSError:
+        return False
+    fresh = _nofollow_stat(path)
+    return (fresh is not None
+            and (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns)
+            == (fresh.st_dev, fresh.st_ino, fresh.st_size, fresh.st_mtime_ns))
+
+
+def verify_active_descriptor_image(path: str | os.PathLike[str]) -> bool:
+    """Verify any held ELF descriptor for the active ``run_bounded_capture`` call
+    against a fresh no-follow stat of ``path`` before the caller records ``running``."""
+    active = _ACTIVE_DESCRIPTOR.get()
+    if active is None:
+        return True
+    image = active[0]
+    assert isinstance(image, int)
+    if not _descriptor_matches_path(image, path):
+        return False
+    active[1] = True
+    return True
+
+
 def _descriptor_image(path):
     """Hold a no-follow ELF image when descriptor execution is available."""
     if not Path("/proc/self/fd").is_dir() or not Path(path).is_absolute():
@@ -401,6 +432,8 @@ def run_bounded_capture(request: CaptureRequest, *,
         except BaseException:
             spawn_capability.close()
             return SpawnRefused("launch_input_unbound")
+    active_descriptor: list[object] | None = [image, False] if (spawn_capability is None and image is not None) else None
+    descriptor_token = _ACTIVE_DESCRIPTOR.set(active_descriptor) if active_descriptor is not None else None
     try:
         refusal = before_spawn() if spawn_capability is None else None
     except BaseException:
@@ -409,22 +442,17 @@ def run_bounded_capture(request: CaptureRequest, *,
         elif image is not None:
             os.close(image)
         return SpawnRefused("before_spawn_failed")
+    finally:
+        if descriptor_token is not None:
+            _ACTIVE_DESCRIPTOR.reset(descriptor_token)
     if refusal is not None:
         if spawn_capability is not None:
             spawn_capability.close()
         elif image is not None:
             os.close(image)
         return refusal
-    if spawn_capability is None and image is not None:
-        try:
-            held = os.fstat(image)
-        except OSError:
-            os.close(image)
-            return SpawnRefused("executable_changed")
-        fresh = _nofollow_stat(request.argv[0])
-        if (fresh is None
-                or (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns)
-                != (fresh.st_dev, fresh.st_ino, fresh.st_size, fresh.st_mtime_ns)):
+    if active_descriptor is not None and not active_descriptor[1]:
+        if not _descriptor_matches_path(image, request.argv[0]):
             os.close(image)
             return SpawnRefused("executable_changed")
     exec_binding = "descriptor" if image is not None else "path_recheck"
