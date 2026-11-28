@@ -57,9 +57,17 @@ FULL_TRIGGERS = (f"{PKG}/tests/conftest.py", f"{PKG}/pyproject.toml", f"{PKG}/te
 SUITE_IGNORES = ("tests/test_legible_roadmap_contract.py", "tests/test_legible_evidence.py")
 # The hosted lane's suite-environment install (test.yml), so local runs resolve what CI does.
 CI_TEST_DEPS = ("./phase-loop-runtime[visual,claude-sdk,grok-catalog]", "pytest", "pytest-xdist==3.8.0", "build==1.6.1", "setuptools>=70.1")
+# `uv venv` creates an interpreter without `pip`, whereas hosted CI's setup-python
+# includes it and packaging tests invoke `sys.executable -m pip` (agent-harness#1768).
+LOCAL_VENV_DEPS = ("pip",)
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 VENV_DIR = ".local-check-venv"
 VENV_PYTHON = "3.12"  # the CI lane pull requests run (the floor since agent-harness#1546)
+
+
+def venv_deps() -> tuple[str, ...]:
+    """Dependencies installed into the cached local-check venv and tracked by its cache key."""
+    return (*CI_TEST_DEPS, *LOCAL_VENV_DEPS)
 
 
 def changed_files(repo: Path, base: str) -> list[str]:
@@ -177,7 +185,7 @@ def check_python(repo: Path) -> str:
     # From scratch: layering onto an old venv would keep packages CI no longer installs.
     shutil.rmtree(venv, ignore_errors=True)
     subprocess.run([uv, "venv", "-q", "--python", VENV_PYTHON, str(venv)], cwd=repo, check=True)
-    subprocess.run([uv, "pip", "install", "-q", "--python", str(python), *CI_TEST_DEPS], cwd=repo, check=True)
+    subprocess.run([uv, "pip", "install", "-q", "--python", str(python), *venv_deps()], cwd=repo, check=True)
     stamp.write_text(wanted)
     return str(python)
 
@@ -185,7 +193,7 @@ def check_python(repo: Path) -> str:
 def cache_key(repo: Path) -> str:
     """The cached venv is reused only for the same deps, project metadata and Python."""
     pyproject = hashlib.sha256((repo / PKG / "pyproject.toml").read_bytes()).hexdigest()
-    return "\n".join((*CI_TEST_DEPS, f"pyproject.toml sha256 {pyproject}", f"python {VENV_PYTHON}"))
+    return "\n".join((*venv_deps(), f"pyproject.toml sha256 {pyproject}", f"python {VENV_PYTHON}"))
 
 
 def clean_env(python: str) -> dict[str, str]:

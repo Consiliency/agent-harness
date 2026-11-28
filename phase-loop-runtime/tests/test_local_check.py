@@ -109,6 +109,60 @@ def test_the_venv_cache_key_tracks_project_metadata(lc, tmp_path):
     assert lc.cache_key(tmp_path) != before
 
 
+def test_local_venv_supplies_pip_and_refreshes_stale_cache(lc, monkeypatch, tmp_path):
+    """agent-harness#1768: uv-provisioned local_check venvs must include pip for
+    packaging tests (`sys.executable -m pip`) and invalidate pre-pip cache stamps."""
+    pkg_dir = tmp_path / lc.PKG
+    pkg_dir.mkdir()
+    pyproject = pkg_dir / "pyproject.toml"
+    pyproject.write_text('requires-python = ">=3.12"\n')
+
+    deps = lc.venv_deps()
+    assert "pip" in lc.LOCAL_VENV_DEPS
+    assert "pip" in deps
+    wanted = lc.cache_key(tmp_path)
+    assert "pip" in wanted.splitlines()
+
+    # Pre-populate a stale venv whose .deps stamp predates LOCAL_VENV_DEPS (no pip).
+    venv = pkg_dir / lc.VENV_DIR
+    python = venv / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n")
+    pyproject_hash = lc.hashlib.sha256(pyproject.read_bytes()).hexdigest()
+    stale_stamp = "\n".join((*lc.CI_TEST_DEPS, f"pyproject.toml sha256 {pyproject_hash}", f"python {lc.VENV_PYTHON}"))
+    (venv / ".deps").write_text(stale_stamp)
+    assert stale_stamp != wanted
+
+    monkeypatch.delenv("LOCAL_CHECK_PYTHON", raising=False)
+    monkeypatch.setattr(lc.shutil, "which", lambda name: f"/usr/bin/{name}" if name == "uv" else None)
+    recorded: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        recorded.append(list(cmd))
+        if cmd[:2] == ["/usr/bin/uv", "venv"]:
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("#!/bin/sh\n")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(lc.subprocess, "run", fake_run)
+
+    # First call must rebuild the stale venv and install CI_TEST_DEPS + pip.
+    assert lc.check_python(tmp_path) == str(python)
+    assert len(recorded) == 2
+    assert recorded[0][:2] == ["/usr/bin/uv", "venv"]
+    install_cmd = recorded[1]
+    assert install_cmd[:5] == ["/usr/bin/uv", "pip", "install", "-q", "--python"]
+    assert install_cmd[5] == str(python)
+    assert tuple(install_cmd[6:]) == deps
+    assert "pip" in install_cmd[6:]
+    assert (venv / ".deps").read_text() == wanted
+
+    # Second call with matching stamp reuses the cached venv without invoking uv.
+    recorded.clear()
+    assert lc.check_python(tmp_path) == str(python)
+    assert recorded == []
+
+
 def test_no_linter_is_not_a_pass(lc, monkeypatch, capsys):
     monkeypatch.setattr(lc.shutil, "which", lambda name: None if name == "uvx" else name)
     monkeypatch.setattr(lc, "changed_files", lambda repo, base: [])
