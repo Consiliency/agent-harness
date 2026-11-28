@@ -156,6 +156,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and names every retaining `matrix.python-version` lane in its `if:` expression, with
   positive and negative mutation controls in `test_ci_chronology_scope.py`
   (agent-harness#1598).
+- Clarify in `CONTRIBUTING.md` that doc-only diffs select no tests in `make check`, that
+  the docs checks require `phase_loop_runtime` to be importable, and pin
+  `uv sync --python 3.12` to match CI's PR-lane interpreter (agent-harness#1618).
 - Harden the jailed Codex review seat's timeout, cancellation, setup, probe accounting,
   qualification, and doctor ordering: classify Codex `TimeoutExpired` and clean broker
   deadline exits as `TIMEOUT` with closed detail `codex leg deadline exceeded` (and

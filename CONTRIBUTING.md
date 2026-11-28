@@ -28,22 +28,23 @@ On shared hosts, use only named test files, serially without `-n`, under `timeou
 Leave whole-suite checks to hosted CI (see `AGENTS.md`).
 
 - `make check` runs the checks your change can affect against `origin/main`. That covers
-  ruff with CI's pinned version and config, plus the tests your diff can reach. They run
-  in a clean environment with a throwaway HOME and only the system PATH, which is how
-  CI-only failures reproduce locally. `make check-full` runs the whole standalone suite.
-  See `phase-loop-runtime/scripts/local_check.py --help` (and `--dry-run` to see what
-  it would run).
+  ruff with CI's pinned version and config, plus the tests your diff can reach (doc-only
+  diffs select no tests). They run in a clean environment with a throwaway HOME and only
+  the system PATH, which is how CI-only failures reproduce locally. `make check-full`
+  runs the whole standalone suite. See `phase-loop-runtime/scripts/local_check.py --help`
+  (and `--dry-run` to see what it would run).
 - To run specific tests the way CI does, from the repository root:
 
   ```sh
-  uv sync --project phase-loop-runtime --group test --extra visual --locked
+  uv sync --python 3.12 --project phase-loop-runtime --group test --extra visual --locked
   PYTHONPATH="$PWD/phase-loop-runtime/src:$PWD/phase-loop-runtime/tests" \
     timeout 300 phase-loop-runtime/.venv/bin/python -m pytest -q phase-loop-runtime/tests/test_entry_doc_check.py
   ```
 
   Use an absolute `PYTHONPATH`. A test that starts a child Python from another directory
   would otherwise import an installed copy instead of the tree under test.
-- Docs checks, as CI runs them:
+- Docs checks, as CI runs them (requires `phase_loop_runtime` to be importable — use the
+  synced `phase-loop-runtime/.venv` above, or set `PYTHONPATH="$PWD/phase-loop-runtime/src"`):
 
   ```sh
   timeout 120 phase-loop-runtime/.venv/bin/python -m phase_loop_runtime.entry_doc_check --repo .
