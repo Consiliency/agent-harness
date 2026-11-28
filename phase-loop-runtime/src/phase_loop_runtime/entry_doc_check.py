@@ -7,12 +7,15 @@ docs still true?". Every defect this module targets arose with **no diff
 touching the doc** -- a ``v0.1.5`` install pin that rotted through six releases
 untouched, a relative link that renders on GitHub but breaks on PyPI.
 
-Three arms, each fully decidable offline:
+Four arms, each fully decidable offline:
 
   (1) ``paths``              -- backtick tokens that look like repo paths resolve.
   (2) ``pins``               -- version pins are *fresh*, not merely resolvable.
   (3) ``published_rendering`` -- a README shipped as a package long-description
                                 carries no relative link destinations.
+  (4) ``cli_flags``          -- ``phase-loop <subcommand> --flag`` spans in
+                                ``docs/``, ``skills-src/``, and entry docs match
+                                the live ``phase-loop`` CLI parser (``--help``).
 
 Two clocks, never crossed
 -------------------------
@@ -33,6 +36,7 @@ Zero external deps (stdlib only). Importable API + ``main(argv) -> int`` +
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import itertools
 import json
@@ -84,8 +88,16 @@ PACKAGE_LONG_DESCRIPTION_DOCS: Tuple[str, ...] = (
 #: long-description, and the coverage arm must keep reconciling against that
 #: narrower set or it would stop reporting an unlisted package README.
 ONBOARDING_DOCS: Tuple[str, ...] = (
+    "CONTRIBUTING.md",
     "docs/TEAM-ONBOARDING.md",
     "docs/outside-worker-quickstart.md",
+)
+
+#: Directories scanned by Arm 4 (``cli_flags``) for ``phase-loop <sub> --flag``
+#: drift beyond the entry docs (agent-harness#1612).
+CLI_FLAG_DOC_ROOTS: Tuple[str, ...] = (
+    "docs",
+    "skills-src",
 )
 
 #: Everything the arms read. The union of two roles that used to be one tuple --
@@ -291,13 +303,34 @@ class RepoContext:
     def is_ignored(self, rel: str) -> bool:
         """True when the repo's own gitignore declares ``rel`` an artifact.
 
-        The discriminator for runtime-created paths (`.phase-loop/state.json`)
-        is the repository's own configuration, not a hardcoded list: if git
-        says the path is ignored, the repo has already declared it generated
-        rather than tracked, so documenting it is correct even though it is
-        absent from a clean checkout.
+        The discriminator for runtime-created paths (`.phase-loop/state.json`,
+        `phase-loop-runtime/.venv`) is the repository's own configuration, not
+        a hardcoded list: if git says the path is ignored, the repo has already
+        declared it generated rather than tracked, so documenting it is correct
+        even though it is absent from a clean checkout. Trailing-slash rules
+        such as `.venv/` only match a non-existent path in `git check-ignore`
+        when queried with a trailing `/`, so check both forms.
         """
-        return self._git("check-ignore", "-q", "--", rel) is not None
+        cleaned = rel.rstrip("/")
+        if not cleaned:
+            return False
+        return (
+            self._git("check-ignore", "-q", "--", rel) is not None
+            or (
+                not rel.endswith("/")
+                and self._git("check-ignore", "-q", "--", cleaned + "/") is not None
+            )
+        )
+
+    def is_remote_tracking_ref(self, ref: str) -> bool:
+        """True when ``ref`` resolves to a real ``refs/remotes/<ref>`` in git.
+
+        Allows entry docs like ``CONTRIBUTING.md`` to cite ``origin/main`` as a
+        backticked git ref without blanket-skipping typos like ``origin/mian``.
+        """
+        if not ref or ref.startswith("/") or ref.startswith("-") or "/" not in ref or ".." in ref:
+            return False
+        return self._git("show-ref", "--verify", "--quiet", f"refs/remotes/{ref}") is not None
 
     def has_directory_prefix(self, prefix: str) -> bool:
         """True if ``prefix`` occurs as a directory-path component sequence.
@@ -629,6 +662,10 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
             if ctx.is_ignored(token.lstrip("/")):
                 # A generated/runtime artifact by the repo's own declaration.
                 continue
+            if not token.startswith("/") and ctx.is_remote_tracking_ref(token):
+                # A real git remote-tracking ref (for example `origin/main`),
+                # not a repository path.
+                continue
             findings.append(
                 Finding(
                     file=doc_path,
@@ -696,6 +733,52 @@ _FLAG_REF_PIN_RE = re.compile(
 
 #: Archive suffixes and sentence punctuation that ride along on a URL-form ref.
 _REF_SUFFIX_RE = re.compile(r"(?:\.tar\.gz|\.tgz|\.zip)$", re.IGNORECASE)
+
+
+_WORKFLOW_REF_SENTINEL = "__ENTRY_DOC_REF_SENTINEL__"
+
+
+def _is_workflow_dispatch_ref(line: str, match_start: int, matched_text: str) -> bool:
+    """True when ``--ref`` belongs to ``gh workflow run ... --ref <branch>``.
+
+    GitHub CLI's ``gh workflow run --ref`` selects a branch or ref to dispatch a
+    workflow on, not an ``agent-harness`` install release-tag pin. Parses the
+    prefix before ``match_start`` with quote- and operator-aware shell
+    tokenization (handling ``;``, ``|``, ``||``, ``&``, ``&&``, ``(``, quotes,
+    and ``$(...)`` command substitutions) and inspects the exact command segment
+    that owns the ``--ref`` token, requiring unquoted ``gh workflow run`` in
+    command position.
+    """
+    if not matched_text.startswith("--ref"):
+        return False
+    prefix = line[:match_start]
+    if "`" in prefix:
+        prefix = prefix.rsplit("`", 1)[-1]
+    segments = _tokenize_shell_segments(
+        [(1, prefix + " " + _WORKFLOW_REF_SENTINEL)],
+        newline_ends_command=True,
+    )
+    owner_seg: Optional[List[Tuple[str, int, bool]]] = None
+    for seg in segments:
+        if any(tok == _WORKFLOW_REF_SENTINEL and not quoted for tok, _ln, quoted in seg):
+            owner_seg = seg
+            break
+    if owner_seg is None:
+        return False
+    idx = _skip_shell_wrappers(owner_seg)
+    if idx is None or idx + 2 >= len(owner_seg):
+        return False
+    t0, _l0, q0 = owner_seg[idx]
+    t1, _l1, q1 = owner_seg[idx + 1]
+    t2, _l2, q2 = owner_seg[idx + 2]
+    return (
+        not q0
+        and not q1
+        and not q2
+        and (t0 == "gh" or t0.endswith("/gh"))
+        and t1 == "workflow"
+        and t2 == "run"
+    )
 
 
 def _normalize_url_ref(ref: str) -> str:
@@ -888,7 +971,10 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
             )
         for match in _FLAG_REF_PIN_RE.finditer(line):
             # No owner/repo to gate on -- see _FLAG_REF_PIN_RE. An unqualified ref
-            # in this repository's own entry doc is a claim about this repository.
+            # in this repository's own entry doc is a claim about this repository,
+            # except GitHub CLI's `gh workflow run ... --ref <branch>`.
+            if _is_workflow_dispatch_ref(line, match.start(), match.group(0)):
+                continue
             findings.extend(
                 _evaluate_ref_pin(
                     match.group("ref"), match.group(0), doc_path, idx, ctx
@@ -977,6 +1063,928 @@ def check_published_rendering(text: str, doc_path: str, ctx: RepoContext) -> Lis
                         f"the long-description of `{package.name}`. GitHub rewrites it "
                         f"with repository context; PyPI does not. Use an absolute URL."
                     ),
+                )
+            )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Arm 4 -- CLI flags (agent-harness#1612)
+
+
+_CLI_FENCE_RE = re.compile(r"^([ ]*)(`{3,}|~{3,})(.*)$")
+_CLI_FLAG_RE = re.compile(r"^--[a-z][a-z0-9-]*$")
+_CLI_SUBCOMMAND_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+_CLI_BQ_STEP_RE = re.compile(r"^[ ]{0,3}>[ ]?")
+_CLI_LIST_ITEM_RE = re.compile(r"^([ \t]*)(?:[-*+]|\d{1,9}[.)])(?:([ \t]+)|$)")
+_CLI_THEMATIC_BREAK_RE = re.compile(r"^[ ]{0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$")
+
+
+@dataclass(frozen=True)
+class _CliCommandSpec:
+    options: frozenset
+    value_options: Dict[str, object]
+    remainder_options: frozenset
+    positional_remainder_index: Optional[int]
+
+
+def _collect_parser_flags(
+    parser: argparse.ArgumentParser, prefix: Tuple[str, ...] = ()
+) -> Dict[Tuple[str, ...], _CliCommandSpec]:
+    """Walk ``parser`` and its subparsers, returning documented ``--flag`` specs."""
+    specs: Dict[Tuple[str, ...], _CliCommandSpec] = {}
+    own_opts: Set[str] = set()
+    own_value_opts: Dict[str, object] = {}
+    own_remainder_opts: Set[str] = set()
+    positional_count = 0
+    positional_remainder_index: Optional[int] = None
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            continue
+        if not action.option_strings:
+            if action.nargs == argparse.REMAINDER and positional_remainder_index is None:
+                positional_remainder_index = positional_count
+            elif action.nargs != 0:
+                positional_count += 1
+            continue
+        if action.help is argparse.SUPPRESS:
+            continue
+        for opt in action.option_strings:
+            if opt.startswith("--"):
+                own_opts.add(opt)
+                if action.nargs == argparse.REMAINDER:
+                    own_remainder_opts.add(opt)
+                elif action.nargs != 0:
+                    own_value_opts[opt] = action.nargs
+    specs[prefix] = _CliCommandSpec(
+        options=frozenset(own_opts),
+        value_options=own_value_opts,
+        remainder_options=frozenset(own_remainder_opts),
+        positional_remainder_index=positional_remainder_index,
+    )
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, subparser in action.choices.items():
+                specs.update(_collect_parser_flags(subparser, prefix + (name,)))
+    return specs
+
+
+@functools.lru_cache(maxsize=1)
+def _load_cli_parser_flags() -> Dict[Tuple[str, ...], _CliCommandSpec]:
+    """Lazily inspect ``phase_loop_runtime.cli.build_parser()`` for documented flags."""
+    from . import cli as _cli
+
+    return _collect_parser_flags(_cli.build_parser())
+
+
+def _cli_indent_width(line: str) -> int:
+    expanded = line.expandtabs(4)
+    return len(expanded) - len(expanded.lstrip(" "))
+
+
+def _strip_blockquote_prefix(line: str) -> Tuple[int, str]:
+    depth = 0
+    rest = line
+    while True:
+        match = _CLI_BQ_STEP_RE.match(rest)
+        if not match:
+            break
+        depth += 1
+        rest = rest[match.end() :]
+    return depth, rest
+
+
+def _cli_list_item_content_indent(line: str) -> Optional[int]:
+    if _CLI_THEMATIC_BREAK_RE.match(line):
+        return None
+    expanded = line.expandtabs(4)
+    match = _CLI_LIST_ITEM_RE.match(expanded)
+    if not match:
+        return None
+    return match.end()
+
+
+def _iter_multiline_inline_code_spans(
+    prose_lines: Sequence[Tuple[int, str]],
+) -> List[List[Tuple[int, str]]]:
+    """Extract CommonMark single- or multi-line inline code spans with line numbers."""
+    if not prose_lines:
+        return []
+    parts: List[str] = []
+    char_lines: List[int] = []
+    for idx, (lineno, text) in enumerate(prose_lines):
+        if idx > 0:
+            parts.append("\n")
+            char_lines.append(lineno)
+        parts.append(text)
+        char_lines.extend([lineno] * len(text))
+    para = "".join(parts)
+    spans: List[List[Tuple[int, str]]] = []
+    pos = 0
+    length = len(para)
+    while pos < length:
+        if para[pos] != "`":
+            pos += 1
+            continue
+        run_end = pos
+        while run_end < length and para[run_end] == "`":
+            run_end += 1
+        ticks = para[pos:run_end]
+        close = para.find(ticks, run_end)
+        while close != -1 and (
+            (close > 0 and para[close - 1] == "`")
+            or (close + len(ticks) < length and para[close + len(ticks)] == "`")
+        ):
+            close = para.find(ticks, close + 1)
+        if close == -1:
+            pos = run_end
+            continue
+        span_lines: List[Tuple[int, str]] = []
+        chunk_start = run_end
+        while chunk_start < close:
+            nl = para.find("\n", chunk_start, close)
+            chunk_end = close if nl == -1 else nl
+            chunk_text = para[chunk_start:chunk_end]
+            chunk_lineno = char_lines[chunk_start] if chunk_start < len(char_lines) else prose_lines[-1][0]
+            span_lines.append((chunk_lineno, chunk_text))
+            if nl == -1:
+                break
+            chunk_start = nl + 1
+        if span_lines:
+            spans.append(span_lines)
+        pos = close + len(ticks)
+    return spans
+
+
+def _scan_command_substitution(text: str, start: int) -> int:
+    """Return index of matching ``)`` for ``$(`` whose body starts at ``start``, else ``-1``."""
+    stack: List[str] = ["subst"]
+    i = start
+    n = len(text)
+    while i < n and stack:
+        ch = text[i]
+        top = stack[-1]
+        if top == "squote":
+            if ch == "'":
+                stack.pop()
+            i += 1
+            continue
+        if top == "dquote":
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                stack.pop()
+                i += 1
+                continue
+            if ch == "$" and i + 1 < n and text[i + 1] == "(":
+                stack.append("subst")
+                i += 2
+                continue
+            i += 1
+            continue
+        # Inside command substitution (`subst` or nested `paren`)
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "'":
+            stack.append("squote")
+            i += 1
+            continue
+        if ch == '"':
+            stack.append("dquote")
+            i += 1
+            continue
+        if ch == "$" and i + 1 < n and text[i + 1] == "(":
+            stack.append("subst")
+            i += 2
+            continue
+        if ch == "(":
+            stack.append("paren")
+            i += 1
+            continue
+        if ch == ")":
+            stack.pop()
+            if not stack:
+                return i
+            i += 1
+            continue
+        i += 1
+    return -1
+
+
+_SHELL_BINS: frozenset = frozenset({"sh", "bash", "zsh", "dash"})
+_UNSHARE_VALUE_OPTS: frozenset = frozenset(
+    {"--propagation", "--map-user", "--map-group", "--root", "--wd", "--setuid", "--setgid", "-R", "-w", "-S", "-G"}
+)
+
+
+def _find_shell_c_script(
+    seg: Sequence[Tuple[str, int, bool, List[int]]]
+) -> Optional[Tuple[str, List[int]]]:
+    """If ``seg`` invokes ``sh/bash/zsh/dash ... -c <script>``, return ``(script, char_lines)``."""
+    stripped_seg = [(tok, ln, q) for tok, ln, q, _lines in seg]
+    idx = _skip_shell_wrappers(stripped_seg)
+    if idx is None or idx >= len(seg):
+        return None
+    tok, _ln, quoted, _lines = seg[idx]
+    if quoted:
+        return None
+    base = tok.rsplit("/", 1)[-1]
+    if base not in _SHELL_BINS:
+        return None
+    p = idx + 1
+    n = len(seg)
+    saw_c = False
+    while p < n:
+        opt, _oln, oq, _olines = seg[p]
+        if oq:
+            break
+        if opt == "--":
+            p += 1
+            break
+        if opt in ("-o", "+o"):
+            p += 2
+            continue
+        if opt.startswith("--"):
+            p += 1
+            continue
+        if len(opt) >= 2 and opt[0] in ("-", "+") and opt[1:].isalpha():
+            if opt[0] == "-" and "c" in opt[1:]:
+                saw_c = True
+                p += 1
+                # If `-o` is combined with `-c` (e.g. `-co pipefail`), skip the `-o` value.
+                if "o" in opt[1:] and p < n:
+                    p += 1
+                continue
+            p += 1
+            continue
+        break
+    if saw_c and p < n:
+        script_tok, _sln, _sq, script_lines = seg[p]
+        return script_tok, script_lines
+    return None
+
+
+def _tokenize_shell_text(
+    text: str,
+    char_lines: Sequence[int],
+    *,
+    newline_ends_command: bool = True,
+    _depth: int = 0,
+) -> List[List[Tuple[str, int, bool]]]:
+    """Tokenize shell command text into operator-bounded segments.
+
+    Preserves POSIX quote, comment, and ``\\``-newline continuation semantics:
+    - Outside single quotes, ``\\`` immediately before ``\\n`` is removed without
+      breaking the current token or command.
+    - Unquoted ``#`` at token start comments out only through the next ``\\n``
+      (ignoring any trailing ``\\`` inside the comment).
+    - Single- and double-quoted strings may span lines when closed in the block,
+      preventing quoted payloads from masquerading as shell commands, while
+      literal script arguments passed to ``sh/bash/zsh/dash -c`` are recursively
+      tokenized with exact source line numbers.
+    """
+    segments: List[List[Tuple[str, int, bool]]] = []
+    nested_segments: List[List[Tuple[str, int, bool]]] = []
+    cur_seg: List[Tuple[str, int, bool, List[int]]] = []
+    buf: List[str] = []
+    buf_lines: List[int] = []
+    buf_line = 0
+    buf_quoted = False
+    in_quote: Optional[str] = None
+
+    def flush_tok() -> None:
+        nonlocal buf_quoted
+        if buf:
+            cur_seg.append(("".join(buf), buf_line, buf_quoted, list(buf_lines)))
+            buf.clear()
+            buf_lines.clear()
+            buf_quoted = False
+
+    def flush_seg() -> None:
+        flush_tok()
+        if cur_seg:
+            segments.append([(t, ln, q) for t, ln, q, _ls in cur_seg])
+            if _depth < 4:
+                shell_c = _find_shell_c_script(cur_seg)
+                if shell_c is not None:
+                    script_text, script_lines = shell_c
+                    nested_segments.extend(
+                        _tokenize_shell_text(
+                            script_text,
+                            script_lines,
+                            newline_ends_command=True,
+                            _depth=_depth + 1,
+                        )
+                    )
+            cur_seg.clear()
+        if nested_segments:
+            segments.extend(nested_segments)
+            nested_segments.clear()
+
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        lineno = char_lines[i]
+        if in_quote is not None:
+            if ch == "\\" and in_quote == '"' and i + 1 < n:
+                nxt = text[i + 1]
+                if nxt == "\n":
+                    i += 2  # POSIX line continuation inside double quotes
+                    continue
+                if nxt in '$`"\\':
+                    buf.append(nxt)
+                    buf_lines.append(char_lines[i + 1])
+                    i += 2
+                    continue
+            if ch == in_quote:
+                in_quote = None
+                i += 1
+                continue
+            if in_quote == '"' and ch == "$" and i + 1 < n and text[i + 1] == "(":
+                close_idx = _scan_command_substitution(text, i + 2)
+                if close_idx != -1:
+                    buf.append(text[i : close_idx + 1])
+                    buf_lines.extend(char_lines[i : close_idx + 1])
+                    if _depth < 4:
+                        nested_segments.extend(
+                            _tokenize_shell_text(
+                                text[i + 2 : close_idx],
+                                char_lines[i + 2 : close_idx],
+                                newline_ends_command=True,
+                                _depth=_depth + 1,
+                            )
+                        )
+                    i = close_idx + 1
+                    continue
+            buf.append(ch)
+            buf_lines.append(lineno)
+            i += 1
+            continue
+        if ch == "#" and not buf:
+            nl = text.find("\n", i)
+            if nl == -1:
+                break
+            if newline_ends_command:
+                flush_seg()
+            i = nl + 1
+            continue
+        if ch in ("'", '"'):
+            if text.find(ch, i + 1) != -1:
+                if not buf:
+                    buf_line = lineno
+                    buf_quoted = True
+                in_quote = ch
+                i += 1
+                continue
+            if not buf:
+                buf_line = lineno
+            buf.append(ch)
+            buf_lines.append(lineno)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            if text[i + 1] == "\n":
+                i += 2  # POSIX line continuation joins tokens across lines
+                continue
+            if not buf:
+                buf_line = lineno
+            buf.append(text[i + 1])
+            buf_lines.append(char_lines[i + 1])
+            i += 2
+            continue
+        if ch == "\n":
+            if newline_ends_command:
+                flush_seg()
+            else:
+                flush_tok()
+            i += 1
+            continue
+        if ch in " \t\r":
+            flush_tok()
+            i += 1
+            continue
+        if ch == "$" and i + 1 < n and text[i + 1] == "(":
+            close_idx = _scan_command_substitution(text, i + 2)
+            if close_idx != -1:
+                if not buf:
+                    buf_line = lineno
+                buf.append(text[i : close_idx + 1])
+                buf_lines.extend(char_lines[i : close_idx + 1])
+                if _depth < 4:
+                    nested_segments.extend(
+                        _tokenize_shell_text(
+                            text[i + 2 : close_idx],
+                            char_lines[i + 2 : close_idx],
+                            newline_ends_command=True,
+                            _depth=_depth + 1,
+                        )
+                    )
+                i = close_idx + 1
+                continue
+            flush_seg()
+            i += 2
+            continue
+        if ch in ";|&()":
+            flush_seg()
+            if i + 1 < n and text[i + 1] == ch and ch in "|&":
+                i += 2
+            else:
+                i += 1
+            continue
+        if not buf:
+            buf_line = lineno
+        buf.append(ch)
+        buf_lines.append(lineno)
+        i += 1
+    flush_seg()
+    return segments
+
+
+def _tokenize_shell_segments(
+    lines_with_nos: Sequence[Tuple[int, str]],
+    *,
+    newline_ends_command: bool = True,
+) -> List[List[Tuple[str, int, bool]]]:
+    """Split shell command lines into operator-bounded segments of ``(tok, line, quoted)``."""
+    parts: List[str] = []
+    char_lines: List[int] = []
+    for idx, (lineno, raw) in enumerate(lines_with_nos):
+        cleaned = raw.rstrip("\r")
+        if idx > 0:
+            parts.append("\n")
+            char_lines.append(lineno)
+        parts.append(cleaned)
+        char_lines.extend([lineno] * len(cleaned))
+    if not parts:
+        return []
+    return _tokenize_shell_text(
+        "".join(parts), char_lines, newline_ends_command=newline_ends_command
+    )
+
+
+def _iter_cli_code_segments(text: str) -> List[List[Tuple[str, int, bool]]]:
+    """Yield shell command segments from fenced code blocks and inline code spans.
+
+    Handles blockquote-nested fences (``> ```sh``), list-indented fences within
+    CommonMark container bounds (preventing 4-space top-level indented code
+    lines containing literal backticks from opening phantom fences), multiline
+    inline code spans, and whole-fence shell tokenization so quote, comment, and
+    ``\\``-newline continuation states are preserved accurately across lines.
+    """
+    lines = text.split("\n")
+    out: List[List[Tuple[str, int, bool]]] = []
+    opener_char: Optional[str] = None
+    opener_len = 0
+    fence_bq = 0
+    fence_min = 0
+    fence_bound: Optional[int] = None
+    fence_lines: List[Tuple[int, str]] = []
+    prose_lines: List[Tuple[int, str]] = []
+    prose_bq = 0
+    list_indents: List[int] = []
+    last_bq = 0
+    saw_blank = False
+
+    def flush_fence_block() -> None:
+        if fence_lines:
+            out.extend(_tokenize_shell_segments(fence_lines, newline_ends_command=True))
+            fence_lines.clear()
+
+    def flush_prose() -> None:
+        if prose_lines:
+            for span_lines in _iter_multiline_inline_code_spans(prose_lines):
+                out.extend(_tokenize_shell_segments(span_lines, newline_ends_command=False))
+            prose_lines.clear()
+
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        lineno = idx + 1
+        bq_depth, body = _strip_blockquote_prefix(line)
+
+        if opener_char is not None:
+            left_blockquote = bq_depth < fence_bq
+            dedented_list = (
+                not left_blockquote
+                and fence_bound is not None
+                and bool(body.strip())
+                and _cli_indent_width(body) < fence_bound
+            )
+            if left_blockquote or dedented_list:
+                flush_fence_block()
+                opener_char = None
+                opener_len = 0
+                fence_bq = 0
+                fence_min = 0
+                fence_bound = None
+                continue  # re-process current line outside the closed fence
+
+            # Strip only the fence's own blockquote depth for fence content/closer.
+            content = line
+            for _ in range(fence_bq):
+                m_bq = _CLI_BQ_STEP_RE.match(content)
+                if m_bq:
+                    content = content[m_bq.end() :]
+            match = _CLI_FENCE_RE.match(content)
+            cur_indent = _cli_indent_width(content)
+            if (
+                match
+                and match.group(2)[0] == opener_char
+                and len(match.group(2)) >= opener_len
+                and not match.group(3).strip()
+                and fence_min <= cur_indent <= fence_min + 3
+            ):
+                flush_fence_block()
+                opener_char = None
+                opener_len = 0
+                fence_bq = 0
+                fence_min = 0
+                fence_bound = None
+                idx += 1
+                continue
+            fence_lines.append((lineno, content))
+            idx += 1
+            continue
+
+        if not body.strip():
+            flush_prose()
+            saw_blank = True
+            idx += 1
+            continue
+
+        if bq_depth != last_bq:
+            flush_prose()
+            list_indents.clear()
+            last_bq = bq_depth
+            saw_blank = False
+
+        cur_indent = _cli_indent_width(body)
+        if saw_blank:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+        saw_blank = False
+
+        item_indent = _cli_list_item_content_indent(body)
+        if item_indent is not None:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+            list_indents.append(item_indent)
+            after_marker = body.expandtabs(4)[item_indent:]
+            inline_match = _CLI_FENCE_RE.match(after_marker)
+            if inline_match and _cli_indent_width(after_marker) <= 3:
+                char = inline_match.group(2)[0]
+                info = inline_match.group(3)
+                if not (char == "`" and "`" in info):
+                    flush_prose()
+                    opener_char = char
+                    opener_len = len(inline_match.group(2))
+                    fence_bq = bq_depth
+                    fence_min = item_indent
+                    fence_bound = item_indent
+                    idx += 1
+                    continue
+        else:
+            active_indent = list_indents[-1] if list_indents else None
+            if active_indent is not None and cur_indent >= active_indent:
+                cand_min = active_indent
+                cand_bound: Optional[int] = active_indent
+            else:
+                cand_min = 0
+                cand_bound = None
+            match = _CLI_FENCE_RE.match(body)
+            if match and cand_min <= cur_indent <= cand_min + 3:
+                char = match.group(2)[0]
+                info = match.group(3)
+                if not (char == "`" and "`" in info):
+                    flush_prose()
+                    opener_char = char
+                    opener_len = len(match.group(2))
+                    fence_bq = bq_depth
+                    fence_min = cand_min
+                    fence_bound = cand_bound
+                    idx += 1
+                    continue
+
+        if prose_lines and bq_depth != prose_bq:
+            flush_prose()
+        prose_bq = bq_depth
+        prose_lines.append((lineno, body))
+        idx += 1
+
+    flush_fence_block()
+    flush_prose()
+    return out
+
+
+def _extract_cli_flag(token: str, *, quoted: bool = False) -> Optional[str]:
+    """Return canonical ``--flag`` from ``token`` (handling ``[--flag]`` and ``--flag=val``)."""
+    candidate = token if quoted else token.lstrip("[")
+    if candidate == "--" or not candidate.startswith("--"):
+        return None
+    flag = candidate.split("=", 1)[0]
+    if not quoted:
+        flag = flag.rstrip(".,;:)]}>")
+    return flag if _CLI_FLAG_RE.fullmatch(flag) else None
+
+
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_PYTHON_BIN_RE = re.compile(r"^(?:.*/)?python(?:\d+(?:\.\d+)*)?$")
+_CLI_WRAPPER_BINS: frozenset = frozenset({"nohup", "time", "exec", "sudo"})
+
+
+def _skip_shell_wrappers(seg: Sequence[Tuple[str, int, bool]]) -> Optional[int]:
+    """Advance past prompts, env assignments, and common command wrappers."""
+    idx = 0
+    n = len(seg)
+    while idx < n:
+        tok, _ln, quoted = seg[idx]
+        if quoted:
+            return None
+        if tok in ("$", "%"):
+            idx += 1
+            continue
+        if _ENV_ASSIGN_RE.match(tok):
+            idx += 1
+            continue
+        if tok == "env":
+            idx += 1
+            while idx < n and not seg[idx][2] and (
+                seg[idx][0].startswith("-") or _ENV_ASSIGN_RE.match(seg[idx][0])
+            ):
+                idx += 1
+            continue
+        if tok == "timeout":
+            idx += 1
+            while idx < n and not seg[idx][2] and seg[idx][0].startswith("-"):
+                opt = seg[idx][0]
+                idx += 1
+                if opt in ("-k", "-s", "--kill-after", "--signal") and idx < n:
+                    idx += 1
+            if idx < n and not seg[idx][2]:
+                idx += 1  # duration argument
+            continue
+        if tok == "uv" and idx + 1 < n and not seg[idx + 1][2] and seg[idx + 1][0] == "run":
+            idx += 2
+            while idx < n and not seg[idx][2] and seg[idx][0].startswith("-"):
+                opt = seg[idx][0]
+                idx += 1
+                if opt in ("--project", "--python", "--with", "--directory") and idx < n:
+                    idx += 1
+            continue
+        if tok == "command":
+            idx += 1
+            while idx < n and not seg[idx][2] and seg[idx][0].startswith("-"):
+                if seg[idx][0] in ("-v", "-V"):
+                    return None
+                idx += 1
+            continue
+        if tok == "unshare":
+            idx += 1
+            while idx < n and not seg[idx][2] and seg[idx][0].startswith("-"):
+                opt = seg[idx][0]
+                idx += 1
+                if opt == "--":
+                    break
+                if opt in _UNSHARE_VALUE_OPTS and idx < n:
+                    idx += 1
+            continue
+        if tok in _CLI_WRAPPER_BINS:
+            idx += 1
+            continue
+        return idx
+    return None
+
+
+def _find_cli_invocation(seg: Sequence[Tuple[str, int, bool]]) -> Optional[int]:
+    """Return index of first arg after ``phase-loop`` in command position, else ``None``.
+
+    Skips shell prompts (``$``, ``%``), leading ``KEY=VAL`` assignments, and
+    common command wrappers (``env``, ``timeout``, ``uv run``, ``command`` without
+    ``-v``/``-V``), and recognizes ``python -m phase_loop_runtime.cli``. Leaves
+    non-invocation mentions such as ``git grep phase-loop --include ...`` or
+    ``command -v phase-loop`` untouched.
+    """
+    idx = _skip_shell_wrappers(seg)
+    if idx is None or idx >= len(seg):
+        return None
+    n = len(seg)
+    tok, _ln, quoted = seg[idx]
+    if quoted:
+        return None
+    if tok == "phase-loop" or tok.endswith("/phase-loop"):
+        return idx + 1
+    if _PYTHON_BIN_RE.match(tok):
+        p = idx + 1
+        while p < n and not seg[p][2] and seg[p][0].startswith("-") and seg[p][0] != "-m":
+            p += 1
+        if (
+            p + 1 < n
+            and not seg[p][2]
+            and seg[p][0] == "-m"
+            and not seg[p + 1][2]
+            and seg[p + 1][0] == "phase_loop_runtime.cli"
+        ):
+            return p + 2
+        return None
+    return None
+
+
+def _consume_option_values(
+    seg: Sequence[Tuple[str, int, bool]], pos: int, nargs: object
+) -> int:
+    """Return updated index after consuming argument token(s) for option at ``pos``.
+
+    Matches ``argparse`` option parsing: never swallows a following ``--`` or
+    ``--flag`` token (quoted or unquoted) as an option's argument value, because
+    ``argparse`` requires ``--opt=--val`` to pass a dash-prefixed value.
+    """
+    n = len(seg)
+
+    def _is_option_boundary(idx: int) -> bool:
+        tok, _ln, quoted = seg[idx]
+        return tok == "--" or _extract_cli_flag(tok, quoted=quoted) is not None
+
+    if nargs is None or nargs == 1 or nargs == "?":
+        if pos + 1 < n and not _is_option_boundary(pos + 1):
+            return pos + 1
+        return pos
+    if isinstance(nargs, int) and nargs > 1:
+        consumed = 0
+        while consumed < nargs and pos + 1 < n and not _is_option_boundary(pos + 1):
+            pos += 1
+            consumed += 1
+        return pos
+    if nargs in ("*", "+"):
+        while pos + 1 < n and not _is_option_boundary(pos + 1):
+            pos += 1
+        return pos
+    return pos
+
+
+def check_cli_flags(
+    text: str,
+    doc_path: str,
+    *,
+    command_specs: Optional[Dict[Tuple[str, ...], _CliCommandSpec]] = None,
+) -> List[Finding]:
+    """Arm 4: every ``phase-loop <subcommand> --flag`` span must exist in ``--help``."""
+    if command_specs is None:
+        command_specs = _load_cli_parser_flags()
+
+    top_spec = command_specs.get(
+        (),
+        _CliCommandSpec(
+            options=frozenset(),
+            value_options={},
+            remainder_options=frozenset(),
+            positional_remainder_index=None,
+        ),
+    )
+    findings: List[Finding] = []
+
+    for seg in _iter_cli_code_segments(text):
+        pos = _find_cli_invocation(seg)
+        if pos is None:
+            continue
+        # Validate optional top-level flags preceding the subcommand.
+        stop_segment = False
+        while pos < len(seg):
+            t, ln, q = seg[pos]
+            if t == "--":
+                stop_segment = True
+                break
+            flag = _extract_cli_flag(t, quoted=q)
+            if flag is None:
+                break
+            if flag in top_spec.remainder_options:
+                stop_segment = True
+                break
+            if flag not in top_spec.options:
+                findings.append(
+                    Finding(
+                        file=doc_path,
+                        line=ln,
+                        arm="cli_flags",
+                        code="unknown_cli_flag",
+                        token=f"phase-loop {flag}",
+                        message=(
+                            f"`phase-loop {flag}` is not a documented top-level "
+                            f"option in `phase-loop --help`."
+                        ),
+                    )
+                )
+            elif flag in top_spec.value_options and "=" not in t:
+                pos = _consume_option_values(seg, pos, top_spec.value_options[flag])
+            pos += 1
+        if stop_segment or pos >= len(seg):
+            continue
+        sub_tok, sub_ln, sub_q = seg[pos]
+        if sub_q or not _CLI_SUBCOMMAND_RE.fullmatch(sub_tok):
+            continue
+        if (sub_tok,) not in command_specs:
+            has_concrete_flag = False
+            for t, _ln, q in seg[pos + 1 :]:
+                if t == "--":
+                    break
+                if _extract_cli_flag(t, quoted=q) is not None:
+                    has_concrete_flag = True
+                    break
+            if has_concrete_flag:
+                findings.append(
+                    Finding(
+                        file=doc_path,
+                        line=sub_ln,
+                        arm="cli_flags",
+                        code="unknown_cli_subcommand",
+                        token=f"phase-loop {sub_tok}",
+                        message=(
+                            f"`phase-loop {sub_tok}` is not a documented subcommand "
+                            f"in `phase-loop --help`."
+                        ),
+                    )
+                )
+            continue
+        path_key: Tuple[str, ...] = (sub_tok,)
+        pos += 1
+        while (
+            pos < len(seg)
+            and not seg[pos][2]
+            and (*path_key, seg[pos][0]) in command_specs
+        ):
+            path_key = (*path_key, seg[pos][0])
+            pos += 1
+        cmd_spec = command_specs[path_key]
+        cmd_label = " ".join(path_key)
+        positionals_seen = 0
+        while pos < len(seg):
+            t, ln, q = seg[pos]
+            if t == "--":
+                break
+            flag = _extract_cli_flag(t, quoted=q)
+            if flag is not None:
+                if flag in cmd_spec.remainder_options:
+                    break
+                if flag not in cmd_spec.options:
+                    findings.append(
+                        Finding(
+                            file=doc_path,
+                            line=ln,
+                            arm="cli_flags",
+                            code="unknown_cli_flag",
+                            token=f"{cmd_label} {flag}",
+                            message=(
+                                f"`phase-loop {cmd_label} {flag}` is not a "
+                                f"documented option in `phase-loop {cmd_label} --help`."
+                            ),
+                        )
+                    )
+                elif flag in cmd_spec.value_options and "=" not in t:
+                    pos = _consume_option_values(seg, pos, cmd_spec.value_options[flag])
+            elif not t.startswith("-"):
+                if (
+                    cmd_spec.positional_remainder_index is not None
+                    and positionals_seen >= cmd_spec.positional_remainder_index
+                ):
+                    break
+                positionals_seen += 1
+            pos += 1
+    return findings
+
+
+def check_cli_flags_in_repo(
+    ctx: RepoContext,
+    *,
+    roots: Sequence[str] = CLI_FLAG_DOC_ROOTS,
+    exclude: Set[str] = frozenset(),
+    command_specs: Optional[Dict[Tuple[str, ...], _CliCommandSpec]] = None,
+) -> List[Finding]:
+    """Scan markdown files under ``roots`` for ``phase-loop <sub> --flag`` drift."""
+    findings: List[Finding] = []
+    seen: Set[str] = set(exclude)
+    for root_rel in roots:
+        root_dir = ctx.repo / root_rel
+        if not root_dir.is_dir():
+            continue
+        for path in sorted(root_dir.rglob("*.md")):
+            if not path.is_file():
+                continue
+            try:
+                resolved = path.resolve()
+                resolved.relative_to(ctx.repo)
+            except (OSError, ValueError):
+                continue
+            logical = path.relative_to(ctx.repo).as_posix()
+            if logical in seen:
+                continue
+            seen.add(logical)
+            findings.extend(
+                check_cli_flags(
+                    path.read_text(encoding="utf-8"),
+                    logical,
+                    command_specs=command_specs,
                 )
             )
     return findings
@@ -1126,6 +2134,7 @@ def check_document(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
     findings = list(check_paths(text, doc_path, ctx))
     findings.extend(check_pin_freshness(text, doc_path, ctx))
     findings.extend(check_published_rendering(text, doc_path, ctx))
+    findings.extend(check_cli_flags(text, doc_path))
     return findings
 
 
@@ -1186,6 +2195,9 @@ def check_repo(
         findings.extend(check_document(path.read_text(encoding="utf-8"), doc, ctx))
     if only is None:
         findings.extend(check_entry_doc_coverage(ctx, entry_docs))
+        findings.extend(
+            check_cli_flags_in_repo(ctx, roots=CLI_FLAG_DOC_ROOTS, exclude=set(targets))
+        )
     return findings
 
 

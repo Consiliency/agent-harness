@@ -646,6 +646,8 @@
   {"count": 1, "function": "_discover_packages", "module": "entry_doc_check", "primitive": "io.glob", "role": "host-io"},
   {"count": 1, "function": "_discover_packages", "module": "entry_doc_check", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_resolves", "module": "entry_doc_check", "primitive": "io.glob", "role": "host-io"},
+  {"count": 1, "function": "check_cli_flags_in_repo", "module": "entry_doc_check", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "check_cli_flags_in_repo", "module": "entry_doc_check", "primitive": "io.rglob", "role": "host-io"},
   {"count": 1, "function": "check_repo", "module": "entry_doc_check", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "load_suppressions", "module": "entry_doc_check", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_append_jsonl", "module": "events", "primitive": "io.open", "role": "host-io"},

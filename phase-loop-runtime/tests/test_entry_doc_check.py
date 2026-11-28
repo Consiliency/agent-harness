@@ -533,8 +533,12 @@ class TestEntryDocRoles(unittest.TestCase):
         )
 
     def test_onboarding_docs_are_checked(self):
-        """The ah#600 coverage gap: these were entry points by function, unchecked."""
-        for doc in ("docs/TEAM-ONBOARDING.md", "docs/outside-worker-quickstart.md"):
+        """The ah#600 / ah#1612 coverage gap: these were entry points by function, unchecked."""
+        for doc in (
+            "CONTRIBUTING.md",
+            "docs/TEAM-ONBOARDING.md",
+            "docs/outside-worker-quickstart.md",
+        ):
             self.assertIn(doc, edc.ENTRY_DOCS)
 
     def test_onboarding_docs_are_not_package_long_descriptions(self):
@@ -1419,6 +1423,307 @@ class TestCli(unittest.TestCase):
         self.assertEqual(
             edc.main(["entry_doc_check", "--repo", str(REPO_ROOT), "--file", "README.md"]), 0
         )
+
+
+# ---------------------------------------------------------------------------
+# Arm 4 -- CLI flags & CONTRIBUTING.md coverage (agent-harness#1612)
+
+
+class TestArmCliFlags(unittest.TestCase):
+    def test_unknown_subcommand_flag_in_docs_and_skills_src_is_reported(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": "Clean doc.\n",
+                    "docs/guide.md": "Run `phase-loop doctor --json --nonexistent-flag`.\n",
+                    "skills-src/claude/demo/SKILL.md": (
+                        "```sh\n"
+                        "phase-loop advisor-board <artifact> \\\n"
+                        "  --advisory \\\n"
+                        "  --bogus-option\n"
+                        "```\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                [(f.file, f.line, f.arm, f.code, f.token) for f in found],
+                [
+                    ("docs/guide.md", 1, "cli_flags", "unknown_cli_flag", "doctor --nonexistent-flag"),
+                    (
+                        "skills-src/claude/demo/SKILL.md",
+                        4,
+                        "cli_flags",
+                        "unknown_cli_flag",
+                        "advisor-board --bogus-option",
+                    ),
+                ],
+            )
+
+    def test_unknown_top_level_flag_and_subcommand_and_optional_brackets_are_reported(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": (
+                        "Run `phase-loop --bogus-top doctor --json` and "
+                        "`phase-loop nonexistent-sub --repo .` and "
+                        "`phase-loop doctor [--bogus-opt]` and "
+                        "`timeout 60 python3 -m phase_loop_runtime.cli docs-audit --bogus-audit`.\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                [(f.arm, f.code, f.token) for f in found],
+                [
+                    ("cli_flags", "unknown_cli_flag", "phase-loop --bogus-top"),
+                    ("cli_flags", "unknown_cli_subcommand", "phase-loop nonexistent-sub"),
+                    ("cli_flags", "unknown_cli_flag", "doctor --bogus-opt"),
+                    ("cli_flags", "unknown_cli_flag", "docs-audit --bogus-audit"),
+                ],
+            )
+
+    def test_adversarial_positives_for_cli_flags(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": "Clean doc.\n",
+                    "docs/examples.md": (
+                        "```sh\n"
+                        "# phase-loop doctor --commented-out-flag\n"
+                        "PHASE_LOOP_SKILL_BUNDLE=/tmp/x timeout 120 phase-loop --allow-branchgov run --repo . --phase P1\n"
+                        "phase-loop run --repo . --command-template \"pytest --fake-in-quotes\" --json\n"
+                        "phase-loop doctor --json -- --passthrough-flag\n"
+                        "phase-loop doctor --json | jq --raw-output .\n"
+                        "phase-loop doctor --json && git status --short # --comment-flag\n"
+                        "git grep phase-loop --include '*.md'\n"
+                        "command -v phase-loop\n"
+                        "phase-loop-skill-eval run --experiment /tmp/exp\n"
+                        "```\n"
+                        "Also `phase-loop train-status --event-log PATH [--json]`.\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual([f.render() for f in found], [])
+
+    def test_remote_tracking_ref_passes_while_typo_still_fails(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "CONTRIBUTING.md": "Compare against `origin/main` and `origin/mian`.\n",
+                },
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            found = edc.check_repo(repo, entry_docs=("CONTRIBUTING.md",))
+            self.assertEqual(
+                [(f.arm, f.code, f.token) for f in found],
+                [("paths", "missing_path", "origin/mian")],
+            )
+
+    def test_directory_only_gitignore_rule_accepts_unsuffixed_generated_dir(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    ".gitignore": ".venv/\n",
+                    "CONTRIBUTING.md": (
+                        "Populate `phase-loop-runtime/.venv`, not "
+                        "`phase-loop-runtime/does-not-exist`.\n"
+                    ),
+                },
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            found = edc.check_repo(repo, entry_docs=("CONTRIBUTING.md",))
+            self.assertEqual(
+                [(f.arm, f.code, f.token) for f in found],
+                [("paths", "missing_path", "phase-loop-runtime/does-not-exist")],
+            )
+
+    def test_gh_workflow_run_ref_is_exempt_without_exempting_install_ref(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "CONTRIBUTING.md": (
+                        "```sh\n"
+                        "gh workflow run test.yml --ref <your-branch> -f chronology=false\n"
+                        "gh workflow run test.yml --ref <your-branch> && install-agent-harness.sh --ref <your-branch>\n"
+                        "```\n"
+                    ),
+                },
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            found = edc.check_repo(repo, entry_docs=("CONTRIBUTING.md",))
+            self.assertEqual(
+                [(f.line, f.arm, f.code, f.token) for f in found],
+                [(3, "pins", "invalid_placeholder", "--ref <your-branch>")],
+            )
+
+    def test_entry_doc_under_docs_is_not_double_reported_for_cli_flags(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "docs/TEAM-ONBOARDING.md": "Run `phase-loop doctor --bogus-once`.\n",
+                },
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            found = edc.check_repo(repo, entry_docs=("docs/TEAM-ONBOARDING.md",))
+            self.assertEqual(
+                [(f.file, f.arm, f.code, f.token) for f in found],
+                [("docs/TEAM-ONBOARDING.md", "cli_flags", "unknown_cli_flag", "doctor --bogus-once")],
+            )
+
+    def test_blockquote_fence_multiline_inline_code_and_indented_ticks_are_checked(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": "Clean doc.\n",
+                    "docs/markdown_forms.md": (
+                        "> ```sh\n"
+                        "> phase-loop doctor --bogus-blockquote\n"
+                        "> ```\n"
+                        "\n"
+                        "Run `phase-loop doctor\n"
+                        "--bogus-wrapped` to verify.\n"
+                        "\n"
+                        "    ```sh\n"
+                        "    indented literal ticks do not open a fence\n"
+                        "\n"
+                        "Then run `phase-loop doctor --bogus-after-indented`.\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                [(f.line, f.arm, f.code, f.token) for f in found],
+                [
+                    (2, "cli_flags", "unknown_cli_flag", "doctor --bogus-blockquote"),
+                    (6, "cli_flags", "unknown_cli_flag", "doctor --bogus-wrapped"),
+                    (11, "cli_flags", "unknown_cli_flag", "doctor --bogus-after-indented"),
+                ],
+            )
+
+    def test_command_substitution_quoted_options_and_split_flag_continuation(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": "Clean doc.\n",
+                    "docs/shell_cases.md": (
+                        "```sh\n"
+                        "phase-loop doctor --bom-fixture $(fixture_path) --bogus-after-subst\n"
+                        "phase-loop doctor \"--bogus-quoted\"\n"
+                        "phase-loop doctor --js\\\n"
+                        "on\n"
+                        "OUT=$(phase-loop doctor --bogus-inside-subst)\n"
+                        "phase-loop run --repo . --command-template=--not-a-flag --json\n"
+                        "phase-loop doctor --bom-fixture --typo-after-value-opt\n"
+                        "phase-loop doctor --bom-fixture \"--quoted-typo-after-value-opt\"\n"
+                        "```\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                [(f.line, f.arm, f.code, f.token) for f in found],
+                [
+                    (2, "cli_flags", "unknown_cli_flag", "doctor --bogus-after-subst"),
+                    (3, "cli_flags", "unknown_cli_flag", "doctor --bogus-quoted"),
+                    (6, "cli_flags", "unknown_cli_flag", "doctor --bogus-inside-subst"),
+                    (8, "cli_flags", "unknown_cli_flag", "doctor --typo-after-value-opt"),
+                    (9, "cli_flags", "unknown_cli_flag", "doctor --quoted-typo-after-value-opt"),
+                ],
+            )
+
+    def test_fence_comment_trailing_backslash_and_multiline_single_quote(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": "Clean doc.\n",
+                    "docs/fence_state.md": (
+                        "```sh\n"
+                        "# comment ending with a trailing backslash \\\n"
+                        "phase-loop doctor --typo-after-comment\n"
+                        "printf '\n"
+                        "phase-loop doctor --ignored-inside-single-quotes\n"
+                        "'\n"
+                        "unshare -Urm --propagation private bash -c \"\n"
+                        "  cd phase-loop-runtime && PYTHONPATH=\\$PWD/src python3 -m phase_loop_runtime.cli \\\n"
+                        "    fabpub-rotate-partition --worktree <w> --attestation <a> \\\n"
+                        "    --authority-root '$AUTH' --cutover-id <c> --jsno\"\n"
+                        "PIP_CONFIG_FILE=/dev/null /bin/sh -eu -c '\n"
+                        "  phase-loop doctor --typo-inside-sh-c\n"
+                        "'\n"
+                        "```\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                [(f.line, f.arm, f.code, f.token) for f in found],
+                [
+                    (3, "cli_flags", "unknown_cli_flag", "doctor --typo-after-comment"),
+                    (10, "cli_flags", "unknown_cli_flag", "fabpub-rotate-partition --jsno"),
+                    (12, "cli_flags", "unknown_cli_flag", "doctor --typo-inside-sh-c"),
+                ],
+            )
+
+    def test_argparse_remainder_producer_flags_are_allowed(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": "Clean doc.\n",
+                    "docs/retention.md": (
+                        "```sh\n"
+                        "phase-loop output-retention run --root . --run r1 --finish-state sealed --exec pytest --maxfail=1\n"
+                        "phase-loop output-retention run --root . --bogus-before-exec --exec pytest --maxfail=1\n"
+                        "```\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                [(f.line, f.arm, f.code, f.token) for f in found],
+                [(3, "cli_flags", "unknown_cli_flag", "output-retention --bogus-before-exec")],
+            )
+
+    def test_gh_workflow_run_exemption_respects_background_operator_and_quotes(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "CONTRIBUTING.md": (
+                        "```sh\n"
+                        "gh workflow run test.yml --ref <branch> & install-agent-harness.sh --ref <your-branch>\n"
+                        "install-agent-harness.sh --note \"gh workflow run\" --ref <your-branch>\n"
+                        "echo \"gh workflow run\" --ref <your-branch>\n"
+                        "install-agent-harness.sh --note \"$(gh workflow run test.yml)\" --ref <your-branch>\n"
+                        "gh workflow run $(printf test.yml) --ref <your-branch>\n"
+                        "```\n"
+                    ),
+                },
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            found = edc.check_repo(repo, entry_docs=("CONTRIBUTING.md",))
+            self.assertEqual(
+                [(f.line, f.arm, f.code, f.token) for f in found],
+                [
+                    (2, "pins", "invalid_placeholder", "--ref <your-branch>"),
+                    (3, "pins", "invalid_placeholder", "--ref <your-branch>"),
+                    (4, "pins", "invalid_placeholder", "--ref <your-branch>"),
+                    (5, "pins", "invalid_placeholder", "--ref <your-branch>"),
+                ],
+            )
 
 
 if __name__ == "__main__":
