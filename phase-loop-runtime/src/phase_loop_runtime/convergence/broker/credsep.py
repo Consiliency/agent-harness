@@ -206,19 +206,50 @@ def _run_accepts_pass_fds(run_callable) -> bool:
     return False
 
 
+def _is_real_subprocess_run(run_callable) -> bool:
+    return (
+        getattr(run_callable, "__module__", None) == "subprocess"
+        and getattr(run_callable, "__name__", None) == "run"
+    )
+
+
 class _GuardedEffectHandle:
-    """Bound repository path, inherited lock fd, and revalidation hook for an effect."""
+    """Bound repository path, open worktree fd, inherited lock fd, and revalidation hook."""
 
     def __init__(
         self,
         repo_path: Path,
         *,
+        worktree_fd: int | None = None,
         lock_fd: int | None = None,
         revalidate=None,
     ) -> None:
         self.repo_path = repo_path
+        self.worktree_fd = worktree_fd
         self.lock_fd = lock_fd
         self._revalidate = revalidate
+
+    def _fd_cwd(self, run_callable) -> Path | None:
+        if (
+            _is_real_subprocess_run(run_callable)
+            and self.worktree_fd is not None
+            and self.worktree_fd >= 0
+        ):
+            proc_fd = Path(f"/proc/self/fd/{self.worktree_fd}")
+            if proc_fd.is_dir():
+                return proc_fd
+        return None
+
+    def effect_cwd(self, run_callable) -> Path:
+        return self._fd_cwd(run_callable) or self.repo_path
+
+    def git_push_call(
+        self, run_callable, origin_url: str, refspec: str
+    ) -> tuple[list[str], Path | None]:
+        fd_cwd = self._fd_cwd(run_callable)
+        if fd_cwd is not None:
+            return ["git", "push", origin_url, refspec], fd_cwd
+        return ["git", "-C", str(self.repo_path), "push", origin_url, refspec], None
 
     def run_kwargs(self, run_callable) -> dict:
         if self.lock_fd is not None and os.name != "nt" and _run_accepts_pass_fds(run_callable):
@@ -244,10 +275,11 @@ class GitHubBrokerAdapter:
         self.generation_lease = generation_lease
         self._generation_root = None
 
-    def _revalidate_generation_before_effect(self) -> None:
+    def _revalidate_generation_before_effect(self, *, snapshot=None) -> None:
         """Fence direct adapter entry immediately before its first mutation."""
         from .live import (
             LegacyCutoverConflict,
+            WriterGenerationBlocked,
             fabpub_capability_active,
             require_current_generation,
             require_namespace_unactivated_when_inactive,
@@ -255,46 +287,51 @@ class GitHubBrokerAdapter:
         )
 
         active = fabpub_capability_active()
+        current_snapshot = (
+            snapshot if snapshot is not None else try_repository_snapshot(self.repo_path)
+        )
         if not active:
-            snapshot = try_repository_snapshot(self.repo_path)
-            if snapshot is None:
+            if current_snapshot is None:
                 # Unit seams pass a synthetic subprocess runner and a positively
                 # verified non-repository path.  A declared missing lease remains
                 # a fail-closed real-repository error.
                 if self.generation_lease is _UNDECLARED_GENERATION:
                     return
                 raise LegacyCutoverConflict(f"{self.repo_path} is not a Git repository")
-            require_namespace_unactivated_when_inactive(snapshot)
+            require_namespace_unactivated_when_inactive(current_snapshot)
             return
-        root = self._generation_root
-        if root is None:
-            snapshot = try_repository_snapshot(self.repo_path)
-            if snapshot is None:
-                if self.generation_lease is _UNDECLARED_GENERATION:
-                    return
-                raise LegacyCutoverConflict(f"{self.repo_path} is not a Git repository")
-            root = snapshot.store_root
-            self._generation_root = root
+        if current_snapshot is None:
+            if self.generation_lease is _UNDECLARED_GENERATION:
+                return
+            raise LegacyCutoverConflict(f"{self.repo_path} is not a Git repository")
+        root = current_snapshot.store_root
+        if self._generation_root is not None and self._generation_root != root:
+            raise WriterGenerationBlocked(
+                f"adapter repository namespace changed from {self._generation_root} to {root}; "
+                "refusing to reuse generation authority across repositories"
+            )
+        self._generation_root = root
         if self.generation_lease is _UNDECLARED_GENERATION:
             raise PermissionError("legacy_writer_after_fabpub_activation")
         require_current_generation(root, self.generation_lease, strict=True)
 
     @contextlib.contextmanager
-    def _generation_effect_guard(self, entry_snapshot=None):
+    def _generation_effect_guard(self, entry_snapshot=None, expected_dev_ino=None):
         """Coordinate the provider-effect window with FABPUB cutover/activation.
 
-        When active, enforces the generation fence on entry and pins the
-        resolved worktree path.  When inactive, holds ``RUN_TRAIN_WRITER_LOCK``
-        across both ``git push`` and ``gh pr create`` (verifying both the
-        namespace and the guarded worktree binding before and under the lock),
-        passes the open lock fd to provider child processes via ``pass_fds`` so
-        surviving children keep the kernel ``flock`` until exit, and binds both
-        commands to ``snapshot.worktree`` rather than an unresolved symlink
+        Both active and inactive paths derive authority from the exact same
+        ``snapshot`` used for provider commands and hold an ``O_NOFOLLOW``
+        directory descriptor to ``snapshot.worktree`` so provider subprocesses
+        bind to the verified checkout inode rather than re-resolving the
+        pathname.  When inactive, also holds ``RUN_TRAIN_WRITER_LOCK`` across
+        both ``git push`` and ``gh pr create`` and passes the lock fd via
+        ``pass_fds`` so surviving children keep the kernel flock until exit
         (agent-harness#1681).
         """
         from .live import (
             LegacyCutoverConflict,
             WriterGenerationBlocked,
+            active_effect_worktree_binding,
             fabpub_capability_active,
             inactive_effect_exclusion,
             require_namespace_unactivated_when_inactive,
@@ -302,39 +339,57 @@ class GitHubBrokerAdapter:
             verify_guarded_worktree_binding,
         )
 
-        if fabpub_capability_active():
-            self._revalidate_generation_before_effect()
-            target_repo = entry_snapshot.worktree if entry_snapshot is not None else self.repo_path
-            yield _GuardedEffectHandle(
-                target_repo,
-                revalidate=self._revalidate_generation_before_effect,
-            )
-            return
         snapshot = (
             entry_snapshot
             if entry_snapshot is not None
             else try_repository_snapshot(self.repo_path)
         )
+        if fabpub_capability_active():
+            if snapshot is None:
+                self._revalidate_generation_before_effect(snapshot=None)
+                yield _GuardedEffectHandle(
+                    self.repo_path,
+                    revalidate=lambda: self._revalidate_generation_before_effect(snapshot=None),
+                )
+                return
+            with active_effect_worktree_binding(
+                snapshot, expected_dev_ino=expected_dev_ino
+            ) as (bound_dev_ino, wt_fd):
+                self._revalidate_generation_before_effect(snapshot=snapshot)
+
+                def _revalidate_active() -> None:
+                    verify_guarded_worktree_binding(snapshot, bound_dev_ino)
+                    self._revalidate_generation_before_effect(snapshot=snapshot)
+
+                yield _GuardedEffectHandle(
+                    snapshot.worktree,
+                    worktree_fd=wt_fd,
+                    revalidate=_revalidate_active,
+                )
+            return
         if snapshot is None:
             if self.generation_lease is _UNDECLARED_GENERATION:
                 yield _GuardedEffectHandle(
                     self.repo_path,
-                    revalidate=self._revalidate_generation_before_effect,
+                    revalidate=lambda: self._revalidate_generation_before_effect(snapshot=None),
                 )
                 return
             raise LegacyCutoverConflict(f"{self.repo_path} is not a Git repository")
-        with inactive_effect_exclusion(snapshot) as (lock_fd, expected_dev_ino):
+        with inactive_effect_exclusion(
+            snapshot, expected_dev_ino=expected_dev_ino
+        ) as (lock_fd, bound_dev_ino, wt_fd):
             def _revalidate_guarded() -> None:
                 if fabpub_capability_active():
                     raise WriterGenerationBlocked(
                         "FABPUB capability became active during an inactive publisher effect; "
                         "refusing to continue unfenced"
                     )
-                verify_guarded_worktree_binding(snapshot, expected_dev_ino)
+                verify_guarded_worktree_binding(snapshot, bound_dev_ino)
                 require_namespace_unactivated_when_inactive(snapshot)
 
             yield _GuardedEffectHandle(
                 snapshot.worktree,
+                worktree_fd=wt_fd,
                 lock_fd=lock_fd,
                 revalidate=_revalidate_guarded,
             )
@@ -524,18 +579,24 @@ class GitHubBrokerAdapter:
         return False
 
     def execute(self, request: BrokerRequest):
-        from .live import fabpub_capability_active, try_repository_snapshot
+        from .live import _lstat_verified_absent, fabpub_capability_active, try_repository_snapshot
 
+        # Validate capability first so a version mismatch always raises
+        # FabpubConfigurationError, then pin a real repository's resolved
+        # worktree and inode once so a retargeted symlink or replaced directory
+        # cannot redirect pre-flight reads or provider commands (agent-harness#1681).
+        fabpub_capability_active()
+        entry_snapshot = try_repository_snapshot(self.repo_path)
+        entry_dev_ino = None
+        if entry_snapshot is not None:
+            wt_stat = _lstat_verified_absent(entry_snapshot.worktree)
+            if wt_stat is not None:
+                entry_dev_ino = (wt_stat.st_dev, wt_stat.st_ino)
         # A caller which explicitly supplied no generation authority is stale
         # under an ACTIVE repository and fails before even the branch/head
         # probe, hence before every push or gh provider command.
         if self.generation_lease is None or self.generation_lease is _UNDECLARED_GENERATION:
-            self._revalidate_generation_before_effect()
-        # Pin a real repository's resolved worktree once so a retargeted
-        # symlink at ``self.repo_path`` cannot redirect pre-flight reads or
-        # provider commands to a different checkout (agent-harness#1681).
-        fabpub_capability_active()
-        entry_snapshot = try_repository_snapshot(self.repo_path)
+            self._revalidate_generation_before_effect(snapshot=entry_snapshot)
         bound_repo = entry_snapshot.worktree if entry_snapshot is not None else self.repo_path
         if self._output("branch", "--show-current", repo_path=bound_repo) != request.branch or self._output("rev-parse", "HEAD", repo_path=bound_repo) != request.head_sha: raise ValueError("branch/head mismatch")
         # agent-harness#202 (non-blocking hardening from the #201 panel): reconcile the
@@ -596,10 +657,19 @@ class GitHubBrokerAdapter:
         # push (concurrent writer in the same workspace); pinning the source side means the
         # push can only ever publish the validated commit, never whatever the ref points to
         # by the time this runs.
-        with self._generation_effect_guard(entry_snapshot=entry_snapshot) as effect_guard:
+        with self._generation_effect_guard(
+            entry_snapshot=entry_snapshot, expected_dev_ino=entry_dev_ino
+        ) as effect_guard:
             effect_repo = effect_guard.repo_path
+            effect_cwd = effect_guard.effect_cwd(self.run)
             effect_kwargs = effect_guard.run_kwargs(self.run)
-            pushed = self.run(["git", "-C", str(effect_repo), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True, **effect_kwargs)
+            push_argv, push_cwd = effect_guard.git_push_call(
+                self.run, origin_url, f"{request.head_sha}:{ref}"
+            )
+            push_kwargs = dict(effect_kwargs)
+            if push_cwd is not None:
+                push_kwargs["cwd"] = push_cwd
+            pushed = self.run(push_argv, capture_output=True, text=True, **push_kwargs)
             if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
             # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
             # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
@@ -610,11 +680,11 @@ class GitHubBrokerAdapter:
             # against the repo DEFAULT branch, which for a non-default `request.base` (e.g.
             # `release/2.0`) would open a PR whose real diff (vs the repo default) was never the
             # diff this adapter scope-checked (vs request.base).
-            title = self._output("log", "-1", "--format=%s", repo_path=effect_repo) or request.branch
+            title = self._output("log", "-1", "--format=%s", repo_path=effect_cwd) or request.branch
             args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
             if request.draft: args.append("--draft")
             effect_guard.revalidate_before_effect()
-            created = self.run(args, cwd=effect_repo, capture_output=True, text=True, **effect_kwargs)
+            created = self.run(args, cwd=effect_cwd, capture_output=True, text=True, **effect_kwargs)
         # An exact branch may already have an open PR (for example after a prior
         # process pushed and created it but died before recording terminal evidence).
         # `gh pr create` reports that condition as a non-zero exit. Reconcile only

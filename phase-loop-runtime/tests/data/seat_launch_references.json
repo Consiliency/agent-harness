@@ -534,6 +534,7 @@
   {"count": 1, "function": "_module_digest", "module": "convergence/broker/live", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_onboard_zero_legacy_repository_under_seal", "module": "convergence/broker/live", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_onboard_zero_legacy_repository_under_seal", "module": "convergence/broker/live", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "_open_guarded_worktree_fd", "module": "convergence/broker/live", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_open_namespace_root", "module": "convergence/broker/live", "primitive": "io.open", "role": "host-io"},
   {"count": 2, "function": "_plan_partitions", "module": "convergence/broker/live", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_prove_zero_source", "module": "convergence/broker/live", "primitive": "io.read_text", "role": "host-io"},

@@ -1299,13 +1299,57 @@ def require_namespace_unactivated_when_inactive(
         )
 
 
+def _open_guarded_worktree_fd(worktree: Path) -> tuple[int, tuple[int, int]]:
+    """Open an ``O_NOFOLLOW|O_DIRECTORY|O_CLOEXEC`` descriptor to a verified worktree.
+
+    Returns ``(fd, (st_dev, st_ino))``.  On Windows returns ``(-1, (st_dev, st_ino))``.
+    agent-harness#1681: binds provider execution to the verified checkout inode
+    instead of re-resolving its pathname at ``exec`` time.
+    """
+    try:
+        _require_no_ancestor_symlink(worktree)
+    except LegacyCutoverConflict as error:
+        raise WriterGenerationBlocked(
+            f"guarded worktree {worktree} has a symlink component: {error}"
+        ) from error
+    if os.name == "nt":
+        wt_stat = _lstat_verified_absent(worktree)
+        if wt_stat is None or not stat.S_ISDIR(wt_stat.st_mode):
+            raise WriterGenerationBlocked(
+                f"guarded worktree {worktree} is not a regular directory"
+            )
+        return -1, (wt_stat.st_dev, wt_stat.st_ino)
+    try:
+        fd = os.open(
+            worktree,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as error:
+        raise WriterGenerationBlocked(
+            f"cannot open guarded worktree {worktree}: {error}"
+        ) from error
+    try:
+        st = os.fstat(fd)
+    except OSError as error:
+        os.close(fd)
+        raise WriterGenerationBlocked(
+            f"cannot stat guarded worktree {worktree}: {error}"
+        ) from error
+    if not stat.S_ISDIR(st.st_mode):
+        os.close(fd)
+        raise WriterGenerationBlocked(
+            f"guarded worktree {worktree} is not a regular directory"
+        )
+    return fd, (st.st_dev, st.st_ino)
+
+
 def verify_guarded_worktree_binding(
     snapshot: RepositorySnapshot, expected_dev_ino: tuple[int, int]
 ) -> None:
     """Verify ``snapshot.worktree`` still names the exact directory and repository identity.
 
     agent-harness#1681: rejects symlink retargeting or directory replacement
-    after the namespace exclusion lock was acquired.
+    after the worktree snapshot or exclusion lock was taken.
     """
     try:
         _require_no_ancestor_symlink(snapshot.worktree)
@@ -1320,7 +1364,7 @@ def verify_guarded_worktree_binding(
         or (current_stat.st_dev, current_stat.st_ino) != expected_dev_ino
     ):
         raise WriterGenerationBlocked(
-            f"guarded worktree {snapshot.worktree} changed after lock acquisition; "
+            f"guarded worktree {snapshot.worktree} changed after verification; "
             "refusing to run provider effect against an unguarded checkout"
         )
     current = try_repository_snapshot(snapshot.worktree)
@@ -1336,36 +1380,65 @@ def verify_guarded_worktree_binding(
 
 
 @contextlib.contextmanager
-def inactive_effect_exclusion(snapshot: RepositorySnapshot):
+def active_effect_worktree_binding(
+    snapshot: RepositorySnapshot,
+    *,
+    expected_dev_ino: tuple[int, int] | None = None,
+):
+    """Hold an open directory descriptor to the verified worktree during an active effect."""
+    wt_fd, opened_dev_ino = _open_guarded_worktree_fd(snapshot.worktree)
+    try:
+        if expected_dev_ino is not None and opened_dev_ino != expected_dev_ino:
+            raise WriterGenerationBlocked(
+                f"guarded worktree {snapshot.worktree} changed before provider entry; "
+                "refusing to run provider effect against an unguarded checkout"
+            )
+        verify_guarded_worktree_binding(snapshot, opened_dev_ino)
+        yield opened_dev_ino, (wt_fd if wt_fd >= 0 else None)
+    finally:
+        if wt_fd >= 0:
+            os.close(wt_fd)
+
+
+@contextlib.contextmanager
+def inactive_effect_exclusion(
+    snapshot: RepositorySnapshot,
+    *,
+    expected_dev_ino: tuple[int, int] | None = None,
+):
     """Hold cutover writer exclusion across an inactive repository effect.
 
     agent-harness#1681: checks the namespace before creating any lock file so
     already-activated or unreadable namespaces fail closed with zero disk
-    writes, serializes competing inactive publishers with a blocking
-    ``RUN_TRAIN_WRITER_LOCK`` (cutover/bootstrap/onboarding take the same lock
-    non-blockingly and refuse while an inactive effect is in flight, preventing
-    deadlock while avoiding spurious legacy-store poisoning on ordinary
-    publisher contention), re-checks the namespace and worktree identity under
-    the lock, and yields ``(lock_fd, worktree_dev_ino)`` so the adapter passes
-    ``lock_fd`` to provider child processes via ``pass_fds`` — keeping the
-    kernel ``flock`` held until any surviving child process tree exits.
+    writes, opens an ``O_NOFOLLOW|O_DIRECTORY`` descriptor to the verified
+    worktree so provider subprocesses bind to the exact inode rather than
+    re-resolving the pathname, serializes competing inactive publishers with a
+    blocking ``RUN_TRAIN_WRITER_LOCK`` (cutover/bootstrap/onboarding take the
+    same lock non-blockingly and refuse while an inactive effect is in flight),
+    re-checks the namespace and worktree binding under the lock, and yields
+    ``(lock_fd, worktree_dev_ino, worktree_fd)`` so the adapter passes
+    ``lock_fd`` to provider child processes via ``pass_fds``.
     """
     require_namespace_unactivated_when_inactive(snapshot)
-    wt_stat = _lstat_verified_absent(snapshot.worktree)
-    if wt_stat is None or not stat.S_ISDIR(wt_stat.st_mode):
-        raise WriterGenerationBlocked(
-            f"guarded worktree {snapshot.worktree} is not a regular directory"
-        )
-    expected_dev_ino = (wt_stat.st_dev, wt_stat.st_ino)
-    resolved_root = snapshot.namespace_root.resolve()
-    with _hold_writer_locks(
-        (resolved_root,),
-        blocking=True,
-        error_cls=WriterGenerationBlocked,
-    ) as held_fds:
-        verify_guarded_worktree_binding(snapshot, expected_dev_ino)
-        require_namespace_unactivated_when_inactive(snapshot)
-        yield held_fds[resolved_root], expected_dev_ino
+    wt_fd, opened_dev_ino = _open_guarded_worktree_fd(snapshot.worktree)
+    try:
+        if expected_dev_ino is not None and opened_dev_ino != expected_dev_ino:
+            raise WriterGenerationBlocked(
+                f"guarded worktree {snapshot.worktree} changed before lock acquisition; "
+                "refusing to run provider effect against an unguarded checkout"
+            )
+        resolved_root = snapshot.namespace_root.resolve()
+        with _hold_writer_locks(
+            (resolved_root,),
+            blocking=True,
+            error_cls=WriterGenerationBlocked,
+        ) as held_fds:
+            verify_guarded_worktree_binding(snapshot, opened_dev_ino)
+            require_namespace_unactivated_when_inactive(snapshot)
+            yield held_fds[resolved_root], opened_dev_ino, (wt_fd if wt_fd >= 0 else None)
+    finally:
+        if wt_fd >= 0:
+            os.close(wt_fd)
 
 
 def _require_active_generation_root(root: Path) -> None:

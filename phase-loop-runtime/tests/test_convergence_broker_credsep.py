@@ -1745,6 +1745,7 @@ def test_inactive_capability_coordinates_with_cutover_and_fences_pr_create_1681(
 def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681(
     tmp_path, monkeypatch
 ):
+    import subprocess
     from phase_loop_runtime.convergence.broker import live
 
     repo_a = _init_git_repo_1681(tmp_path / "repo-a")
@@ -1757,7 +1758,7 @@ def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681
     link.symlink_to(repo_a)
     _disable_fabpub_marker_1681(monkeypatch)
 
-    seen_push_targets = []
+    seen_push_cwds = []
     seen_create_cwds = []
 
     class _RetargetingRun(_FakeRun):
@@ -1768,9 +1769,10 @@ def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681
                 link.unlink()
                 link.symlink_to(repo_b)
             if "push" in args:
-                seen_push_targets.append(args[2])
+                cwd = kwargs.get("cwd")
+                seen_push_cwds.append(Path(cwd).resolve() if cwd is not None else Path(args[2]).resolve())
             if "create" in args:
-                seen_create_cwds.append(Path(kwargs["cwd"]))
+                seen_create_cwds.append(Path(kwargs["cwd"]).resolve())
             return super().__call__(args, **kwargs)
 
     run = _RetargetingRun(_base_responses() + [
@@ -1780,11 +1782,55 @@ def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681
     result, evidence = GitHubBrokerAdapter(link, run=run).execute(_request())
     assert evidence.terminal_state == "effect_terminal_observed"
     assert result is not None
-    assert seen_push_targets == [str(repo_a.resolve())]
+    assert seen_push_cwds == [repo_a.resolve()]
     assert seen_create_cwds == [repo_a.resolve()]
 
-    # Swapping the resolved checkout directory itself between git push and gh pr create
-    # must fail closed before gh pr create runs.
+    # (2) Replacing the resolved checkout directory BEFORE the first mutation (during
+    # get-url, before git push) must fail closed with zero git push or gh pr create calls.
+    repo_pre = _init_git_repo_1681(tmp_path / "repo-pre-swap")
+    repo_pre_backup = tmp_path / "repo-pre-swap-backup"
+
+    class _SwapDirBeforePushRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            response = super().__call__(args, **kwargs)
+            if "get-url" in args:
+                repo_pre.rename(repo_pre_backup)
+                repo_pre.symlink_to(repo_b)
+            return response
+
+    run_pre_swap = _SwapDirBeforePushRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(repo_pre, run=run_pre_swap).execute(_request())
+    assert not any("push" in call or "create" in call for call in run_pre_swap.calls)
+
+    # (3) Even if the directory at the resolved path is swapped AFTER verification and
+    # before subprocess exec, the open O_NOFOLLOW worktree fd binds real subprocess.run
+    # execution (via _GuardedEffectHandle.git_push_call / effect_cwd) to the verified
+    # inode (never the swapped-in activated repo_b).
+    repo_fd = _init_git_repo_1681(tmp_path / "repo-fd-bind")
+    repo_fd_moved = tmp_path / "repo-fd-bind-moved"
+    snap_fd = live.repository_snapshot(repo_fd)
+    adapter_real = GitHubBrokerAdapter(repo_fd, run=subprocess.run)
+    with adapter_real._generation_effect_guard(entry_snapshot=snap_fd) as handle:
+        push_argv, push_cwd = handle.git_push_call(subprocess.run, "https://github.com/o/r.git", f"{_HEAD}:refs/heads/{_BRANCH}")
+        eff_cwd = handle.effect_cwd(subprocess.run)
+        if Path("/proc/self/fd").is_dir():
+            assert push_argv[:2] == ["git", "push"]
+            assert push_cwd == eff_cwd and str(eff_cwd).startswith("/proc/self/fd/")
+            repo_fd.rename(repo_fd_moved)
+            repo_fd.symlink_to(repo_b)
+            toplevel = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=eff_cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            ).stdout.strip()
+            assert Path(toplevel).resolve() == repo_fd_moved.resolve()
+
+    # (4) Swapping the resolved checkout directory between git push and gh pr create
+    # also fails closed before gh pr create runs.
     repo_c = _init_git_repo_1681(tmp_path / "repo-c")
     repo_c_backup = tmp_path / "repo-c-backup"
 
@@ -1804,6 +1850,44 @@ def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681
         GitHubBrokerAdapter(repo_c, run=run_swap).execute(_request())
     assert any("push" in call for call in run_swap.calls)
     assert not any("create" in call for call in run_swap.calls)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink test")
+def test_active_reused_adapter_refuses_retargeted_symlink_repository_1681(tmp_path):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo_a = _init_git_repo_1681(tmp_path / "active-repo-a")
+    repo_b = _init_git_repo_1681(tmp_path / "active-repo-b")
+    for repo in (repo_a, repo_b):
+        latch = live.WriterGenerationLatch.open(repo)
+        latch.begin_draining()
+        latch.mark_armed()
+        latch.activate()
+    latch_a = live.WriterGenerationLatch.open(repo_a)
+    lease_a = latch_a.acquire(generation=latch_a.read().generation)
+    link = tmp_path / "active-wt-link"
+    link.symlink_to(repo_a)
+    try:
+        run_first = _FakeRun(_base_responses() + [
+            (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+            (("list",), json.dumps([_same_repo_pr()]), 0),
+        ])
+        adapter = GitHubBrokerAdapter(link, run=run_first, generation_lease=lease_a)
+        result, evidence = adapter.execute(_request())
+        assert evidence.terminal_state == "effect_terminal_observed"
+        assert result is not None
+
+        # Retarget the symlink to activated repo_b: the reused adapter MUST NOT
+        # authorize repo_b using repo_a's cached _generation_root or lease.
+        link.unlink()
+        link.symlink_to(repo_b)
+        run_second = _FakeRun(_base_responses())
+        adapter.run = run_second
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            adapter.execute(_request())
+        assert not any("push" in call or "create" in call for call in run_second.calls)
+    finally:
+        lease_a.release()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX flock test")
@@ -1899,29 +1983,25 @@ from phase_loop_runtime.convergence.broker import live
 repo = Path({str(repo)!r})
 snapshot = live.repository_snapshot(repo)
 child_code = (
-    "import os, time; "
+    "import time; "
     "from pathlib import Path; "
-    "Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='ascii'); "
-    "deadline = time.monotonic() + 15; "
+    "Path({str(child_ready)!r}).write_text('ready', encoding='ascii'); "
+    "deadline = time.monotonic() + 8; "
     "\\nwhile not Path({str(child_release)!r}).exists() and time.monotonic() < deadline: time.sleep(0.02)\\n"
 )
-with live.inactive_effect_exclusion(snapshot) as (lock_fd, _dev_ino):
+with live.inactive_effect_exclusion(snapshot) as (lock_fd, _dev_ino, _wt_fd):
     subprocess.run([sys.executable, "-c", child_code], pass_fds=(lock_fd,), check=True)
 """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
     adapter_proc = subprocess.Popen([sys.executable, "-c", adapter_script], env=env)
-    child_pid = None
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            if child_ready.exists():
-                text = child_ready.read_text(encoding="ascii").strip()
-                if text:
-                    child_pid = int(text)
-                    break
+            if child_ready.exists() and child_ready.read_text(encoding="ascii").strip() == "ready":
+                break
             time.sleep(0.02)
-        assert child_pid is not None, "provider child did not start"
+        assert child_ready.exists(), "provider child did not start"
 
         # SIGKILL the adapter parent while the provider child is still running.
         os.kill(adapter_proc.pid, signal.SIGKILL)
@@ -1932,7 +2012,8 @@ with live.inactive_effect_exclusion(snapshot) as (lock_fd, _dev_ino):
             with pytest.raises(BlockingIOError):
                 fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        # Release the child and verify the lock clears once the child exits.
+        # Release the child (which also has a bounded self-exit deadline) and verify
+        # the lock clears once it exits. Never signal a raw numeric child PID.
         child_release.write_text("done\n", encoding="ascii")
         deadline = time.monotonic() + 10
         unlocked = False
@@ -1951,8 +2032,3 @@ with live.inactive_effect_exclusion(snapshot) as (lock_fd, _dev_ino):
         if adapter_proc.poll() is None:
             adapter_proc.kill()
             adapter_proc.wait(timeout=5)
-        if child_pid is not None:
-            try:
-                os.kill(child_pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
