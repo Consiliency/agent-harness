@@ -103,7 +103,12 @@ class PhaseLoopInjectionTest(unittest.TestCase):
         self.assertIn("phase-loop-claude-execute", bundle.render_context())
         self.assertIn("`claude-execute-phase`", bundle.render_context())
         self.assertIn("Do not list or read `claude-bundle/plugin/skills/**`", bundle.render_context())
-        self.assertIn("The one exception is a `references/` file", bundle.render_context())
+        self.assertIn(
+            "The one exception is a file directly under the active skill's `references/` "
+            "that its `SKILL.md` links by relative path: it is not preloaded, so read it "
+            "from the skill's directory at the step that points to it.",
+            bundle.render_context(),
+        )
         self.assertNotIn("## Skill:", bundle.render_context())
         self.assertLessEqual(bundle.context_line_count(), CLAUDE_CONTEXT_MAX_LINES)
         self.assertLessEqual(bundle.context_char_count(), CLAUDE_CONTEXT_MAX_CHARS)

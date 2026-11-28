@@ -19,14 +19,74 @@ from phase_loop_runtime import injection
 PACKAGED = Path(injection.__file__).resolve().parent / "skills_bundle"
 
 
+_EXPECTED_REFERENCE_READ_EXCEPTION = (
+    "The one exception is a file directly under the active skill's `references/` "
+    "that its `SKILL.md` links by relative path: it is not preloaded, so read it "
+    "from the skill's directory at the step that points to it."
+)
+
+
+def _assert_manifest_reference_read_scope(manifest_text: str) -> None:
+    """agent-harness#1646: pin the exact exception sentence and reject any extra permission clause."""
+    paragraphs = [p.strip() for p in manifest_text.split("\n\n") if p.strip()]
+    prose = next(
+        (p for p in paragraphs if "Do not list or read `claude-bundle/plugin/skills/**`" in p),
+        None,
+    )
+    if prose is None:
+        raise AssertionError("manifest missing reread-ban prose paragraph")
+    if prose.count(_EXPECTED_REFERENCE_READ_EXCEPTION) != 1:
+        raise AssertionError(
+            f"manifest must contain the exact reference-read exception sentence once; got:\n{prose}"
+        )
+    remainder = prose.replace(_EXPECTED_REFERENCE_READ_EXCEPTION, "")
+    for forbidden_clause in (
+        "exception",
+        "may read",
+        "allowed to read",
+        "permitted",
+        "read it",
+        "also read",
+        "references/",
+    ):
+        if forbidden_clause in remainder.lower():
+            raise AssertionError(
+                f"unexpected extra permission/reference clause {forbidden_clause!r} outside "
+                f"the pinned exception sentence:\n{remainder}"
+            )
+
+
 class ClaudeBundleReferenceReadsTest(unittest.TestCase):
     def test_manifest_keeps_the_reread_ban_but_allows_linked_references(self):
         text = injection._claude_bundle_manifest("plan", ("claude-plan-phase",))
         self.assertIn("Do not list or read `claude-bundle/plugin/skills/**`", text)
         self.assertIn("bundled `SKILL.md`, `assets/`, or `reflections/`", text)
-        self.assertIn("a `references/` file that the active skill's `SKILL.md` links by relative path", text)
+        self.assertIn(_EXPECTED_REFERENCE_READ_EXCEPTION, text)
         # Negative control: references/ is no longer in the blanket ban list.
         self.assertNotIn("bundled `SKILL.md`, `references/`", text)
+        _assert_manifest_reference_read_scope(text)
+
+    def test_manifest_scope_guard_rejects_widened_or_extra_permission_clauses(self):
+        """agent-harness#1646: negative controls for the manifest exception-scope pin."""
+        text = injection._claude_bundle_manifest("plan", ("claude-plan-phase",))
+        with self.assertRaises(AssertionError):
+            _assert_manifest_reference_read_scope(
+                text.replace("directly under the active skill's `references/`", "under `references/`")
+            )
+        with self.assertRaises(AssertionError):
+            _assert_manifest_reference_read_scope(
+                text.replace(
+                    _EXPECTED_REFERENCE_READ_EXCEPTION,
+                    _EXPECTED_REFERENCE_READ_EXCEPTION + " You may also read `assets/` files.",
+                )
+            )
+        with self.assertRaises(AssertionError):
+            _assert_manifest_reference_read_scope(
+                text.replace(
+                    _EXPECTED_REFERENCE_READ_EXCEPTION,
+                    _EXPECTED_REFERENCE_READ_EXCEPTION + " Another exception applies to scripts.",
+                )
+            )
 
     def test_materialized_plugin_bundle_carries_linked_references(self):
         for action, skill in (("plan", "claude-plan-phase"), ("execute", "claude-execute-phase")):

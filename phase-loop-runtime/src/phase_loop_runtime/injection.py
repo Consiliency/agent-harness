@@ -788,7 +788,7 @@ def _claude_bundle_manifest(action: str, expected_skill_pack: tuple[str, ...]) -
         "plugin, settings, agents, and MCP config flags, so do not re-enumerate or restate raw `SKILL.md` bodies here. "
         "Do not list or read `claude-bundle/plugin/skills/**`, bundled `SKILL.md`, `assets/`, "
         "or `reflections/` during the launch; the bundle is already loaded and rereading it wastes the launch budget. "
-        "The one exception is a `references/` file that the active skill's `SKILL.md` links by relative path: "
+        "The one exception is a file directly under the active skill's `references/` that its `SKILL.md` links by relative path: "
         "it is not preloaded, so read it from the skill's directory at the step that points to it.\n\n"
         f"- bundle id: `{_claude_plugin_bundle_name(action)}`\n"
         "- bundle provenance: repo-owned `claude-bundle/` artifacts recorded in `launch.json`\n"
