@@ -7593,7 +7593,8 @@ _JAIL_PREAMBLE_NETWORK = (
     "check needs. This machine's private network is denied at the packet level; a "
     "connection to it failing is the policy working, not a defect to report.\n"
 )
-#: agent-harness#1170: the jailed Gemini seat reaches its model and nothing else.
+#: agent-harness#1170, agent-harness#1949: allowlisted jailed seats (such as Gemini,
+#: Codex, and Grok) reach their allowlisted model endpoints and nothing else.
 _JAIL_PREAMBLE_NETWORK_MODEL_ONLY = (
     "You MAY run commands and read and write files inside that clone and your home "
     "directory. There is no network beyond your own model: a command that needs the "
@@ -7611,6 +7612,18 @@ _JAILED_BUNDLE_READ_INSTRUCTIONS = (
 )
 
 
+def _jailed_seat_model_only_network(
+    leg: str,
+    *,
+    egress_proxy: "_seat_egress_proxy.SeatEgressProxy | None" = None,
+) -> bool:
+    """True when a jailed seat's egress is restricted to its allowlisted model endpoints."""
+    if egress_proxy is not None:
+        return True
+    profile = _seat_profiles.profile_for(leg)
+    return profile is not None and profile.allowlist_id is not None
+
+
 def _broker_review_jail_preamble(
     *, model_only_network: bool = False, qualification_board: bool = False,
     qualification_probe: bool = False,
@@ -7618,8 +7631,9 @@ def _broker_review_jail_preamble(
     """The review preamble for a JAILED seat (agent-harness#1132): jail paths, full tools.
 
     A complete replacement, like `_broker_review_sandbox_preamble`: exactly one
-    instruction governs each capability. ``model_only_network`` is the jailed Gemini seat,
-    whose egress reaches its model only (agent-harness#1170)."""
+    instruction governs each capability. ``model_only_network`` applies to jailed seats
+    whose egress is restricted to allowlisted model endpoints (agent-harness#1170,
+    agent-harness#1949)."""
     if qualification_board:
         return (
             "You are the Gemini reviewer in a qualification board. Produce exactly one "
@@ -20734,7 +20748,9 @@ def _default_spawn(
                     source_commit=(review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME / ".git"
                                    / "phase-loop-source-commit").read_text(encoding="utf-8").strip(),
                     staged_tree_sha256=str(review_authorization.staged_tree_sha256),
-                    model_only_network=leg == "gemini",
+                    model_only_network=_jailed_seat_model_only_network(
+                        leg, egress_proxy=gemini_egress,
+                    ),
                     qualification_board=window_board is not None,
                 ) if jailed else _render_broker_inline_prompt(
                     staged_bundle,
