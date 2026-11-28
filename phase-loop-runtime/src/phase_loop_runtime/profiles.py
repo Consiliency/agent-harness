@@ -802,9 +802,20 @@ def resolve_execution_policy(
     if model_selection.model is not None and model_selection.model != model_selection.model.strip():
         model_selection = replace(model_selection, model=model_selection.model.strip())
 
+    pre_flip_executor = executor
     policy, source = _merge_policies(plan_policy, roadmap_policy, model_policy_rule)
     if _claude_model_needs_claude_executor(executor, model_selection.model, policy):
         executor = "claude"
+        # agent-harness#1711: when the shipped policy rule was computed for the
+        # pre-flip executor (pi), recompute it for the post-flip executor (claude)
+        # so implementer actions pick up Claude's IMPLEMENTER_EFFORTS entry while
+        # still letting plan/roadmap/operator effort pins and custom rules win.
+        if (
+            model_policy_rule is not None
+            and model_policy_rule == shipped_model_policy_rule(action, pre_flip_executor)
+        ):
+            model_policy_rule = shipped_model_policy_rule(action, executor)
+            policy, source = _merge_policies(plan_policy, roadmap_policy, model_policy_rule)
     work_unit_kind = (
         (policy.work_unit_kind if policy else None)
         or ACTION_WORK_UNITS[action]

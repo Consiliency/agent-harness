@@ -128,6 +128,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   steady state so the pipe never blocks or grows unbounded) so intermittent proxy start
   failures surface their cause instead of an opaque `EgressLayerUnavailable`
   (agent-harness#2034).
+- Recompute the shipped `model_policy_rule` from the post-flip executor (`"claude"`) inside
+  `profiles.resolve_execution_policy` when `_claude_model_needs_claude_executor` flips
+  `pi -> claude` for an operator-pinned Claude model, so `--executor pi --model claude-sonnet-5-5`
+  resolves Claude's shipped implementer effort (`medium`) instead of `pi`'s `high` while
+  preserving explicit operator/plan effort pins, explicit `pi` overrides, and `model_policy_rule=None`
+  (agent-harness#1711).
 - Capture the real launch-boundary keyword arguments in `test_seat_argv_bound_paths_1441.py`
   (`_captured_launches` / `fake_liveness`) so Grok mount qualification directly asserts no
   `writable_tree` / `writable_trees` grant is requested (with a mutation falsifier), make the

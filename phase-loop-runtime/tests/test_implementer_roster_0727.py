@@ -242,3 +242,86 @@ def test_governed_repair_escalation_keeps_the_shipped_high_effort(executor, expe
             pytest.raises(_Resolved):
         runner.run_loop(repo, roadmap, phase="CONTRACT", executor=executor, run_mode="governed")
     assert escalated == [(True, *expected)]
+
+
+# agent-harness#1711 (follow-up 2 from agent-harness#1637): when pi flips to
+# claude for a Claude model pin, the shipped model_policy rule must be resolved
+# for the post-flip executor (claude -> medium on execute/repair), while still
+# honoring explicit operator/plan effort pins, explicit pi overrides, and None.
+@pytest.mark.parametrize("action", ["execute", "repair"])
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", " claude-sonnet-5-5 ", "anthropic/claude-sonnet-5-5"])
+def test_pi_to_claude_flip_resolves_shipped_effort_from_post_flip_executor(action, model):
+    policy = _shipped("pi", action, model=model)
+    assert (policy.executor, policy.model, policy.effort) == ("claude", model.strip(), "medium")
+
+
+def test_pi_to_claude_flip_through_runner_seam_resolves_claude_implementer_effort(tmp_path):
+    import subprocess
+    from unittest.mock import patch
+
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "RUNNER", roadmap)
+    subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add runner plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    resolved = []
+    real = runner.resolve_execution_policy
+
+    def capture(**kwargs):
+        policy = real(**kwargs)
+        resolved.append((policy.executor, policy.model, policy.effort))
+        raise _Resolved
+
+    with patch("phase_loop_runtime.runner.run_auth_preflight",
+               return_value=type("Preflight", (), {"ok": True, "metadata": {"probes": []}})()), \
+            patch("phase_loop_runtime.runner.resolve_execution_policy", side_effect=capture), \
+            pytest.raises(_Resolved):
+        runner.run_loop(repo, roadmap, phase="RUNNER", executor="pi", model="claude-sonnet-5-5")
+    assert resolved == [("claude", "claude-sonnet-5-5", "medium")]
+
+
+def test_pi_to_claude_flip_preserves_explicit_effort_plan_pin_and_none_policy():
+    from phase_loop_runtime.models import ExecutionPolicyRule
+
+    # Operator --effort still wins.
+    op = _shipped("pi", "execute", model="claude-sonnet-5-5", effort="high")
+    assert (op.executor, op.model, op.effort) == ("claude", "claude-sonnet-5-5", "high")
+
+    # Explicit plan effort still wins over Claude's shipped medium.
+    selection = profiles.resolve_profile_for_executor(
+        action="execute", executor="pi", model="claude-sonnet-5-5",
+    )
+    planned = profiles.resolve_execution_policy(
+        action="execute",
+        executor="pi",
+        model_selection=selection,
+        operator_model="claude-sonnet-5-5",
+        plan_policy=ExecutionPolicyRule(effort="high", source="plan"),
+        model_policy_rule=profiles.shipped_model_policy_rule("execute", "pi"),
+    )
+    assert (planned.executor, planned.effort) == ("claude", "high")
+
+    # Explicit pi executor override prevents the flip and keeps pi's shipped high.
+    pinned_pi = profiles.resolve_execution_policy(
+        action="execute",
+        executor="pi",
+        model_selection=selection,
+        operator_model="claude-sonnet-5-5",
+        plan_policy=ExecutionPolicyRule(
+            executor="pi", source="plan", override_reason="keep pi",
+        ),
+        model_policy_rule=profiles.shipped_model_policy_rule("execute", "pi"),
+    )
+    assert (pinned_pi.executor, pinned_pi.effort) == ("pi", "high")
+
+    # Empty-policy back-compat (model_policy_rule=None) is untouched.
+    no_policy = profiles.resolve_execution_policy(
+        action="execute",
+        executor="pi",
+        model_selection=selection,
+        operator_model="claude-sonnet-5-5",
+        model_policy_rule=None,
+    )
+    assert (no_policy.executor, no_policy.effort) == ("claude", selection.effort)
