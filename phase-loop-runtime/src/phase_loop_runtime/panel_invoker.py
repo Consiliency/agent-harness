@@ -3108,13 +3108,19 @@ _ENV_FAILURE_LABEL_RE = re.compile(
 )
 # agent-harness#1821: Grok CLI's "Not signed in" error banner (e.g.
 # `Not signed in. To authenticate without a browser, run:\n  grok login --device-code`
-# or `Error: Not signed in. ...`). Requires the CLI's punctuated sign-in header plus a
-# `grok login` instruction within the same or following two lines (after ANSI stripping)
-# so review prose starting with "Not signed in ..." is never mistaken for a CLI banner.
-# Evaluated ONLY on an already-failed Grok leg (`status != "OK"`), never on a conforming review.
-_GROK_NOT_SIGNED_IN_RE = re.compile(
-    r"(?:^|\n)\s*(?:error:\s*)?not signed in[.:]"
-    r"(?:[^\n]*\n?){0,2}[^\n]*\bgrok login\b",
+# or `Error: Not signed in. Run \`grok login\`.`). Checked line-by-line within a single
+# ANSI-stripped stream with linear-time regexes and a fixed next-line lookahead (no
+# cross-stream assembly, no backtracking), and evaluated ONLY on an already-failed Grok leg.
+_GROK_NOT_SIGNED_IN_HEADER_RE = re.compile(
+    r"^(?:error:\s*)?not signed in[.:]\s*(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_GROK_LOGIN_INLINE_RE = re.compile(
+    r"\brun\s+`?grok login(?:\s+--device-code)?`?(?:[.!]|(?:\s|$))",
+    re.IGNORECASE,
+)
+_GROK_LOGIN_CMD_LINE_RE = re.compile(
+    r"^`?grok login(?:\s+--device-code)?`?\.?$",
     re.IGNORECASE,
 )
 # The provider's own reset time when it prints one: codex " or try again at <time>" with
@@ -3841,34 +3847,54 @@ def _env_failure_template(text: str) -> str:
     return "env_failure: sandbox command could not be built"
 
 
+def _stream_has_grok_not_signed_in_banner(stream: str) -> bool:
+    """Linear-time, single-stream detector for the Grok CLI sign-in banner."""
+    lines = [line.strip() for line in stream.splitlines() if line.strip()]
+    for idx, line in enumerate(lines):
+        match = _GROK_NOT_SIGNED_IN_HEADER_RE.match(line)
+        if match is None:
+            continue
+        rest = match.group("rest")
+        if _GROK_LOGIN_INLINE_RE.search(rest):
+            return True
+        if rest.lower().endswith("run:") and idx + 1 < len(lines):
+            if _GROK_LOGIN_CMD_LINE_RE.match(lines[idx + 1]):
+                return True
+    return False
+
+
 def _grok_not_signed_in(rc: int | None, review_text: str, log_text: str) -> bool:
     """Whether an already-failed Grok leg failed because the Grok CLI reported its
     ``Not signed in`` + ``grok login`` banner (agent-harness#1821).
 
     Process facts (timeout, signal), runtime-emitted ``_HarnessCode`` details, and
     higher-precedence non-auth labels (``usage_limit``, ``env_failure``, ``tool_denied``)
-    always take precedence. Any stdout carrying a terminal verdict (or any non-empty stdout
-    on ``rc == 0``) is preserved and never reclassified as a sign-in failure. Matches over
-    the full ANSI-stripped output (not just the 20-line tail) so trailing diagnostics do not
-    hide an authentic sign-in banner.
+    evaluated over the same full ANSI-stripped stream(s) always take precedence. Any stdout
+    carrying a terminal verdict (or any non-empty stdout on ``rc == 0``) is preserved and
+    never reclassified as a sign-in failure. Matches per stream (never assembling a banner
+    across stdout and stderr) and over full output so trailing diagnostics do not hide an
+    authentic sign-in banner.
     """
     if type(rc) is not int or rc == 124 or rc < 0:
         return False
     if type(log_text) is _HarnessCode:
         return False
-    if _leg_failure_kind(rc, review_text, log_text) in ("usage_limit", "env_failure", "tool_denied"):
-        return False
     stdout_text = str(review_text or "")
     stderr_text = str(log_text or "")
     if terminal_verdict(stdout_text) is not None:
         return False
-    if rc == 0:
-        if stdout_text.strip():
-            return False
-        haystack = _ANSI_CSI_RE.sub("", stderr_text)
-    else:
-        haystack = _ANSI_CSI_RE.sub("", stderr_text + "\n" + stdout_text)
-    return bool(_GROK_NOT_SIGNED_IN_RE.search(haystack))
+    if rc == 0 and stdout_text.strip():
+        return False
+    stderr_clean = _ANSI_CSI_RE.sub("", stderr_text)
+    streams = (stderr_clean,) if rc == 0 else (stderr_clean, _ANSI_CSI_RE.sub("", stdout_text))
+    if any(
+        _USAGE_LIMIT_LABEL_RE.search(stream)
+        or _ENV_FAILURE_LABEL_RE.search(stream)
+        or _TOOL_DENIED_RE.search(stream)
+        for stream in streams
+    ):
+        return False
+    return any(_stream_has_grok_not_signed_in_banner(stream) for stream in streams)
 
 
 def _leg_failure_detail(

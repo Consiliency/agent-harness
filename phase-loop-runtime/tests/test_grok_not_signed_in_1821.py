@@ -228,11 +228,36 @@ def test_grok_not_signed_in_respects_precedence_and_no_false_positives():
         )
     ) == "grok_tool_surface_unverified"
 
-    # Usage limit takes precedence over not-signed-in banner.
-    usage = "You hit your weekly limit.\nError: Not signed in.\n"
+    # Usage limit takes precedence over not-signed-in banner, even when separated by >20 lines.
+    usage = "You hit your weekly limit.\nError: Not signed in. Run `grok login`.\n"
     assert pi._finalize_leg_detail(
         pi._leg_failure_detail("DEGRADED", 1, "", usage, leg="grok")
     ) == "usage_limit"
+    spaced_usage = (
+        "You hit your weekly limit.\n"
+        + "".join(f"ordinary line {i}\n" for i in range(25))
+        + _ISSUE_1821_CLI_LOG
+    )
+    assert not pi._grok_not_signed_in(1, "", spaced_usage)
+    assert pi._finalize_leg_detail(
+        pi._leg_failure_detail("ERROR", 1, "", spaced_usage, leg="grok")
+    ) != "grok_seat_credential_missing"
+
+    # Two-line prose mentioning `grok login` without the native instruction is NOT a banner,
+    # and a banner split across stderr + stdout must never be assembled across streams.
+    prose_two_lines = "Not signed in.\nTest that grok login opens a browser.\n"
+    assert not pi._grok_not_signed_in(1, prose_two_lines, "")
+    assert not pi._grok_not_signed_in(
+        1,
+        "  grok login --device-code\n",
+        "Not signed in. To authenticate without a browser, run:\n",
+    )
+
+    # Linear-time non-backtracking check on long non-matching lines.
+    long_nonmatch = "Not signed in. " + ("x" * 16384) + "\n"
+    t0 = time.monotonic()
+    assert not pi._grok_not_signed_in(1, "", long_nonmatch)
+    assert (time.monotonic() - t0) < 0.25
 
     # Mid-sentence prose on rc==1 does not false-positive.
     prose = "The test verified that an operator who is not signed in gets rejected.\n"
