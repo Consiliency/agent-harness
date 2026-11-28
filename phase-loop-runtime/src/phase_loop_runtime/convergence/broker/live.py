@@ -140,6 +140,9 @@ class ProviderEffectGenerationRefused(WriterGenerationBlocked):
         pr_url: str | None = None,
         head_sha: str | None = None,
         branch: str | None = None,
+        terminal_write_fenced: bool | None = None,
+        terminal_state: str | None = None,
+        evidence_reference: str | None = None,
     ) -> None:
         PermissionError.__init__(self, message)
         self.effect_key = effect_key
@@ -148,6 +151,9 @@ class ProviderEffectGenerationRefused(WriterGenerationBlocked):
         self.pr_url = pr_url
         self.head_sha = head_sha
         self.branch = branch
+        self.terminal_write_fenced = terminal_write_fenced
+        self.terminal_state = terminal_state
+        self.evidence_reference = evidence_reference
 
 
 class FabpubConfigurationError(RuntimeError):

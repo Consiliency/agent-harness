@@ -1807,14 +1807,34 @@ def _human_publication_handoff(
             execute_returned = refusal.get("execute_returned")
             pr_url = refusal.get("pr_url")
             head_sha = refusal.get("head_sha")
+            terminal_write_fenced = refusal.get("terminal_write_fenced")
+            terminal_state = refusal.get("terminal_state")
+            evidence_reference = refusal.get("evidence_reference")
             if execute_returned:
-                returned = f"PR {pr_url}" if pr_url else "no pull request URL"
-                source = (
-                    f"the provider returned ({returned}) but its terminal record was "
-                    "refused by the generation fence (a DRAINING writer latch or a revoked "
-                    "generation lease), so the outcome is not recorded (provider_call_made "
-                    "true); the fence then refused the outcome_ambiguous_blocked record too"
-                )
+                if pr_url:
+                    returned = f"PR {pr_url}"
+                elif terminal_state == TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN.value:
+                    returned = (
+                        f"no effect ({evidence_reference})"
+                        if evidence_reference
+                        else "no effect"
+                    )
+                else:
+                    returned = "no pull request URL"
+                if terminal_write_fenced is False:
+                    source = (
+                        f"the provider returned ({returned}) but its terminal record could not "
+                        "be recorded, so the outcome is not recorded (provider_call_made true); "
+                        "the generation fence (a DRAINING writer latch or a revoked generation "
+                        "lease) then refused the outcome_ambiguous_blocked record"
+                    )
+                else:
+                    source = (
+                        f"the provider returned ({returned}) but its terminal record was "
+                        "refused by the generation fence (a DRAINING writer latch or a revoked "
+                        "generation lease), so the outcome is not recorded (provider_call_made "
+                        "true); the fence then refused the outcome_ambiguous_blocked record too"
+                    )
             else:
                 failed = (
                     "the adapter failed"
@@ -1874,6 +1894,10 @@ def _human_publication_handoff(
             )
             if execute_returned:
                 handoff.update(pr_url=pr_url, head_sha=head_sha, branch=refusal.get("branch"))
+                if terminal_state is not None:
+                    handoff["terminal_state"] = terminal_state
+                if evidence_reference is not None:
+                    handoff["evidence_reference"] = evidence_reference
     if next_step == "probe_and_confirm_fabpub_authority":
         inventory = (
             snapshot.common_dir
@@ -2037,6 +2061,9 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
                     "pr_url": error.pr_url,
                     "head_sha": error.head_sha,
                     "branch": error.branch,
+                    "terminal_write_fenced": error.terminal_write_fenced,
+                    "terminal_state": error.terminal_state,
+                    "evidence_reference": error.evidence_reference,
                 },
             ),
         ),
