@@ -26,6 +26,13 @@ EXPECTED_NODE = (
     "::test_repository_manifest_exactly_covers_execution_scope"
 )
 NODE_PATTERN = re.compile(r'"(tests/test_legible_roadmap_contract\.py::[^"]+)"')
+# Measured ~24s per canonical step run on an idle 24-core host; allow ample
+# headroom under loaded multi-worker hosted CI so CPU contention never trips a
+# false timeout (follow-up to agent-harness#1730 / agent-harness#2269).
+_STEP_TIMEOUT_S = 180
+_CLONE_TIMEOUT_S = 120
+_PREFLIGHT_TIMEOUT_S = 90
+_VALIDATOR_TIMEOUT_S = 60
 
 pytestmark = pytest.mark.skipif(
     not WORKFLOW.is_file() or not (REPO / ".git").exists(),
@@ -126,7 +133,7 @@ def test_canonical_manifest_step_passes_in_canonical_checkout(tmp_path: Path) ->
         env=env,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=_STEP_TIMEOUT_S,
     )
     assert proc.returncode == 0, (
         f"CI canonical manifest step failed (rc={proc.returncode})\n"
@@ -167,7 +174,7 @@ def test_canonical_manifest_step_fails_on_non_null_detailed_only_field_in_phase_
         ["git", "clone", "--shared", "-q", str(REPO), str(copied_repo)],
         env=env,
         check=True,
-        timeout=60,
+        timeout=_CLONE_TIMEOUT_S,
     )
     manifest_path = copied_repo / "plans" / "manifest.json"
     original_bytes = manifest_path.read_bytes()
@@ -183,7 +190,7 @@ def test_canonical_manifest_step_fails_on_non_null_detailed_only_field_in_phase_
         env=env,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=_STEP_TIMEOUT_S,
     )
     assert failed.returncode != 0, (
         f"expected CI step to fail on non-null phase.{field}\n"
@@ -203,7 +210,7 @@ def test_canonical_manifest_step_fails_on_non_null_detailed_only_field_in_phase_
         env=env,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=_STEP_TIMEOUT_S,
     )
     assert passed.returncode == 0, (
         f"expected repaired manifest to pass CI step (rc={passed.returncode})\n"
@@ -230,7 +237,7 @@ def test_canonical_manifest_step_fails_closed_under_pythonoptimize(tmp_path: Pat
         env=env,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_PREFLIGHT_TIMEOUT_S,
     )
     assert preflight.returncode != 0
     assert "expected canonical source checkout" in preflight.stderr
@@ -250,7 +257,7 @@ def test_canonical_manifest_step_fails_closed_under_pythonoptimize(tmp_path: Pat
         env=env,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=_VALIDATOR_TIMEOUT_S,
     )
     assert res_skip.returncode != 0
     assert "non-passing" in res_skip.stderr
@@ -262,7 +269,7 @@ def test_canonical_manifest_step_fails_closed_under_pythonoptimize(tmp_path: Pat
         env=env,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=_VALIDATOR_TIMEOUT_S,
     )
     assert res_empty.returncode != 0
     assert "mismatch" in res_empty.stderr
