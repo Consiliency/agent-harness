@@ -3108,10 +3108,13 @@ _ENV_FAILURE_LABEL_RE = re.compile(
 )
 # agent-harness#1821: Grok CLI's "Not signed in" error banner (e.g.
 # `Not signed in. To authenticate without a browser, run:\n  grok login --device-code`
-# or `Error: Not signed in. ...`). Anchored at line start after ANSI stripping and evaluated
-# ONLY on an already-failed Grok leg (`status != "OK"`), never on a conforming review.
+# or `Error: Not signed in. ...`). Requires the CLI's punctuated sign-in header plus a
+# `grok login` instruction within the same or following two lines (after ANSI stripping)
+# so review prose starting with "Not signed in ..." is never mistaken for a CLI banner.
+# Evaluated ONLY on an already-failed Grok leg (`status != "OK"`), never on a conforming review.
 _GROK_NOT_SIGNED_IN_RE = re.compile(
-    r"(?:^|\n)\s*(?:error:\s*)?not signed in\b",
+    r"(?:^|\n)\s*(?:error:\s*)?not signed in[.:]"
+    r"(?:[^\n]*\n?){0,2}[^\n]*\bgrok login\b",
     re.IGNORECASE,
 )
 # The provider's own reset time when it prints one: codex " or try again at <time>" with
@@ -3839,13 +3842,15 @@ def _env_failure_template(text: str) -> str:
 
 
 def _grok_not_signed_in(rc: int | None, review_text: str, log_text: str) -> bool:
-    """Whether an already-failed Grok leg failed because the Grok CLI reported
-    ``Not signed in`` (agent-harness#1821).
+    """Whether an already-failed Grok leg failed because the Grok CLI reported its
+    ``Not signed in`` + ``grok login`` banner (agent-harness#1821).
 
     Process facts (timeout, signal), runtime-emitted ``_HarnessCode`` details, and
     higher-precedence non-auth labels (``usage_limit``, ``env_failure``, ``tool_denied``)
-    always take precedence. An ``rc == 0`` leg with non-empty stdout is never reclassified
-    from text so non-conforming review prose cannot be mistaken for a CLI sign-in banner.
+    always take precedence. Any stdout carrying a terminal verdict (or any non-empty stdout
+    on ``rc == 0``) is preserved and never reclassified as a sign-in failure. Matches over
+    the full ANSI-stripped output (not just the 20-line tail) so trailing diagnostics do not
+    hide an authentic sign-in banner.
     """
     if type(rc) is not int or rc == 124 or rc < 0:
         return False
@@ -3853,12 +3858,16 @@ def _grok_not_signed_in(rc: int | None, review_text: str, log_text: str) -> bool
         return False
     if _leg_failure_kind(rc, review_text, log_text) in ("usage_limit", "env_failure", "tool_denied"):
         return False
+    stdout_text = str(review_text or "")
+    stderr_text = str(log_text or "")
+    if terminal_verdict(stdout_text) is not None:
+        return False
     if rc == 0:
-        if str(review_text or "").strip():
+        if stdout_text.strip():
             return False
-        haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text))
+        haystack = _ANSI_CSI_RE.sub("", stderr_text)
     else:
-        haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + _log_tail(review_text))
+        haystack = _ANSI_CSI_RE.sub("", stderr_text + "\n" + stdout_text)
     return bool(_GROK_NOT_SIGNED_IN_RE.search(haystack))
 
 
@@ -20100,7 +20109,9 @@ def _exec_leg(
                     and _GEMINI_TRANSIENT_RE.search(review_text)
                 )
             )
-            if review_monitor is not None or not (soft_empty or stall):
+            if (review_monitor is not None
+                    or _grok_not_signed_in(rc, review_text, log_text)
+                    or not (soft_empty or stall)):
                 break
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break

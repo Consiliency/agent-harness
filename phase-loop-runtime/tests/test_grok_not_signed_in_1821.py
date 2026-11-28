@@ -55,6 +55,7 @@ def test_direct_grok_not_signed_in_surfaces_typed_notice_and_warns_without_votin
 ):
     """Exact reproduction of agent-harness#1821 on an unconfined Grok seat."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_leg_on_frozen_basis", lambda **k: False)
     monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (1, "", _ISSUE_1821_CLI_LOG))
 
     panel = pi.invoke_panel("ARTIFACT", ["grok"])
@@ -75,6 +76,7 @@ def test_direct_grok_not_signed_in_on_stdout_clears_text_so_it_never_blocks_as_n
     """If the Grok CLI writes the sign-in banner to stdout, `text` is cleared so
     `governed_review` emits warnings rather than a `panel_nonconforming` block."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_leg_on_frozen_basis", lambda **k: False)
     monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (1, _ISSUE_1821_CLI_LOG, ""))
 
     panel = pi.invoke_panel("ARTIFACT", ["grok"])
@@ -93,6 +95,7 @@ def test_grok_not_signed_in_survives_retained_leg_exec_unavailable_host_probe(
     when the turnless Grok host probe returns `unavailable` (CONTRACTS.md)."""
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setattr(pi, "_grok_leg_on_frozen_basis", lambda **k: False)
 
     def fake_exec_leg(*args, **kwargs):
         observation = pi._EXEC_OBSERVATION.get()
@@ -238,14 +241,72 @@ def test_grok_not_signed_in_respects_precedence_and_no_false_positives():
         pi._leg_failure_detail("ERROR", 1, prose, "", leg="grok")
     ).startswith("unknown failure")
 
+    # Line-leading review prose without the CLI banner (and any body with a terminal verdict)
+    # must NOT be reclassified or erased.
+    line_leading_prose = "Not signed in users are redirected to login.py.\n"
+    assert not pi._grok_not_signed_in(1, line_leading_prose, "")
+    assert not pi._grok_not_signed_in(1, line_leading_prose + "\nAGREE\n", "")
+    assert not pi._grok_not_signed_in(1, "Reviewed.\n\nAGREE\n", _ISSUE_1821_CLI_LOG)
+
     # rc==0 with non-conforming review prose starting a line with "Not signed in" stays unlabeled.
     assert not pi._grok_not_signed_in(0, "Not signed in is handled in login.py\n", "")
     assert pi._leg_failure_detail(
         "DEGRADED", 0, "Not signed in is handled in login.py\n", "", leg="grok"
     ) is None
 
+    # Trailing diagnostics (>20 lines) after an authentic banner still classify cleanly.
+    trailing = "".join(f"diagnostic line {i}\n" for i in range(25))
+    assert pi._grok_not_signed_in(1, "", _ISSUE_1821_CLI_LOG + trailing)
+    assert pi._grok_not_signed_in(1, _ISSUE_1821_CLI_LOG + trailing, "")
+    assert pi._finalize_leg_detail(
+        pi._leg_failure_detail("ERROR", 1, "", _ISSUE_1821_CLI_LOG + trailing, leg="grok")
+    ) == "grok_seat_credential_missing"
+    assert pi._finalize_leg_detail(
+        pi._leg_failure_detail("ERROR", 1, _ISSUE_1821_CLI_LOG + trailing, "", leg="grok")
+    ) == "grok_seat_credential_missing"
+
     # rc==0 with empty stdout and stderr banner IS classified.
     assert pi._grok_not_signed_in(0, "", _ISSUE_1821_CLI_LOG)
     assert pi._finalize_leg_detail(
         pi._leg_failure_detail("EMPTY", 0, "", _ISSUE_1821_CLI_LOG, leg="grok")
     ) == "grok_seat_credential_missing"
+
+
+def test_failed_grok_review_prose_is_preserved_not_erased(tmp_path, monkeypatch):
+    """P2 regression: rc==1 with review prose starting with 'Not signed in' preserves the
+    body and keeps `panel_nonconforming` rather than emitting a false auth notice."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_leg_on_frozen_basis", lambda **k: False)
+    prose = "Not signed in users are redirected to login.py.\n"
+    monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (1, prose, ""))
+
+    panel = pi.invoke_panel("ARTIFACT", ["grok"])
+    (leg,) = panel.legs
+    assert leg.status == "ERROR"
+    assert leg.text == prose
+    assert leg.detail != "grok_seat_credential_missing"
+    assert leg.seat_notices == ()
+    findings = gr._findings_from_panel(panel)
+    assert any(f.code == "panel_nonconforming" for f in findings)
+
+
+def test_exec_leg_grok_does_not_retry_empty_rc0_sign_in_banner(tmp_path, monkeypatch):
+    """P3 regression: rc==0 with empty stdout and the Grok sign-in banner on stderr stops
+    on attempt 1 instead of retrying as a transient soft-empty stall."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_leg_on_frozen_basis", lambda **k: False)
+    monkeypatch.setattr(pi, "grok_tool_gate", lambda cmd, env: True)
+    calls: list[int] = []
+
+    def fake_liveness(cmd, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return pi._LegRun(0, "", _ISSUE_1821_CLI_LOG)
+        return pi._LegRun(1, "", "unrelated failure on second attempt")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
+
+    panel = pi.invoke_panel("ARTIFACT", ["grok"])
+    (leg,) = panel.legs
+    assert len(calls) == 1, "sign-in banner must not trigger a soft-empty retry"
+    _assert_grok_missing_notice(leg)
