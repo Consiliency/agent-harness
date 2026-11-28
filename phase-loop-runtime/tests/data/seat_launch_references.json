@@ -1342,6 +1342,7 @@
   {"count": 1, "function": "_read_own_record", "module": "sandbox_retention", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "release_scratch_dir", "module": "sandbox_retention", "primitive": "io.lstat", "role": "host-io"},
   {"count": 1, "function": "read_auth", "module": "seat_codex_credential", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_is_native_runtime_leaf_slot", "module": "seat_codex_runtime", "primitive": "io.lstat", "role": "host-io"},
   {"count": 1, "function": "_open_root_dir", "module": "seat_codex_runtime", "primitive": "io.open", "role": "host-io"},
   {"count": 2, "function": "_open_runtime_file", "module": "seat_codex_runtime", "primitive": "io.open", "role": "host-io"},
   {"count": 2, "function": "_open_trusted_leaf", "module": "seat_codex_runtime", "primitive": "io.open", "role": "host-io"},

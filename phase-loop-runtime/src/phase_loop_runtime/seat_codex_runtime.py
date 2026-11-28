@@ -547,12 +547,43 @@ def _logical_remaining_depth(parts: Sequence[str]) -> int:
     return len(norm)
 
 
+def _is_native_runtime_leaf_slot(
+    stack: Sequence[tuple[str, int, RuntimeDirIdentity]], part: str
+) -> bool:
+    """True when ``stack[-1]/part`` sits at a native Codex runtime ``bin/codex`` slot."""
+    if part.lower() != "codex" or len(stack) < 3:
+        return False
+    bin_path, bin_fd, _ = stack[-1]
+    if Path(bin_path).name != "bin":
+        return False
+    target_path, target_fd, _ = stack[-2]
+    if (
+        len(stack) >= 4
+        and _TARGET_NAME.fullmatch(Path(target_path).name)
+        and Path(stack[-3][0]).name in _TARGET_PARENTS
+    ):
+        return True
+    for probe_fd, probe_name in (
+        (bin_fd, "codex-code-mode-host"),
+        (target_fd, "codex-package.json"),
+        (target_fd, "codex-path"),
+        (target_fd, "codex-resources"),
+    ):
+        try:
+            os.lstat(probe_name, dir_fd=probe_fd)
+            return True
+        except OSError:
+            continue
+    return False
+
+
 def _open_trusted_leaf(
     path: Path,
     owners: frozenset[int],
     *,
     follow_symlinks: bool = True,
     follow_leaf_symlink: bool = True,
+    reject_native_leaf_symlink: bool = False,
     no_symlink_tail_dirs: int = 0,
     _symlink_min_depth_out: list[int | None] | None = None,
     what: str = "runtime file",
@@ -628,6 +659,8 @@ def _open_trusted_leaf(
                 leaf_fd = os.open(part, _FILE_OPEN, dir_fd=cur_fd)
             except OSError as exc:
                 if follow_leaf_symlink and exc.errno == errno.ELOOP:
+                    if reject_native_leaf_symlink and _is_native_runtime_leaf_slot(stack, part):
+                        raise _identity(f"{what} {next_path!r} cannot be a symbolic link") from exc
                     link_target = _read_owned_symlink(
                         cur_fd, part, owners, f"{what} {next_path!r}"
                     )
@@ -728,6 +761,7 @@ def resolve_trusted_codex_lookup(
             owners,
             follow_symlinks=True,
             follow_leaf_symlink=True,
+            reject_native_leaf_symlink=True,
             _symlink_min_depth_out=symlink_depth,
             what="codex lookup entry",
         )

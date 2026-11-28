@@ -797,3 +797,46 @@ def test_codex_dependency_destination_still_rejects_caller_supplied_seat_root(tm
             private_home=str(tmp_path / "home"),
             readonly_paths=("/run/phase-loop-seat",),
         )
+
+
+def test_path_discovery_allows_upstream_shim_but_refuses_native_slot_leaf_symlink(tmp_path):
+    from phase_loop_runtime.seat_subject import ExecutableDependencyError, resolve_seat_subject
+
+    real_target = _make_target(tmp_path, "good/vendor/x86_64-unknown-linux-musl")
+
+    # An upstream launcher shim on PATH pointing to a valid vendored native binary succeeds.
+    shim_bin = tmp_path / "shims/bin"
+    shim_bin.mkdir(parents=True, mode=0o755)
+    os.symlink(real_target / "bin/codex", shim_bin / "codex")
+    subject = resolve_seat_subject("codex", {"PATH": str(shim_bin)})
+    assert subject.subject_path == real_target / "bin/codex"
+    resolved = runtime.subject_runtime(subject)
+    assert isinstance(resolved, runtime.CodexRuntime)
+    assert resolved.target == real_target
+    admitted = runtime.admit_runtime(resolved, lookup_chain=subject.lookup_chain)
+    try:
+        assert isinstance(admitted, runtime.AdmittedStandaloneRuntime)
+    finally:
+        admitted.close()
+
+    # A leaf symlink sitting at a native runtime's own bin/codex slot is refused, even when it
+    # points to another valid vendored runtime.
+    bad_target = _make_target(tmp_path, "bad/vendor/x86_64-unknown-linux-musl")
+    (bad_target / "bin/codex").unlink()
+    os.symlink(real_target / "bin/codex", bad_target / "bin/codex")
+    with pytest.raises(ExecutableDependencyError):
+        resolve_seat_subject("codex", {"PATH": str(bad_target / "bin")})
+
+    # Reached through an upstream PATH shim, the native slot leaf symlink is still refused.
+    chained_shim = tmp_path / "chained-shims/bin"
+    chained_shim.mkdir(parents=True, mode=0o755)
+    os.symlink(bad_target / "bin/codex", chained_shim / "codex")
+    with pytest.raises(ExecutableDependencyError):
+        resolve_seat_subject("codex", {"PATH": str(chained_shim)})
+
+    # Same for a non-vendored runtime layout carrying sibling runtime files.
+    sibling_target = _make_target(tmp_path, "custom-target")
+    (sibling_target / "bin/codex").unlink()
+    os.symlink(real_target / "bin/codex", sibling_target / "bin/codex")
+    with pytest.raises(ExecutableDependencyError):
+        resolve_seat_subject("codex", {"PATH": str(sibling_target / "bin")})
