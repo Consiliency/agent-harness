@@ -97,16 +97,28 @@ def _install_filter(libc, number, descriptor):
 
 def execute(libc, keyctl_number, seccomp_number, descriptor, command):
     _join_session(libc, keyctl_number)
-    _checked(libc.prctl(38, 1, 0, 0, 0))
-    if libc.prctl(39, 0, 0, 0, 0) != 1:
+    _checked(libc.prctl(38, ctypes.c_ulong(1), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)))
+    if libc.prctl(39, ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)) != 1:
         raise OSError(errno.EPERM, "seat_keyring_unavailable")
     # Re-arm parent-death SIGKILL after NO_NEW_PRIVS and before seccomp: AppArmor
     # transitions (e.g. Ubuntu 25.04+ bwrap-userns-restrict) clear any earlier
     # pdeathsig across exec, whereas setting it here survives os.execv into the
     # provider (agent-harness#1921).
-    _checked(libc.prctl(PR_SET_PDEATHSIG, _SIGKILL, 0, 0, 0))
+    _checked(libc.prctl(
+        PR_SET_PDEATHSIG,
+        ctypes.c_ulong(_SIGKILL),
+        ctypes.c_ulong(0),
+        ctypes.c_ulong(0),
+        ctypes.c_ulong(0),
+    ))
     armed = ctypes.c_int(0)
-    _checked(libc.prctl(PR_GET_PDEATHSIG, ctypes.byref(armed), 0, 0, 0))
+    _checked(libc.prctl(
+        PR_GET_PDEATHSIG,
+        ctypes.byref(armed),
+        ctypes.c_ulong(0),
+        ctypes.c_ulong(0),
+        ctypes.c_ulong(0),
+    ))
     if armed.value != _SIGKILL:
         raise OSError(errno.EPERM, "seat_keyring_unavailable")
     _install_filter(libc, seccomp_number, descriptor)

@@ -413,7 +413,7 @@ def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
         # bwrap-userns-restrict AppArmor profiles (agent-harness#1921).
         "libc = ctypes.CDLL(None, use_errno=True); "
         "sig = ctypes.c_int(-1); "
-        "rc = libc.prctl(2, ctypes.byref(sig), 0, 0, 0); "
+        "rc = libc.prctl(2, ctypes.byref(sig), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)); "
         f"pathlib.Path({str(pdeathsig_file)!r}).write_text(f'{{rc}} {{sig.value}}'); "
         "caps = [line.split()[1] for line in pathlib.Path('/proc/self/status').read_text().splitlines() "
         "if line.startswith(('CapInh:', 'CapPrm:', 'CapEff:', 'CapBnd:', 'CapAmb:'))]; "

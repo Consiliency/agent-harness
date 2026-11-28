@@ -96,11 +96,17 @@ def test_final_link_sets_and_verifies_no_new_privileges_before_filter(monkeypatc
             nonlocal armed_sig
             calls.append(operation)
             if operation == 39:
+                assert all(isinstance(arg, ctypes.c_ulong) for arg in args)
                 return 1
+            if operation == 38:
+                assert all(isinstance(arg, ctypes.c_ulong) for arg in args)
+                return 0
             if operation == link.PR_SET_PDEATHSIG:
-                armed_sig = args[0]
+                assert all(isinstance(arg, ctypes.c_ulong) for arg in args)
+                armed_sig = args[0].value
                 return 0
             if operation == link.PR_GET_PDEATHSIG:
+                assert all(isinstance(arg, ctypes.c_ulong) for arg in args[1:])
                 ctypes.cast(args[0], ctypes.POINTER(ctypes.c_int))[0] = armed_sig
                 return 0
             return 0
@@ -398,11 +404,36 @@ def test_real_final_link_arms_pdeathsig_sigkill_in_provider():
         if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
             pytest.fail("required seat-owner lane lacks memfd support")
         pytest.skip("interpreter lacks memfd support")
+    keyctl = link._KEYCTL_NR.get(platform.machine().lower())
+    if keyctl is None:
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            pytest.fail("required seat-owner lane lacks keyring architecture support")
+        pytest.skip("unsupported architecture for keyring syscalls")
+    keyring_check = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import ctypes, sys; "
+            "libc = ctypes.CDLL(None, use_errno=True); "
+            "libc.syscall.restype = ctypes.c_long; "
+            f"sys.exit(0 if libc.syscall({keyctl}, 1, ctypes.c_void_p()) >= 0 else 77)",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if keyring_check.returncode == 77:
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            pytest.fail("required seat-owner lane lacks keyring support")
+        pytest.skip("kernel keyrings unavailable in this test environment")
+    assert keyring_check.returncode == 0, keyring_check.stderr
     probe = (
         "import ctypes, json; "
         "libc = ctypes.CDLL(None, use_errno=True); "
         "sig = ctypes.c_int(-1); "
-        "rc = libc.prctl(2, ctypes.byref(sig), 0, 0, 0); "
+        "rc = libc.prctl(2, ctypes.byref(sig), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)); "
         "print(json.dumps({'rc': rc, 'sig': sig.value}))"
     )
     descriptor = sealed_keyring_filter()
