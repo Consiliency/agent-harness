@@ -849,16 +849,16 @@ def _policy_source(assignment: Mapping[str, Any]) -> str | None:
 
 
 def _safe_resolve(path: Path) -> Path | None:
-    """Resolve ``path``, returning ``None`` on symlink loops or resolution errors across
-    Python 3.12 (``RuntimeError``) and Python 3.13+ (``OSError`` / ``ELOOP``)."""
+    """Resolve ``path``, returning ``None`` on symlink loops or invalid/unresolvable paths
+    across Python 3.12 (``RuntimeError``) and Python 3.13+ (``OSError`` / ``ELOOP``)."""
     try:
         return path.resolve(strict=True)
     except FileNotFoundError:
         try:
             return path.resolve(strict=False)
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             return None
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None
 
 

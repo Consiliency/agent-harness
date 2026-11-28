@@ -356,3 +356,32 @@ def test_symlink_loop_in_plan_or_artifact_does_not_abort_closeout(tmp_path, monk
     diag_explicit = phase_loop_closeout_diagnostic(closeout_py312_explicit)
     assert diag_explicit is not None
     assert "absolute_private_path" in diag_explicit["message"]
+
+
+def test_invalid_nul_byte_path_does_not_abort_closeout(tmp_path):
+    repo = tmp_path / "home" / "alice" / "proj"
+    (repo / "plans").mkdir(parents=True)
+    plan = repo / "plans" / "plan.md"
+    plan.write_text("# plan\n", encoding="utf-8")
+    nul_path = f"{repo}/plans/bad\x00artifact"
+
+    closeout = build_phase_loop_closeout(
+        phase_alias="P1",
+        plan_path=plan,
+        terminal_summary={
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "artifact_paths": {"bad": nul_path},
+        },
+        automation={
+            "status": "complete",
+            "verification_status": "passed",
+            "human_required": False,
+        },
+        repo_root=repo,
+    )
+    assert closeout["artifacts"]["plan_path"] == "plans/plan.md"
+    assert closeout["artifacts"]["artifact_paths"]["bad"] == nul_path
+    diagnostic = phase_loop_closeout_diagnostic(closeout)
+    assert diagnostic is not None
+    assert "absolute_private_path" in diagnostic["message"]
