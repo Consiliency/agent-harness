@@ -61,6 +61,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Publish fresh checkouts in `install-agent-harness.sh` using native kernel-atomic
+  exclusive rename (`renamex_np(RENAME_EXCL)` on macOS, `renameat2(RENAME_NOREPLACE)`
+  on Linux via `python3`) instead of GNU-only `mv -T -n`, fixing fresh macOS installs,
+  eliminating non-atomic `mv` fallbacks, preserving non-collision OS diagnostics, and
+  documenting the `python3` prerequisite in `docs/TEAM-ONBOARDING.md`
+  (agent-harness#1605).
 - Extend the Claude Channel `session_model_unbound` provenance disclaimer
   (`launcher._CHANNEL_SESSION_MODEL_UNBOUND_WARNING`) to disclaim recorded effort
   (`selected_effort`, `requested_effort`, `policy_effort`, `effective_effort`) alongside
