@@ -935,6 +935,31 @@ def _claude_model_needs_claude_executor(
     return model.lower().startswith(("claude", "anthropic/claude"))
 
 
+def claude_model_executor_flip_target(
+    *,
+    executor: str,
+    model: str | None,
+    plan_policy: ExecutionPolicyRule | None = None,
+    roadmap_policy: ExecutionPolicyRule | None = None,
+    model_policy_rule: ExecutionPolicyRule | None = None,
+) -> str | None:
+    """Return ``"claude"`` when a ``pi`` dispatch with a Claude model pin flips to Claude.
+
+    Mirrors ``resolve_execution_policy``'s routing rule: flips only when the
+    incoming executor is ``"pi"``, the stripped model id targets Claude, no
+    reasoned ``pi`` policy override blocks the flip, and no higher-priority
+    policy layer pins a different executor (``policy.executor in (None, "claude")``).
+    """
+    if model is None or not model.strip():
+        return None
+    policy, _ = _merge_policies(plan_policy, roadmap_policy, model_policy_rule)
+    if not _claude_model_needs_claude_executor(executor, model.strip(), policy):
+        return None
+    if policy is not None and policy.executor not in (None, "claude"):
+        return None
+    return "claude"
+
+
 def resolve_model_selection_from_policy(
     *,
     profile: str,

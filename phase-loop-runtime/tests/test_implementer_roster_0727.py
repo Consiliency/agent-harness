@@ -304,6 +304,7 @@ def test_pi_to_claude_flip_through_runner_seam_builds_claude_launch(launch_mode,
         captured.append((
             request.action,
             request.executor,
+            request.dispatch_decision.selected_executor if request.dispatch_decision else None,
             request.prompt_bundle.expected_skill_pack,
             spec.executor,
             list(spec.command),
@@ -323,11 +324,108 @@ def test_pi_to_claude_flip_through_runner_seam_builds_claude_launch(launch_mode,
             run_mode="governed" if launch_mode == "repair" else "autonomous",
         )
     assert len(captured) == 1
-    action, req_executor, skill_pack, spec_executor, argv = captured[0]
-    assert (action, req_executor, spec_executor) == (launch_mode, "claude", "claude")
+    action, req_executor, decision_executor, skill_pack, spec_executor, argv = captured[0]
+    assert (action, req_executor, decision_executor, spec_executor) == (
+        launch_mode, "claude", "claude", "claude",
+    )
     assert skill_pack and all(s.startswith("claude-") for s in skill_pack), skill_pack
     assert "pi-agent-watch" not in argv, argv
     assert _contains(argv, ["--model", "claude-sonnet-5-5", "--effort", "medium"]), argv
+
+
+@pytest.mark.parametrize(("constraint_kwargs", "expected_reason"), [
+    ({"disabled_executors": ("claude",)}, "disabled_executor"),
+    ({"allowed_executors": ("pi",)}, "executor_not_allowed"),
+])
+def test_pi_to_claude_flip_respects_dispatch_restrictions(constraint_kwargs, expected_reason, tmp_path):
+    import subprocess
+    from unittest.mock import patch
+
+    from phase_loop_runtime import runner
+    from phase_loop_runtime.events import read_events
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "RUNNER", roadmap)
+    subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add runner plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+    def must_not_build_launch(request):
+        raise AssertionError(f"blocked pi->claude flip must not build launch spec: {request.executor}")
+
+    with patch("phase_loop_runtime.runner.build_launch_spec", side_effect=must_not_build_launch):
+        snapshot, results = runner.run_loop(
+            repo,
+            roadmap,
+            phase="RUNNER",
+            executor="pi",
+            model="claude-sonnet-5-5",
+            **constraint_kwargs,
+        )
+    assert results == []
+    assert snapshot.phases["RUNNER"] == "blocked"
+    events = read_events(repo)
+    assert events and events[-1]["status"] == "blocked"
+    decision = events[-1]["metadata"]["dispatch_decision"]
+    assert decision.get("selected_executor") is None
+    assert decision["blocked_reason"] == expected_reason
+
+
+def test_pi_to_claude_flip_governed_repair_blocks_after_repeated_claude_failures(tmp_path):
+    import subprocess
+    from unittest.mock import patch
+
+    from phase_loop_runtime import runner
+    from phase_loop_runtime.events import append_event, read_events
+    from phase_loop_runtime.models import LoopEvent, utc_now
+    from phase_loop_runtime.provenance import event_provenance
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("README.md",))
+    subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add repair plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    blocker = {
+        "human_required": False,
+        "blocker_class": "repeated_verification_failure",
+        "blocker_summary": "Repair emitted the same malformed closeout.",
+        "required_human_inputs": (),
+        "access_attempts": (),
+    }
+    for _ in range(2):
+        append_event(repo, LoopEvent(
+            timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase="CONTRACT",
+            action="run", status="blocked", model="claude-sonnet-5-5", reasoning_effort="medium",
+            source="fixture", blocker=blocker,
+            metadata={
+                "launch_request": {"executor": "claude", "action": "repair", "repo": str(repo),
+                                   "roadmap": str(roadmap), "phase": "CONTRACT", "plan": str(plan)},
+                "terminal_summary": {"terminal_status": "blocked", "verification_status": "blocked",
+                                     "next_action": "Retry repair.", "dirty_paths": []},
+            },
+            selected_executor="claude", **event_provenance(roadmap, "CONTRACT"),
+        ))
+
+    def must_not_build_launch(request):
+        raise AssertionError(f"repeated Claude repairs must block instead of launching: {request.executor}")
+
+    with patch("phase_loop_runtime.runner.build_launch_spec", side_effect=must_not_build_launch):
+        snapshot, results = runner.run_loop(
+            repo,
+            roadmap,
+            phase="CONTRACT",
+            executor="pi",
+            model="claude-sonnet-5-5",
+            run_mode="governed",
+        )
+    assert results == []
+    assert snapshot.phases["CONTRACT"] == "blocked"
+    events = read_events(repo)
+    assert events[-1]["status"] == "blocked"
+    assert events[-1]["blocker"]["blocker_class"] == "repeated_verification_failure"
+    guard = events[-1]["metadata"]["repair_loop_guard"]
+    assert guard["status"] == "blocked"
+    assert guard["from_executor"] == "claude"
 
 
 @pytest.mark.parametrize("action", ["execute", "repair"])

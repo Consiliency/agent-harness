@@ -131,8 +131,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Recompute the shipped `model_policy_rule` from the post-flip executor (`"claude"`) inside
   `profiles.resolve_execution_policy` when `_claude_model_needs_claude_executor` flips
   `pi -> claude` for an operator-pinned Claude model and Claude is the final policy executor,
-  and carry `execution_policy.executor` through `runner.run_loop` launch construction, so
-  `--executor pi --model claude-sonnet-5-5` launches Claude at its shipped implementer effort
+  and re-validate the post-flip executor through `resolve_dispatch_decision` in
+  `runner.run_loop` before the governed repair-loop guard and launch construction, so
+  `--executor pi --model claude-sonnet-5-5` enforces `disabled_executors`/`allowed_executors`,
+  tracks repeated Claude repair failures, and launches Claude at its shipped implementer effort
   (`medium`) instead of `pi-agent-watch` at `high` while preserving higher-priority policy
   executors, explicit operator/plan effort pins, explicit `pi` overrides, and
   `model_policy_rule=None` (agent-harness#1711).

@@ -191,6 +191,7 @@ from .plan_ir import iter_waves
 from .pipeline_adapter.sibling_matcher import validate_phase_owned_evidence
 from .profiles import (
     apply_model_class_escalation,
+    claude_model_executor_flip_target,
     resolve_execution_policy,
     resolve_model_selection_from_policy,
     resolve_profile,
@@ -2804,6 +2805,46 @@ def run_loop(
                 roadmap=effective_roadmap_dispatch_hints,
                 default_executor=autosel_selection.executor if autosel_selection is not None else None,
             )
+            if (
+                not dispatch_decision.blocked
+                and dispatch_decision.selected_executor == "pi"
+            ):
+                _pi_probe_selection = resolve_profile_for_executor(
+                    action=launch_action,
+                    executor="pi",
+                    profile=model_profile,
+                    model=model,
+                    effort=effort,
+                )
+                _flipped_executor = claude_model_executor_flip_target(
+                    executor="pi",
+                    model=_pi_probe_selection.model,
+                    plan_policy=plan_execution_policy,
+                    roadmap_policy=roadmap_execution_policy,
+                )
+                if _flipped_executor is not None:
+                    # agent-harness#1711: validate the post-flip Claude executor
+                    # against dispatch constraints (disabled/allowed/capabilities)
+                    # BEFORE the governed repair-loop guard and launch construction,
+                    # so blocked flips fail closed and repair history lookup matches
+                    # the actual Claude executor recorded on prior repair launches.
+                    _flipped_operator_hints = DispatchHints(
+                        preferred_executors=(_flipped_executor,),
+                        allowed_executors=tuple(allowed_executors),
+                        fallback_executors=tuple(fallback_executors),
+                        disabled_executors=tuple(disabled_executors),
+                        required_capabilities=tuple(required_capabilities),
+                        source="claude-model-executor-flip",
+                        action=launch_action,
+                    )
+                    dispatch_decision = resolve_dispatch_decision(
+                        action=launch_action,
+                        dry_run=dry_run,
+                        repo=repo,
+                        operator=_flipped_operator_hints,
+                        plan=effective_plan_dispatch_hints,
+                        roadmap=effective_roadmap_dispatch_hints,
+                    )
             if autosel_selection is not None and autosel_selection.is_auto:
                 # A genuine layer-2/3 auto-pick that was actually consulted: surface
                 # the provenance + the discoverable escape hatch (change #6).
@@ -3064,6 +3105,30 @@ def run_loop(
                             escalation_record.pop("not_applied_reason", None)
                         else:
                             escalation_record["not_applied_reason"] = escalation_application.not_applied_reason
+                if execution_policy.executor != resolved_executor:
+                    _post_policy_dispatch = resolve_dispatch_decision(
+                        action=launch_action,
+                        dry_run=dry_run,
+                        repo=repo,
+                        operator=DispatchHints(
+                            preferred_executors=(execution_policy.executor,),
+                            allowed_executors=tuple(allowed_executors),
+                            fallback_executors=(),
+                            disabled_executors=tuple(disabled_executors),
+                            required_capabilities=tuple(required_capabilities),
+                            source="execution-policy-executor",
+                            action=launch_action,
+                        ),
+                        plan=effective_plan_dispatch_hints,
+                        roadmap=effective_roadmap_dispatch_hints,
+                    )
+                    if _post_policy_dispatch.blocked:
+                        raise ValueError(
+                            _post_policy_dispatch.blocked_summary
+                            or f"Dispatch policy rejected `{execution_policy.executor}` for `{launch_action}`."
+                        )
+                    if _post_policy_dispatch.selected_executor == execution_policy.executor:
+                        dispatch_decision = _post_policy_dispatch
                 resolved_executor = execution_policy.executor
                 selection = resolve_model_selection_from_policy(
                     profile=selection.profile,
