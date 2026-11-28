@@ -1605,7 +1605,9 @@ class TestArmCliFlags(unittest.TestCase):
                         "phase-loop doctor --js\\\n"
                         "on\n"
                         "OUT=$(phase-loop doctor --bogus-inside-subst)\n"
-                        "phase-loop run --repo . --command-template \"--not-a-flag\" --json\n"
+                        "phase-loop run --repo . --command-template=--not-a-flag --json\n"
+                        "phase-loop doctor --bom-fixture --typo-after-value-opt\n"
+                        "phase-loop doctor --bom-fixture \"--quoted-typo-after-value-opt\"\n"
                         "```\n"
                     ),
                 },
@@ -1617,7 +1619,32 @@ class TestArmCliFlags(unittest.TestCase):
                     (2, "cli_flags", "unknown_cli_flag", "doctor --bogus-after-subst"),
                     (3, "cli_flags", "unknown_cli_flag", "doctor --bogus-quoted"),
                     (6, "cli_flags", "unknown_cli_flag", "doctor --bogus-inside-subst"),
+                    (8, "cli_flags", "unknown_cli_flag", "doctor --typo-after-value-opt"),
+                    (9, "cli_flags", "unknown_cli_flag", "doctor --quoted-typo-after-value-opt"),
                 ],
+            )
+
+    def test_fence_comment_trailing_backslash_and_multiline_single_quote(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": "Clean doc.\n",
+                    "docs/fence_state.md": (
+                        "```sh\n"
+                        "# comment ending with a trailing backslash \\\n"
+                        "phase-loop doctor --typo-after-comment\n"
+                        "printf '\n"
+                        "phase-loop doctor --ignored-inside-single-quotes\n"
+                        "'\n"
+                        "```\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                [(f.line, f.arm, f.code, f.token) for f in found],
+                [(3, "cli_flags", "unknown_cli_flag", "doctor --typo-after-comment")],
             )
 
     def test_argparse_remainder_producer_flags_are_allowed(self):
@@ -1650,6 +1677,8 @@ class TestArmCliFlags(unittest.TestCase):
                         "gh workflow run test.yml --ref <branch> & install-agent-harness.sh --ref <your-branch>\n"
                         "install-agent-harness.sh --note \"gh workflow run\" --ref <your-branch>\n"
                         "echo \"gh workflow run\" --ref <your-branch>\n"
+                        "install-agent-harness.sh --note \"$(gh workflow run test.yml)\" --ref <your-branch>\n"
+                        "gh workflow run $(printf test.yml) --ref <your-branch>\n"
                         "```\n"
                     ),
                 },
@@ -1662,6 +1691,7 @@ class TestArmCliFlags(unittest.TestCase):
                     (2, "pins", "invalid_placeholder", "--ref <your-branch>"),
                     (3, "pins", "invalid_placeholder", "--ref <your-branch>"),
                     (4, "pins", "invalid_placeholder", "--ref <your-branch>"),
+                    (5, "pins", "invalid_placeholder", "--ref <your-branch>"),
                 ],
             )
 

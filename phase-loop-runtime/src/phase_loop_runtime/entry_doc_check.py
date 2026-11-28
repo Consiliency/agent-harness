@@ -724,30 +724,42 @@ _FLAG_REF_PIN_RE = re.compile(
 _REF_SUFFIX_RE = re.compile(r"(?:\.tar\.gz|\.tgz|\.zip)$", re.IGNORECASE)
 
 
+_WORKFLOW_REF_SENTINEL = "__ENTRY_DOC_REF_SENTINEL__"
+
+
 def _is_workflow_dispatch_ref(line: str, match_start: int, matched_text: str) -> bool:
     """True when ``--ref`` belongs to ``gh workflow run ... --ref <branch>``.
 
     GitHub CLI's ``gh workflow run --ref`` selects a branch or ref to dispatch a
     workflow on, not an ``agent-harness`` install release-tag pin. Parses the
     prefix before ``match_start`` with quote- and operator-aware shell
-    tokenization (handling ``;``, ``|``, ``||``, ``&``, ``&&``, ``(`` and quoted
-    arguments) and requires ``gh workflow run`` in command position.
+    tokenization (handling ``;``, ``|``, ``||``, ``&``, ``&&``, ``(``, quotes,
+    and ``$(...)`` command substitutions) and inspects the exact command segment
+    that owns the ``--ref`` token, requiring unquoted ``gh workflow run`` in
+    command position.
     """
     if not matched_text.startswith("--ref"):
         return False
     prefix = line[:match_start]
     if "`" in prefix:
         prefix = prefix.rsplit("`", 1)[-1]
-    segments = _tokenize_shell_segments([(1, prefix + " __REF__", False)])
-    if not segments:
+    segments = _tokenize_shell_segments(
+        [(1, prefix + " " + _WORKFLOW_REF_SENTINEL)],
+        newline_ends_command=True,
+    )
+    owner_seg: Optional[List[Tuple[str, int, bool]]] = None
+    for seg in segments:
+        if any(tok == _WORKFLOW_REF_SENTINEL and not quoted for tok, _ln, quoted in seg):
+            owner_seg = seg
+            break
+    if owner_seg is None:
         return False
-    last_seg = segments[-1]
-    idx = _skip_shell_wrappers(last_seg)
-    if idx is None or idx + 2 >= len(last_seg):
+    idx = _skip_shell_wrappers(owner_seg)
+    if idx is None or idx + 2 >= len(owner_seg):
         return False
-    t0, _l0, q0 = last_seg[idx]
-    t1, _l1, q1 = last_seg[idx + 1]
-    t2, _l2, q2 = last_seg[idx + 2]
+    t0, _l0, q0 = owner_seg[idx]
+    t1, _l1, q1 = owner_seg[idx + 1]
+    t2, _l2, q2 = owner_seg[idx + 2]
     return (
         not q0
         and not q1
@@ -1143,7 +1155,7 @@ def _cli_list_item_content_indent(line: str) -> Optional[int]:
 
 def _iter_multiline_inline_code_spans(
     prose_lines: Sequence[Tuple[int, str]],
-) -> List[List[Tuple[int, str, bool]]]:
+) -> List[List[Tuple[int, str]]]:
     """Extract CommonMark single- or multi-line inline code spans with line numbers."""
     if not prose_lines:
         return []
@@ -1156,7 +1168,7 @@ def _iter_multiline_inline_code_spans(
         parts.append(text)
         char_lines.extend([lineno] * len(text))
     para = "".join(parts)
-    spans: List[List[Tuple[int, str, bool]]] = []
+    spans: List[List[Tuple[int, str]]] = []
     pos = 0
     length = len(para)
     while pos < length:
@@ -1176,14 +1188,14 @@ def _iter_multiline_inline_code_spans(
         if close == -1:
             pos = run_end
             continue
-        span_lines: List[Tuple[int, str, bool]] = []
+        span_lines: List[Tuple[int, str]] = []
         chunk_start = run_end
         while chunk_start < close:
             nl = para.find("\n", chunk_start, close)
             chunk_end = close if nl == -1 else nl
             chunk_text = para[chunk_start:chunk_end]
             chunk_lineno = char_lines[chunk_start] if chunk_start < len(char_lines) else prose_lines[-1][0]
-            span_lines.append((chunk_lineno, chunk_text, False))
+            span_lines.append((chunk_lineno, chunk_text))
             if nl == -1:
                 break
             chunk_start = nl + 1
@@ -1251,9 +1263,18 @@ def _scan_command_substitution(text: str, start: int) -> int:
 
 
 def _tokenize_shell_text(
-    text: str, char_lines: Sequence[int]
+    text: str, char_lines: Sequence[int], *, newline_ends_command: bool = True
 ) -> List[List[Tuple[str, int, bool]]]:
-    """Tokenize flattened shell command text into operator-bounded segments."""
+    """Tokenize shell command text into operator-bounded segments.
+
+    Preserves POSIX quote, comment, and ``\\``-newline continuation semantics:
+    - Outside single quotes, ``\\`` immediately before ``\\n`` is removed without
+      breaking the current token or command.
+    - Unquoted ``#`` at token start comments out only through the next ``\\n``
+      (ignoring any trailing ``\\`` inside the comment).
+    - Single- and double-quoted strings may span lines when closed in the block,
+      preventing quoted payloads from masquerading as shell commands.
+    """
     segments: List[List[Tuple[str, int, bool]]] = []
     nested_segments: List[List[Tuple[str, int, bool]]] = []
     cur_seg: List[Tuple[str, int, bool]] = []
@@ -1274,6 +1295,9 @@ def _tokenize_shell_text(
         if cur_seg:
             segments.append(list(cur_seg))
             cur_seg.clear()
+        if nested_segments:
+            segments.extend(nested_segments)
+            nested_segments.clear()
 
     i = 0
     n = len(text)
@@ -1282,6 +1306,9 @@ def _tokenize_shell_text(
         lineno = char_lines[i]
         if in_quote is not None:
             if ch == "\\" and in_quote == '"' and i + 1 < n:
+                if text[i + 1] == "\n":
+                    i += 2  # POSIX line continuation inside double quotes
+                    continue
                 buf.append(text[i + 1])
                 i += 2
                 continue
@@ -1295,7 +1322,9 @@ def _tokenize_shell_text(
                     buf.append(text[i : close_idx + 1])
                     nested_segments.extend(
                         _tokenize_shell_text(
-                            text[i + 2 : close_idx], char_lines[i + 2 : close_idx]
+                            text[i + 2 : close_idx],
+                            char_lines[i + 2 : close_idx],
+                            newline_ends_command=True,
                         )
                     )
                     i = close_idx + 1
@@ -1307,22 +1336,40 @@ def _tokenize_shell_text(
             nl = text.find("\n", i)
             if nl == -1:
                 break
+            if newline_ends_command:
+                flush_seg()
             i = nl + 1
             continue
         if ch in ("'", '"'):
+            if text.find(ch, i + 1) != -1:
+                if not buf:
+                    buf_line = lineno
+                    buf_quoted = True
+                in_quote = ch
+                i += 1
+                continue
             if not buf:
                 buf_line = lineno
-                buf_quoted = True
-            in_quote = ch
+            buf.append(ch)
             i += 1
             continue
         if ch == "\\" and i + 1 < n:
+            if text[i + 1] == "\n":
+                i += 2  # POSIX line continuation joins tokens across lines
+                continue
             if not buf:
                 buf_line = lineno
             buf.append(text[i + 1])
             i += 2
             continue
-        if ch in " \t\r\n":
+        if ch == "\n":
+            if newline_ends_command:
+                flush_seg()
+            else:
+                flush_tok()
+            i += 1
+            continue
+        if ch in " \t\r":
             flush_tok()
             i += 1
             continue
@@ -1334,7 +1381,9 @@ def _tokenize_shell_text(
                 buf.append(text[i : close_idx + 1])
                 nested_segments.extend(
                     _tokenize_shell_text(
-                        text[i + 2 : close_idx], char_lines[i + 2 : close_idx]
+                        text[i + 2 : close_idx],
+                        char_lines[i + 2 : close_idx],
+                        newline_ends_command=True,
                     )
                 )
                 i = close_idx + 1
@@ -1358,28 +1407,25 @@ def _tokenize_shell_text(
 
 
 def _tokenize_shell_segments(
-    lines_with_nos: Sequence[Tuple[int, str, bool]],
+    lines_with_nos: Sequence[Tuple[int, str]],
+    *,
+    newline_ends_command: bool = True,
 ) -> List[List[Tuple[str, int, bool]]]:
     """Split shell command lines into operator-bounded segments of ``(tok, line, quoted)``."""
     parts: List[str] = []
     char_lines: List[int] = []
-    prev_continued = False
-    for idx, (lineno, raw, continued) in enumerate(lines_with_nos):
-        if idx > 0 and not prev_continued:
+    for idx, (lineno, raw) in enumerate(lines_with_nos):
+        cleaned = raw.rstrip("\r")
+        if idx > 0:
             parts.append("\n")
             char_lines.append(lineno)
-        parts.append(raw)
-        char_lines.extend([lineno] * len(raw))
-        prev_continued = continued
+        parts.append(cleaned)
+        char_lines.extend([lineno] * len(cleaned))
     if not parts:
         return []
-    return _tokenize_shell_text("".join(parts), char_lines)
-
-
-def _ends_with_line_continuation(line: str) -> bool:
-    stripped = line.rstrip("\r")
-    trailing_backslashes = len(stripped) - len(stripped.rstrip("\\"))
-    return trailing_backslashes % 2 == 1
+    return _tokenize_shell_text(
+        "".join(parts), char_lines, newline_ends_command=newline_ends_command
+    )
 
 
 def _iter_cli_code_segments(text: str) -> List[List[Tuple[str, int, bool]]]:
@@ -1388,8 +1434,8 @@ def _iter_cli_code_segments(text: str) -> List[List[Tuple[str, int, bool]]]:
     Handles blockquote-nested fences (``> ```sh``), list-indented fences within
     CommonMark container bounds (preventing 4-space top-level indented code
     lines containing literal backticks from opening phantom fences), multiline
-    inline code spans, and POSIX ``\\`` line continuations without inserting
-    spurious whitespace.
+    inline code spans, and whole-fence shell tokenization so quote, comment, and
+    ``\\``-newline continuation states are preserved accurately across lines.
     """
     lines = text.split("\n")
     out: List[List[Tuple[str, int, bool]]] = []
@@ -1398,22 +1444,22 @@ def _iter_cli_code_segments(text: str) -> List[List[Tuple[str, int, bool]]]:
     fence_bq = 0
     fence_min = 0
     fence_bound: Optional[int] = None
-    fence_group: List[Tuple[int, str, bool]] = []
+    fence_lines: List[Tuple[int, str]] = []
     prose_lines: List[Tuple[int, str]] = []
     prose_bq = 0
     list_indents: List[int] = []
     last_bq = 0
     saw_blank = False
 
-    def flush_fence_group() -> None:
-        if fence_group:
-            out.extend(_tokenize_shell_segments(fence_group))
-            fence_group.clear()
+    def flush_fence_block() -> None:
+        if fence_lines:
+            out.extend(_tokenize_shell_segments(fence_lines, newline_ends_command=True))
+            fence_lines.clear()
 
     def flush_prose() -> None:
         if prose_lines:
             for span_lines in _iter_multiline_inline_code_spans(prose_lines):
-                out.extend(_tokenize_shell_segments(span_lines))
+                out.extend(_tokenize_shell_segments(span_lines, newline_ends_command=False))
             prose_lines.clear()
 
     idx = 0
@@ -1431,7 +1477,7 @@ def _iter_cli_code_segments(text: str) -> List[List[Tuple[str, int, bool]]]:
                 and _cli_indent_width(body) < fence_bound
             )
             if left_blockquote or dedented_list:
-                flush_fence_group()
+                flush_fence_block()
                 opener_char = None
                 opener_len = 0
                 fence_bq = 0
@@ -1454,7 +1500,7 @@ def _iter_cli_code_segments(text: str) -> List[List[Tuple[str, int, bool]]]:
                 and not match.group(3).strip()
                 and fence_min <= cur_indent <= fence_min + 3
             ):
-                flush_fence_group()
+                flush_fence_block()
                 opener_char = None
                 opener_len = 0
                 fence_bq = 0
@@ -1462,11 +1508,7 @@ def _iter_cli_code_segments(text: str) -> List[List[Tuple[str, int, bool]]]:
                 fence_bound = None
                 idx += 1
                 continue
-            if _ends_with_line_continuation(content):
-                fence_group.append((lineno, content.rstrip("\r")[:-1], True))
-            else:
-                fence_group.append((lineno, content, False))
-                flush_fence_group()
+            fence_lines.append((lineno, content))
             idx += 1
             continue
 
@@ -1535,7 +1577,7 @@ def _iter_cli_code_segments(text: str) -> List[List[Tuple[str, int, bool]]]:
         prose_lines.append((lineno, body))
         idx += 1
 
-    flush_fence_group()
+    flush_fence_block()
     flush_prose()
     return out
 
@@ -1646,22 +1688,30 @@ def _find_cli_invocation(seg: Sequence[Tuple[str, int, bool]]) -> Optional[int]:
 def _consume_option_values(
     seg: Sequence[Tuple[str, int, bool]], pos: int, nargs: object
 ) -> int:
-    """Return updated index after consuming argument token(s) for option at ``pos``."""
+    """Return updated index after consuming argument token(s) for option at ``pos``.
+
+    Matches ``argparse`` option parsing: never swallows a following ``--`` or
+    ``--flag`` token (quoted or unquoted) as an option's argument value, because
+    ``argparse`` requires ``--opt=--val`` to pass a dash-prefixed value.
+    """
     n = len(seg)
-    if nargs is None or nargs == 1:
-        return pos + 1 if pos + 1 < n else pos
-    if isinstance(nargs, int) and nargs > 1:
-        return min(n - 1, pos + nargs)
-    if nargs == "?":
-        if pos + 1 < n and _extract_cli_flag(seg[pos + 1][0], quoted=seg[pos + 1][2]) is None:
+
+    def _is_option_boundary(idx: int) -> bool:
+        tok, _ln, quoted = seg[idx]
+        return tok == "--" or _extract_cli_flag(tok, quoted=quoted) is not None
+
+    if nargs is None or nargs == 1 or nargs == "?":
+        if pos + 1 < n and not _is_option_boundary(pos + 1):
             return pos + 1
         return pos
+    if isinstance(nargs, int) and nargs > 1:
+        consumed = 0
+        while consumed < nargs and pos + 1 < n and not _is_option_boundary(pos + 1):
+            pos += 1
+            consumed += 1
+        return pos
     if nargs in ("*", "+"):
-        while (
-            pos + 1 < n
-            and seg[pos + 1][0] != "--"
-            and _extract_cli_flag(seg[pos + 1][0], quoted=seg[pos + 1][2]) is None
-        ):
+        while pos + 1 < n and not _is_option_boundary(pos + 1):
             pos += 1
         return pos
     return pos
