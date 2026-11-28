@@ -683,21 +683,32 @@ def _skill_bodies(
     return "\n\n".join(blocks)
 
 
-def _skill_reference_sources(skill_dir: Path, harness_target: str) -> tuple[tuple[str, Path], ...]:
-    """A skill's linked reference files as ``(path under references/, source)``.
+def _skill_subdir_sources(
+    skill_dir: Path, harness_target: str, subdir: str
+) -> tuple[tuple[str, Path], ...]:
+    """Files under one skill subdirectory as ``(path under <subdir>/, source)``.
 
-    An assembled skill dir keeps them in ``references/``; a canonical
-    ``phase-loop-skills/<skill>`` dir keeps harness-only ones in
-    ``_overrides/<harness>/references/``, which reach only that harness.
+    An assembled skill dir keeps them in ``<subdir>/``; a canonical
+    ``phase-loop-skills/<skill>`` dir may also keep harness-only ones in
+    ``_overrides/<harness>/<subdir>/``, which reach only that harness.
     """
     found: dict[str, Path] = {}
-    for references in (skill_dir / "references", skill_dir / "_overrides" / harness_target / "references"):
-        if not references.is_dir():
+    for base in (skill_dir / subdir, skill_dir / "_overrides" / harness_target / subdir):
+        if not base.is_dir():
             continue
-        for path in references.rglob("*"):
-            if path.is_file():
-                found[path.relative_to(references).as_posix()] = path
+        for path in base.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(base)
+            if "__pycache__" in rel.parts or path.suffix == ".pyc":
+                continue
+            found[rel.as_posix()] = path
     return tuple(sorted(found.items()))
+
+
+def _skill_reference_sources(skill_dir: Path, harness_target: str) -> tuple[tuple[str, Path], ...]:
+    """A skill's linked reference files as ``(path under references/, source)``."""
+    return _skill_subdir_sources(skill_dir, harness_target, "references")
 
 
 def skill_reference_files(
@@ -797,24 +808,37 @@ def _bundle_sha256(
                 "name": skill_name,
                 "source": _skill_source_label(repo, skill_dir),
                 "sha256": hashlib.sha256(skill_file.read_bytes()).hexdigest() if skill_file.exists() else None,
-                # agent-harness#1358: SKILL.md links detail into references/; editing one
-                # must change the bundle identity, not only edits to SKILL.md.
+                # agent-harness#1358 / #1698: SKILL.md links detail into references/ and
+                # ships executable helpers in scripts/ and templates in assets/; editing
+                # any of them must change the bundle identity, not only edits to SKILL.md.
                 "references": references,
+                "scripts": _skill_subdir_sha256(skill_dir, harness_target, "scripts"),
+                "assets": _skill_subdir_sha256(skill_dir, harness_target, "assets"),
             }
         )
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _skill_subdir_sha256(
+    skill_dir: Path,
+    harness_target: str,
+    subdir: str,
+    *,
+    payloads: list[tuple[str, bytes]] | None = None,
+) -> dict[str, str]:
+    digests = {}
+    for rel, source in _skill_subdir_sources(skill_dir, harness_target, subdir):
+        content = source.read_bytes()
+        digests[source.relative_to(skill_dir).as_posix()] = hashlib.sha256(content).hexdigest()
+        if payloads is not None:
+            payloads.append((rel, content))
+    return digests
+
+
 def _skill_references_sha256(
     skill_dir: Path, harness_target: str, *, payloads: list[tuple[str, bytes]] | None = None,
 ) -> dict[str, str]:
-    references = {}
-    for rel, source in _skill_reference_sources(skill_dir, harness_target):
-        content = source.read_bytes()
-        references[source.relative_to(skill_dir).as_posix()] = hashlib.sha256(content).hexdigest()
-        if payloads is not None:
-            payloads.append((rel, content))
-    return references
+    return _skill_subdir_sha256(skill_dir, harness_target, "references", payloads=payloads)
 
 
 def _skill_bundle_id(harness_target: str, action: str, expected_skill_pack: tuple[str, ...]) -> str:

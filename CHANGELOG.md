@@ -42,6 +42,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Include each skill's `scripts/` and `assets/` files (including harness-scoped
+  `_overrides/<harness>/{scripts,assets}/`, excluding `__pycache__/` and `*.pyc`) in
+  `injection._bundle_sha256` (`skill_bundle_sha256`) alongside `SKILL.md` and
+  `references/`, so editing a helper script or asset updates the recorded bundle digest
+  (agent-harness#1698).
 - Thread the caller's environment (`RouteRequest.env`) through `seat_route` into Codex's
   `credential_present` and L6 credential preconditions (`seat_codex_credential.present(env)`,
   `seat_profile_codex`) so route pre-check, admission gate, and seat setup always resolve
