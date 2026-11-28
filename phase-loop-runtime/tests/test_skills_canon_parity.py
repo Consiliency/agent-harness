@@ -413,7 +413,10 @@ class SkillsCanonParityTest(unittest.TestCase):
 
     @staticmethod
     def _linked_file_ships_directly(packaged: Path, skill_name: str, rel: str, owner: str) -> tuple[bool, str]:
-        """agent-harness#1646: accept only regular files resolving directly under `<owner>/{references,assets}/`."""
+        """agent-harness#1646 / agent-harness#1649: accept only canonical direct regular files
+        resolving directly under `<owner>/{references,assets}/`."""
+        from phase_loop_runtime.build_bundle import canonical_direct_aux_path
+
         resolved_owner = owner or skill_name
         owner_parts = Path(resolved_owner).parts
         if (
@@ -423,13 +426,13 @@ class SkillsCanonParityTest(unittest.TestCase):
             or "\\" in resolved_owner
         ):
             return False, f"{skill_name} link {rel!r} names invalid owner directory {resolved_owner!r}"
-        parts = Path(rel).parts
-        if len(parts) != 2 or parts[0] not in ("references", "assets") or parts[1] in ("", ".", ".."):
+        canonical = canonical_direct_aux_path(rel)
+        if canonical is None:
             return (
                 False,
                 f"{skill_name} link {rel!r} does not resolve directly under {resolved_owner}/references/ or assets/",
             )
-        subdir, filename = parts
+        subdir, filename = canonical.split("/")
         packaged_real = packaged.resolve()
         owner_path = packaged / resolved_owner
         if owner_path.is_symlink() or not owner_path.is_dir():
@@ -456,23 +459,21 @@ class SkillsCanonParityTest(unittest.TestCase):
         return True, ""
 
     def test_every_linked_reference_and_asset_ships_with_its_harness(self):
-        """agent-harness#1358 / agent-harness#1646: a SKILL.md that links `references/<file>`
-        or `assets/<file>` must resolve directly under its packaged skill dir's `references/`
-        or `assets/`, for every harness. Progressive disclosure is only safe if the linked
-        file travels directly under that directory without traversal or symlink escape.
-        A link followed by "from the installed `<skill>` directory" resolves directly under
-        that sibling skill's directory instead (execute-phase reads execute-detailed's pr-writing.md)."""
+        """agent-harness#1358 / agent-harness#1646 / agent-harness#1649: a SKILL.md that links
+        `references/<file>` or `assets/<file>` must resolve directly under its packaged skill
+        dir's `references/` or `assets/`, for every harness. Progressive disclosure is only safe
+        if the linked file travels directly under that directory without traversal or symlink
+        escape. A link followed by "from the installed `<skill>` directory" resolves directly
+        under that sibling skill's directory instead (execute-phase reads execute-detailed's
+        pr-writing.md)."""
         self._require_sources()
-        import re
+        from phase_loop_runtime.build_bundle import iter_skill_aux_links
 
-        link = re.compile(
-            r"(?<![\w-])((?:references|assets)/[\w./-]+\.md)`?(?:\s+from the installed `([\w-]+)` directory)?"
-        )
         packaged = PKG / "src" / "phase_loop_runtime" / "skills_bundle"
         checked = 0
         for harness, root in SKILLS_SRC.items():
             for skill_md in sorted(root.glob("*/SKILL.md")):
-                for rel, owner in sorted(set(link.findall(skill_md.read_text(encoding="utf-8")))):
+                for rel, owner in iter_skill_aux_links(skill_md.read_text(encoding="utf-8")):
                     checked += 1
                     with self.subTest(skill=skill_md.parent.name, link=rel):
                         ok, reason = self._linked_file_ships_directly(
@@ -513,6 +514,10 @@ class SkillsCanonParityTest(unittest.TestCase):
 
             for bad_skill, bad_rel, bad_owner in (
                 ("claude-plan-phase", "references/../SKILL.md", ""),
+                ("claude-plan-phase", "../references/../SKILL.md", ""),
+                ("claude-plan-phase", "../references/ok.md", ""),
+                ("claude-plan-phase", "references/./ok.md", ""),
+                ("claude-plan-phase", "references//ok.md", ""),
                 ("claude-plan-phase", "references/../../claude-other-skill/references/other.md", ""),
                 ("claude-plan-phase", "references/nested/deep.md", ""),
                 ("claude-plan-phase", "references/symlink-escape.md", ""),
@@ -526,6 +531,42 @@ class SkillsCanonParityTest(unittest.TestCase):
                         packaged, bad_skill, bad_rel, bad_owner
                     )
                     self.assertFalse(ok, f"expected ({bad_skill!r}, {bad_rel!r}, {bad_owner!r}) to be rejected")
+
+            # End-to-end extraction -> validation negative controls: escaping and
+            # non-canonical Markdown links must be captured by `iter_skill_aux_links`
+            # and rejected by `_linked_file_ships_directly` (agent-harness#1649).
+            from phase_loop_runtime.build_bundle import iter_skill_aux_links
+
+            for snippet, expected_rel in (
+                ("[doc](../references/../SKILL.md)", "../references/../SKILL.md"),
+                ("[doc](.././references/../SKILL.md)", ".././references/../SKILL.md"),
+                ("[doc](./../references/../SKILL.md)", "./../references/../SKILL.md"),
+                ("[doc](../references/ok.md)", "../references/ok.md"),
+                ("Read `references/./ok.md`.", "references/./ok.md"),
+                ("Read `references//ok.md`.", "references//ok.md"),
+            ):
+                with self.subTest(snippet=snippet):
+                    extracted = iter_skill_aux_links(snippet)
+                    self.assertEqual(extracted, [(expected_rel, "")])
+                    ok, _ = self._linked_file_ships_directly(
+                        packaged, "claude-plan-phase", expected_rel, ""
+                    )
+                    self.assertFalse(ok, f"expected extracted {expected_rel!r} to be rejected")
+
+            # Explicit destinations with spaces or balanced parens must be extracted as
+            # complete tokens so parity fails when the actual target is missing even if
+            # a prefix file (`references/foo`) exists (agent-harness#1649).
+            (active / "references" / "foo").write_text("prefix only\n", encoding="utf-8")
+            for snippet, expected_rel in (
+                ("[doc](<references/foo bar.md>)", "references/foo bar.md"),
+                ("[doc](references/foo(bar).md)", "references/foo(bar).md"),
+            ):
+                with self.subTest(complete_dest=snippet):
+                    self.assertEqual(iter_skill_aux_links(snippet), [(expected_rel, "")])
+                    ok, _ = self._linked_file_ships_directly(
+                        packaged, "claude-plan-phase", expected_rel, ""
+                    )
+                    self.assertFalse(ok, f"expected missing {expected_rel!r} to be rejected")
 
     def test_harness_only_references_do_not_leak_into_other_harnesses(self):
         """A reference only Claude's SKILL.md links ships in the claude overlay, not
@@ -581,6 +622,146 @@ class SkillsCanonParityTest(unittest.TestCase):
             build_bundle({h: src / h for h in SKILLS_SRC}, out, dry_run=False, apply=True, force=True)
             self.assertTrue((skill_out / "references" / "shared.md").is_file())
             self.assertFalse((skill_out / "_overrides" / "claude" / "references" / "shared.md").exists())
+
+    def test_build_bundle_uses_parity_link_grammar_for_references_placement(self):
+        """agent-harness#1649: raw substring hits (prefixed/suffixed/non-canonical paths or
+        links attributed to a different installed skill) must not promote a harness-only
+        reference into the shared base, while valid non-`.md` / uppercase-extension / `./` /
+        self-owned links share and validate consistently."""
+        from phase_loop_runtime.build_bundle import iter_skill_aux_links, linked_own_aux_paths
+
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "src"
+            for harness in SKILLS_SRC:
+                skill = src / harness / f"{harness}-plan-phase"
+                skill.mkdir(parents=True)
+                body = f"---\nname: {harness}-plan-phase\n---\n"
+                if harness == "claude":
+                    refs = skill / "references"
+                    refs.mkdir()
+                    for name in (
+                        "cross-skill.md",
+                        "cross-bare.md",
+                        "cross-anchor.md",
+                        "cross-title.md",
+                        "cross-angle.md",
+                        "prefixed.md",
+                        "suffixed.md",
+                        "parent-dir.md",
+                        "dot-seg.md",
+                        "double-slash.md",
+                        "dot-rel.md",
+                        "self-owned.md",
+                        "notes.txt",
+                        "UPPER.MD",
+                        "LICENSE",
+                        "cmd-ref.md",
+                        "foo",
+                        "foo bar.md",
+                        "foo(bar).md",
+                    ):
+                        (refs / name).write_text(f"{name}\n", encoding="utf-8")
+                    body += (
+                        "Read `references/cross-skill.md`, `references/cross-bare.md`, "
+                        "`references/cross-anchor.md`, `references/cross-title.md`, "
+                        "`references/cross-angle.md`, `references/prefixed.md`, "
+                        "`references/suffixed.md`, `references/parent-dir.md`, "
+                        "`references/dot-seg.md`, `references/double-slash.md`, "
+                        "`references/dot-rel.md`, `references/self-owned.md`, "
+                        "`references/notes.txt`, `references/UPPER.MD`, `references/LICENSE`, "
+                        "`references/cmd-ref.md`, `references/foo`, "
+                        "`references/foo bar.md`, and `references/foo(bar).md`.\n"
+                    )
+                elif harness == "gemini":
+                    body += (
+                        "Read `references/cross-skill.md` from the installed `gemini-execute-detailed` directory.\n"
+                        "Read references/cross-bare.md from the installed `gemini-execute-detailed` directory.\n"
+                        "Read `references/cross-anchor.md#top%20sec` from the installed `gemini-execute-detailed` directory.\n"
+                        "Read [titled](references/cross-title.md \"Guide\") from the installed `gemini-execute-detailed` directory.\n"
+                        "Read [titled2](references/cross-title.md#sec 'Guide') from the installed `gemini-execute-detailed` directory.\n"
+                        "Read [titled3](references/cross-title.md (Guide)) from the installed `gemini-execute-detailed` directory.\n"
+                        "Read [angle](<references/cross-angle.md>) from the installed `gemini-execute-detailed` directory.\n"
+                        "Read [angle2](<references/cross-angle.md#foo%20bar> \"T\") from the installed `gemini-execute-detailed` directory.\n"
+                        "Ignore `my-references/prefixed.md` and `other/references/parent-dir.md` "
+                        "and `../references/parent-dir.md` and `.././references/parent-dir.md`.\n"
+                        "Ignore `references/suffixed.md.bak` and `references/suffixed.mdx` "
+                        "and `references/suffixed.md+draft` and `references/suffixed.md/extra`.\n"
+                        "Ignore non-canonical `references/./dot-seg.md` and `references//double-slash.md`.\n"
+                        "Read [dot relative](./references/dot-rel.md#top).\n"
+                        "Read [self](references/self-owned.md#sec \"Own\") from the installed `gemini-plan-phase` directory.\n"
+                        "Read `references/notes.txt`, `references/UPPER.MD`, and [license](references/LICENSE).\n"
+                        "Run `cat references/cmd-ref.md`.\n"
+                        "Read [spaced](<references/foo bar.md>) and [parens](references/foo(bar).md).\n"
+                    )
+                (skill / "SKILL.md").write_text(body, encoding="utf-8")
+
+            gemini_text = (src / "gemini" / "gemini-plan-phase" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                iter_skill_aux_links(gemini_text),
+                [
+                    (".././references/parent-dir.md", ""),
+                    ("../references/parent-dir.md", ""),
+                    ("references/./dot-seg.md", ""),
+                    ("references//double-slash.md", ""),
+                    ("references/LICENSE", ""),
+                    ("references/UPPER.MD", ""),
+                    ("references/cmd-ref.md", ""),
+                    ("references/cross-anchor.md", "gemini-execute-detailed"),
+                    ("references/cross-angle.md", "gemini-execute-detailed"),
+                    ("references/cross-bare.md", "gemini-execute-detailed"),
+                    ("references/cross-skill.md", "gemini-execute-detailed"),
+                    ("references/cross-title.md", "gemini-execute-detailed"),
+                    ("references/dot-rel.md", ""),
+                    ("references/foo bar.md", ""),
+                    ("references/foo(bar).md", ""),
+                    ("references/notes.txt", ""),
+                    ("references/self-owned.md", "gemini-plan-phase"),
+                    ("references/suffixed.md+draft", ""),
+                    ("references/suffixed.md.bak", ""),
+                    ("references/suffixed.md/extra", ""),
+                    ("references/suffixed.mdx", ""),
+                ],
+            )
+            self.assertEqual(
+                linked_own_aux_paths(gemini_text, skill_name="gemini-plan-phase"),
+                {
+                    "references/LICENSE",
+                    "references/UPPER.MD",
+                    "references/cmd-ref.md",
+                    "references/dot-rel.md",
+                    "references/foo bar.md",
+                    "references/foo(bar).md",
+                    "references/notes.txt",
+                    "references/self-owned.md",
+                    "references/suffixed.md+draft",
+                    "references/suffixed.md.bak",
+                    "references/suffixed.mdx",
+                },
+            )
+
+            out = Path(td) / "out"
+            build_bundle({h: src / h for h in SKILLS_SRC}, out, dry_run=False, apply=True, force=True)
+            skill_out = out / "plan-phase"
+            for harness_only in (
+                "cross-skill.md",
+                "cross-bare.md",
+                "cross-anchor.md",
+                "cross-title.md",
+                "cross-angle.md",
+                "prefixed.md",
+                "suffixed.md",
+                "parent-dir.md",
+                "dot-seg.md",
+                "double-slash.md",
+                "foo",
+            ):
+                with self.subTest(harness_only=harness_only):
+                    self.assertFalse((skill_out / "references" / harness_only).exists())
+                    self.assertTrue((skill_out / "_overrides" / "claude" / "references" / harness_only).is_file())
+            for shared in ("dot-rel.md", "self-owned.md", "notes.txt", "UPPER.MD", "LICENSE", "cmd-ref.md", "foo bar.md", "foo(bar).md"):
+                with self.subTest(shared=shared):
+                    self.assertTrue((skill_out / "references" / shared).is_file())
+                    self.assertFalse((skill_out / "_overrides" / "claude" / "references" / shared).exists())
 
     def test_plan_phase_skills_publish_falsifier_grammar(self):
         from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
