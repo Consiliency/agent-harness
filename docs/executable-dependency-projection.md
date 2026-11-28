@@ -119,7 +119,10 @@ The following compositions raise `dependency_route_unwired` in required sessions
   before default-executor selection (whose availability scan runs auth probes),
   and refuses the built spec before it writes run artifacts or runs auth-preflight
   probes, on the phase, lane work-unit and delegated-child paths. A `command`
-  executor in a required session refuses at the same point with `subject_mismatch`.
+  executor in a required session refuses before run artifacts with
+  `subject_mismatch` on review actions on the main phase path (as well as on the
+  standalone lane work-unit and delegated-child paths); non-review actions on the
+  main phase path refuse earlier with `dependency_route_unwired`.
 - Claude Channel and Agent View, before invoking either transport or staging
   command context. Their operations are not bound to the selected wrapper.
 - `maintain-skills`, at CLI classification before dispatch.
