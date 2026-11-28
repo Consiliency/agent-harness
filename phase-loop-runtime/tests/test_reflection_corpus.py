@@ -1956,7 +1956,7 @@ def test_none_marker_with_indented_non_repo_ledger_stays_no_friction_or_proposal
 def test_editor_prose_excludes_deferred_only_reflections_and_ledger_only(editor):
     # agent-harness#1656 & agent-harness#1655
     text = editor.read_text(encoding="utf-8")
-    assert "convergence" in text and "rule 1" in text
+    assert "convergence" in text and "rule 1" in text and "existing-skill-first" in text
     assert "## Speculative / low-confidence notes" in text
     assert "improvements_ledger_only" in text
 
@@ -1965,7 +1965,7 @@ def test_editor_prose_excludes_deferred_only_reflections_and_ledger_only(editor)
 def test_planner_prose_preserves_deferred_reflection_ids_for_archival_exclusion(planner):
     # agent-harness#1656
     text = planner.read_text(encoding="utf-8")
-    assert "convergence" in text and "rule 1" in text
+    assert "convergence" in text and "rule 1" in text and "existing-skill-first" in text
     assert "## Speculative / low-confidence notes" in text
     assert "--exclude" in text
 
@@ -2009,6 +2009,60 @@ def test_ledger_only_near_duplicate_of_empty_reflection_is_not_archived(tmp_path
     assert by_path[ledger_path].excluded == "improvements_ledger_only"
     assert str(empty_path) in consumed
     assert str(ledger_path) not in consumed
+
+
+def test_ledger_only_copy_is_not_collapsed_into_none_plus_ledger_copy(tmp_path):
+    # agent-harness#1655: a ledger-only copy (no `- None.` marker) must not be collapsed into
+    # an earlier `- None.` + ledger copy and archived.
+    root_a = tmp_path / "a-root"
+    root_b = tmp_path / "b-root"
+    shared_worked = "\n".join(f"- Shared worked observation {i}." for i in range(4))
+    none_plus_ledger = put(root_a, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=shared_worked,
+        didnt="",
+        improvements="- None.\n  Hosted CI: passed.",
+    ))
+    ledger_only = put(root_b, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=shared_worked,
+        didnt="",
+        improvements="- Hosted CI: passed.",
+    ))
+
+    corpus, boilerplate = rc.collect([root_a, root_b], min_reflections=1)
+    by_path = {r.path: r for r in corpus.scanned}
+    consumed = set(rc.manifest(corpus, boilerplate)["reflections_consumed"])
+
+    assert by_path[none_plus_ledger].excluded == "no_friction_or_proposal"
+    assert by_path[ledger_only].improvements_class == "ledger_only"
+    assert by_path[ledger_only].excluded == "improvements_ledger_only"
+    assert str(none_plus_ledger) in consumed
+    assert str(ledger_only) not in consumed
+
+
+def test_friction_bearing_copy_is_not_collapsed_into_frictionless_ledger_copy(tmp_path):
+    # agent-harness#1655: adding What didn't friction to a second copy sharing worked+ledger
+    # lines must admit the second copy rather than collapsing it into the frictionless twin.
+    root_a = tmp_path / "a-root"
+    root_b = tmp_path / "b-root"
+    shared_worked = "\n".join(f"- Shared worked observation {i}." for i in range(4))
+    ledger_only = put(root_a, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=shared_worked,
+        didnt="",
+        improvements="- Hosted CI: passed.",
+    ))
+    with_friction = put(root_b, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=shared_worked,
+        didnt="Retrying timed out without naming the stuck step.",
+        improvements="- Hosted CI: passed.",
+    ))
+
+    corpus, _ = rc.collect([root_a, root_b], min_reflections=1)
+    by_path = {r.path: r for r in corpus.scanned}
+
+    assert by_path[ledger_only].excluded == "improvements_ledger_only"
+    assert by_path[with_friction].excluded is None
+    assert [r.path for r in corpus.admitted] == [with_friction]
+    assert "Retrying timed out without naming the stuck step." in rc.render_bundle(corpus)
 
 
 def test_indented_fenced_ledger_block_is_not_admitted_as_proposal(tmp_path):

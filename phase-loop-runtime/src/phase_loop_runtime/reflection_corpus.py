@@ -856,6 +856,92 @@ def _improvements_add_uncovered_evidence(
     return False
 
 
+def _evaluate_improvements(
+    text: str, skill_boilerplate: set[str] | frozenset[str] = frozenset()
+) -> tuple[str, str, int, int]:
+    """Classify and filter an ``Improvements`` section.
+
+    Returns ``(improvements_class, cleaned_text, bp_stripped_count, dropped_repo_specific)``.
+    """
+    stripped_repo_specific = False
+    dropped_repo_specific = 0
+    stripped_ledger = False
+    units = _split_improvement_units(text)
+    bp_stripped_count = 0
+    surviving_units: list[list[str]] = []
+    for unit in units:
+        bp_lines = [line for line in unit if _norm_line(line) in skill_boilerplate]
+        bp_stripped_count += len(bp_lines)
+        if any(classify_improvements(line) == "repo_specific" for line in bp_lines):
+            stripped_repo_specific = True
+        if _unit_is_ledger(unit):
+            stripped_ledger = True
+            if any(classify_improvements(line) == "repo_specific" for line in unit):
+                stripped_repo_specific = True
+            continue
+        # Strip nested/wrapped ledger entries BEFORE classifying proposal content
+        # or stripping boilerplate so a nested ledger ref cannot discard a generic
+        # proposal and boilerplate removal cannot orphan a ledger continuation.
+        without_ledger, removed_ledger = _strip_nested_ledger_lines(unit)
+        if removed_ledger:
+            stripped_ledger = True
+        if any(classify_improvements(line) == "repo_specific" for line in removed_ledger):
+            stripped_repo_specific = True
+        if any(classify_improvements(line) == "repo_specific" for line in without_ledger):
+            bp_in_non_ledger = sum(
+                1 for line in without_ledger if _norm_line(line) in skill_boilerplate
+            )
+            dropped_repo_specific += len(without_ledger) - bp_in_non_ledger
+            continue
+        kept_unit = [line for line in without_ledger if _norm_line(line) not in skill_boilerplate]
+        if _unit_is_empty_fence(kept_unit):
+            continue
+        if kept_unit:
+            surviving_units.append(kept_unit)
+    # Decide substantive survival AFTER ledger/boilerplate removal so a
+    # non-proposal marker paired with an indented ledger line cannot be
+    # classified as agnostic and archived (agent-harness#1654).
+    substantive_units = [unit for unit in surviving_units if not _unit_is_non_proposal(unit)]
+    if substantive_units:
+        cleaned = _strip_blank_edges([line for unit in surviving_units for line in unit])
+        return "agnostic", cleaned, bp_stripped_count, dropped_repo_specific
+    if dropped_repo_specific or stripped_repo_specific:
+        return "repo_specific", "", bp_stripped_count, dropped_repo_specific
+    non_blank_remaining = [
+        line for unit in surviving_units for line in unit if line.strip()
+    ]
+    has_none_marker = any(
+        classify_improvements(line) == "none" for line in non_blank_remaining
+    )
+    if stripped_ledger and not has_none_marker:
+        return "ledger_only", "", bp_stripped_count, dropped_repo_specific
+    cleaned = (
+        _strip_blank_edges([line for unit in surviving_units for line in unit])
+        if has_none_marker
+        else ""
+    )
+    return ("none" if has_none_marker else "missing"), cleaned, bp_stripped_count, dropped_repo_specific
+
+
+_DISPOSITION_RANK = {
+    "missing": 0,
+    "none": 0,
+    "ledger_only": 1,
+    "repo_specific": 1,
+    "agnostic": 2,
+}
+
+
+def _dedup_signature(reflection: Reflection) -> tuple[bool, str]:
+    """Return ``(has_didnt_friction, raw_improvements_class)`` for duplicate-preservation checks."""
+    if not reflection.structured:
+        return False, "missing"
+    has_didnt = bool(redact(reflection.sections.get("didnt", ""), drop_ledger=False))
+    raw_imp = reflection.sections.get("improvements", "")
+    imp_class = _evaluate_improvements(raw_imp)[0] if raw_imp else "missing"
+    return has_didnt, imp_class
+
+
 def _mark_duplicates(reflections: list[Reflection]) -> None:
     """Collapse exact and near copies of the same skill/repo/branch/run.
 
@@ -871,7 +957,10 @@ def _mark_duplicates(reflections: list[Reflection]) -> None:
     reflections that lack ``repo_hash`` or ``branch_slug`` are skipped so
     unidentifiable legacy copies are never falsely collapsed.
     """
-    kept_by_group: dict[tuple[str, str, str, str], list[tuple[str, set[str], set[str]]]] = defaultdict(list)
+    kept_by_group: dict[
+        tuple[str, str, str, str],
+        list[tuple[str, set[str], set[str], bool, str]],
+    ] = defaultdict(list)
     for reflection in reflections:
         if reflection.excluded or not reflection.repo_hash or not reflection.branch_slug:
             continue
@@ -886,17 +975,21 @@ def _mark_duplicates(reflections: list[Reflection]) -> None:
             if reflection.structured
             else set()
         )
-        for kept_id, kept_lines, kept_imp_lines in kept_by_group[group]:
-            if (
-                lines
-                and len(lines & kept_lines) / len(lines) >= NEAR_DUPLICATE_OVERLAP
-                and not _improvements_add_uncovered_evidence(reflection, kept_imp_lines)
-            ):
-                reflection.excluded = f"duplicate_of:{kept_id}"
-                break
+        has_didnt, imp_class = _dedup_signature(reflection)
+        for kept_id, kept_lines, kept_imp_lines, kept_has_didnt, kept_imp_class in kept_by_group[group]:
+            if not lines or len(lines & kept_lines) / len(lines) < NEAR_DUPLICATE_OVERLAP:
+                continue
+            if has_didnt and not kept_has_didnt:
+                continue
+            if _DISPOSITION_RANK[imp_class] > _DISPOSITION_RANK[kept_imp_class]:
+                continue
+            if _improvements_add_uncovered_evidence(reflection, kept_imp_lines):
+                continue
+            reflection.excluded = f"duplicate_of:{kept_id}"
+            break
         if reflection.excluded:
             continue
-        kept_by_group[group].append((reflection.id, lines, imp_lines))
+        kept_by_group[group].append((reflection.id, lines, imp_lines, has_didnt, imp_class))
 
 
 def apply_quality_filter(
@@ -950,81 +1043,26 @@ def apply_quality_filter(
                 reflection.notes.append(f"boilerplate_stripped:worked:{len(original) - len(kept)}")
             reflection.sections["worked"] = _strip_blank_edges(kept)
 
-        stripped_repo_specific = False
-        dropped_repo_specific = 0
-        stripped_ledger = False
         if "improvements" in reflection.sections:
             # Group into Markdown proposal units BEFORE stripping boilerplate lines so
             # boilerplate removal cannot split a wrapped repo-specific bullet and leave
             # its continuation behind as a false generic proposal (agent-harness#1654).
-            units = _split_improvement_units(reflection.sections["improvements"])
-            bp_stripped_count = 0
-            surviving_units: list[list[str]] = []
-            for unit in units:
-                bp_lines = [line for line in unit if _norm_line(line) in skill_boilerplate]
-                bp_stripped_count += len(bp_lines)
-                if any(classify_improvements(line) == "repo_specific" for line in bp_lines):
-                    stripped_repo_specific = True
-                if _unit_is_ledger(unit):
-                    stripped_ledger = True
-                    if any(classify_improvements(line) == "repo_specific" for line in unit):
-                        stripped_repo_specific = True
-                    continue
-                # Strip nested/wrapped ledger entries BEFORE classifying proposal content
-                # or stripping boilerplate so a nested ledger ref cannot discard a generic
-                # proposal and boilerplate removal cannot orphan a ledger continuation.
-                without_ledger, removed_ledger = _strip_nested_ledger_lines(unit)
-                if removed_ledger:
-                    stripped_ledger = True
-                if any(classify_improvements(line) == "repo_specific" for line in removed_ledger):
-                    stripped_repo_specific = True
-                if any(classify_improvements(line) == "repo_specific" for line in without_ledger):
-                    bp_in_non_ledger = sum(
-                        1 for line in without_ledger if _norm_line(line) in skill_boilerplate
-                    )
-                    dropped_repo_specific += len(without_ledger) - bp_in_non_ledger
-                    continue
-                kept_unit = [line for line in without_ledger if _norm_line(line) not in skill_boilerplate]
-                if _unit_is_empty_fence(kept_unit):
-                    continue
-                if kept_unit:
-                    surviving_units.append(kept_unit)
+            imp_class, cleaned, bp_stripped_count, dropped_repo_specific = _evaluate_improvements(
+                reflection.sections["improvements"], skill_boilerplate
+            )
             if bp_stripped_count:
                 reflection.notes.append(f"boilerplate_stripped:improvements:{bp_stripped_count}")
-            # Decide substantive survival AFTER ledger/boilerplate removal so a
-            # non-proposal marker paired with an indented ledger line cannot be
-            # classified as agnostic and archived (agent-harness#1654).
-            substantive_units = [unit for unit in surviving_units if not _unit_is_non_proposal(unit)]
-            if substantive_units:
-                reflection.sections["improvements"] = _strip_blank_edges(
-                    [line for unit in surviving_units for line in unit]
+            reflection.sections["improvements"] = cleaned
+            reflection.improvements_class = imp_class
+            if imp_class == "agnostic" and dropped_repo_specific:
+                reflection.notes.append(
+                    f"lines_dropped:improvements:repo_specific:{dropped_repo_specific}"
                 )
-                reflection.improvements_class = "agnostic"
-                if dropped_repo_specific:
-                    reflection.notes.append(
-                        f"lines_dropped:improvements:repo_specific:{dropped_repo_specific}"
-                    )
-            elif dropped_repo_specific or stripped_repo_specific:
-                reflection.sections["improvements"] = ""
-                reflection.improvements_class = "repo_specific"
+            elif imp_class == "repo_specific":
                 reflection.notes.append("improvements_repo_specific")
                 reflection.notes.append("section_dropped:improvements:repo_specific")
-            else:
-                non_blank_remaining = [
-                    line for unit in surviving_units for line in unit if line.strip()
-                ]
-                has_none_marker = any(
-                    classify_improvements(line) == "none" for line in non_blank_remaining
-                )
-                if stripped_ledger and not has_none_marker:
-                    reflection.sections["improvements"] = ""
-                    reflection.improvements_class = "ledger_only"
-                    reflection.notes.append("improvements_ledger_only")
-                else:
-                    reflection.sections["improvements"] = _strip_blank_edges(
-                        [line for unit in surviving_units for line in unit]
-                    ) if has_none_marker else ""
-                    reflection.improvements_class = "none" if has_none_marker else "missing"
+            elif imp_class == "ledger_only":
+                reflection.notes.append("improvements_ledger_only")
         else:
             reflection.improvements_class = "missing"
         for key in CONTENT_KEYS:

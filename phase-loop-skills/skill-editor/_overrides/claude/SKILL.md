@@ -119,7 +119,7 @@ If either gate fails, treat every recommendation applied this run as failed for 
 
 Per the plan's archival directive:
 
-1. Collect the reflections cited (via `**Supporting reflections**`) by any recommendation that failed, plus any consumed reflection whose only themes in the plan were deferred under `## Speculative / low-confidence notes` (whether deferred by the `convergence` gate or by rule 1 — i.e., cited under `## Speculative / low-confidence notes` and not cited by any applied recommendation, mechanism candidate, or rejected theme).
+1. Collect the reflections cited (via `**Supporting reflections**`) by any recommendation that failed, plus any consumed reflection whose only themes in the plan were deferred under `## Speculative / low-confidence notes` (whether deferred by rule 1, `convergence`, or `existing-skill-first` — i.e., cited under `## Speculative / low-confidence notes` and not cited by any applied recommendation, mechanism candidate, or rejected theme).
 2. Archive everything else the manifest consumed:
    ```bash
    python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest> \
