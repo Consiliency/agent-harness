@@ -39,6 +39,7 @@ import sys
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Callable, Mapping, Sequence
 
 PROFILE_ID = "seat_jail_v1"
@@ -353,16 +354,18 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "seat_tool_denied": (
         "tool use denied", "agy auto-denied a tool",
         "on a jailed review profile this is a defect; inspect the private leg record"),
-    # agent-harness#1335: from the runtime's own probe of the CLI's command sandbox, made
-    # before the seat runs.
+    # agent-harness#1335 / agent-harness#1473: from the runtime's own probe of the CLI's
+    # command sandbox, made before the seat runs. Cause-specific refinements live in
+    # TOOL_SANDBOX_CAUSE_NOTICES.
     "seat_tool_sandbox_unavailable": (
         "leg degraded; the seat was not run and is not counted as a review",
         "the CLI's own command sandbox could not start in the seat's view when the runtime "
         "probed it before the run",
         "none inside the board run: the runtime has no substitute for a codex seat (it accepts "
         "no native fill for one, and on the plan and production_code tiers the seat cannot be "
-        "omitted or swapped), so cover this lens outside the board; the known cause is a host "
-        "that refuses the nested namespace (agent-harness#1335)"),
+        "omitted or swapped), so cover this lens outside the board; the known causes are a host "
+        "that refuses the nested user namespace or a staged tree presented read-only to a "
+        "workspace-write seat (agent-harness#1335, agent-harness#1473)"),
     "claude_seat_token_missing": (
         "leg refused",
         "no Claude login found and no usable seat token override; the seat does not run",
@@ -743,6 +746,40 @@ def render_notice(code: object, seat_key: object) -> Notice | None:
     what, why, fix = NOTICES[code]
     key = seat_key if type(seat_key) is str else ""
     return Notice(code=code, seat_key=key, what=what, why=why, fix=fix)
+
+
+# agent-harness#1473: closed literal notice refinements for ``seat_tool_sandbox_unavailable``
+# distinguishing the two known bubblewrap probe causes without widening NOTICE_CODES or
+# echoing raw CLI stderr.
+TOOL_SANDBOX_CAUSE_NOTICES: Mapping[str, tuple[str, str, str]] = MappingProxyType({
+    "nested_namespace": (
+        "leg degraded; the seat was not run and is not counted as a review",
+        "the host refused the CLI's nested user namespace when the runtime probed its command "
+        "sandbox before the run",
+        "enable unprivileged user namespaces for bubblewrap on this host (or run on a host that "
+        "permits them); inside this board run the runtime has no substitute for a codex seat on "
+        "the plan or production_code tiers, so cover this lens outside the board "
+        "(agent-harness#1335, agent-harness#1473)"),
+    "read_only_tree": (
+        "leg degraded; the seat was not run and is not counted as a review",
+        "the staged workspace tree was presented read-only to a workspace-write command sandbox "
+        "when the runtime probed it before the run",
+        "stage the workspace tree writable for a workspace-write sandbox, or use a read-only "
+        "sandbox profile or the jailed Codex route; inside this board run the runtime has no "
+        "substitute for a codex seat on the plan or production_code tiers, so cover this lens "
+        "outside the board (agent-harness#1335, agent-harness#1473)"),
+})
+
+
+def render_tool_sandbox_notice(seat_key: object, cause: object = None) -> Notice:
+    """Render ``seat_tool_sandbox_unavailable`` with a cause-specific literal when known."""
+    what, why, fix = (
+        TOOL_SANDBOX_CAUSE_NOTICES[cause]
+        if type(cause) is str and cause in TOOL_SANDBOX_CAUSE_NOTICES
+        else NOTICES["seat_tool_sandbox_unavailable"]
+    )
+    key = seat_key if type(seat_key) is str else ""
+    return Notice(code="seat_tool_sandbox_unavailable", seat_key=key, what=what, why=why, fix=fix)
 
 
 class SeatSandboxRefused(RuntimeError):

@@ -542,3 +542,122 @@ def test_a_cancel_during_the_probe_kills_it_and_the_leg_ends_cancelled(tmp_path,
 # The whole brokered spawn: staging, placement record, probe, leg -- nothing replaced but
 # the broker transport and the two authorization checks.
 # --------------------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1473: cause-specific notices for seat_tool_sandbox_unavailable
+# --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("stderr", "sandbox_mode", "workdir", "expected"),
+    [
+        (TEAM_HOST_BWRAP_LINE, "read-only", "/tmp/staged", "nested_namespace"),
+        ("bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces.", "read-only", "/tmp/staged", "nested_namespace"),
+        ("bwrap: setting up uid map: Permission denied", "read-only", "/tmp/staged", "nested_namespace"),
+        ("bwrap: Creating new namespace failed: Operation not permitted", None, None, "nested_namespace"),
+        ("bwrap: Can't mkdir /tmp/staged/.git: Read-only file system", "workspace-write", "/tmp/staged", "read_only_tree"),
+        ("bwrap: Can't create file at /tmp/staged: Read-only file system", "workspace-write", "/tmp/staged/", "read_only_tree"),
+        ("bwrap: Can't mkdir /tmp/staged/dir with spaces/.git: Read-only file system", "workspace-write", "/tmp/staged", "read_only_tree"),
+        # P1 guards: pathnames with namespace words and read-only seats must NOT misclassify.
+        ("bwrap: Can't mkdir /tmp/user namespace/cache: Read-only file system", "read-only", "/tmp/staged", "unknown"),
+        ("bwrap: Can't mkdir /tmp/create new namespace/cache: Read-only file system", "read-only", "/tmp/staged", "unknown"),
+        ("bwrap: Can't mkdir /var/other: Read-only file system", "read-only", "/tmp/staged", "unknown"),
+        ("bwrap: Can't mkdir /tmp/staged/.git: Read-only file system", "read-only", "/tmp/staged", "unknown"),
+        # P2 guards: normalized containment rejects traversals, space-prefixed siblings, and ambiguous lines.
+        ("bwrap: Can't mkdir /tmp/staged/../other/cache: Read-only file system", "workspace-write", "/tmp/staged", "unknown"),
+        ("bwrap: Can't mkdir /tmp/staged elsewhere/cache: Read-only file system", "workspace-write", "/tmp/staged", "unknown"),
+        ("bwrap: Can't mkdir /var/other: Read-only file system", "workspace-write", "/tmp/staged", "unknown"),
+        ("bwrap: Can't mkdir /tmp/staged-other/.git: Read-only file system", "workspace-write", "/tmp/staged", "unknown"),
+        ("bwrap: unexpected /tmp/staged note: Read-only file system", "workspace-write", "/tmp/staged", "unknown"),
+        ("bwrap: Can't mkdir /tmp/staged/.git: Read-only file system", None, None, "unknown"),
+        ("bwrap: execvp true: No such file or directory", "read-only", "/tmp/staged", "unknown"),
+        ("thread 'main' panicked: Read-only file system without launcher prefix", "workspace-write", "/tmp/staged", None),
+        ("error: No permissions to create a new namespace without launcher prefix", "read-only", "/tmp/staged", None),
+        ("", "read-only", "/tmp/staged", None),
+    ],
+)
+def test_classify_launcher_diagnostic_distinguishes_known_causes(
+    stderr, sandbox_mode, workdir, expected
+):
+    ev = _evidence()
+    assert ev.classify_launcher_diagnostic(
+        stderr, sandbox_mode=sandbox_mode, workdir=workdir
+    ) == expected
+    assert ev.launcher_diagnostic_in(stderr) is (expected is not None)
+
+
+def test_render_tool_sandbox_notice_distinguishes_causes_with_closed_literals():
+    ns_notice = seat_jail.render_tool_sandbox_notice("codex:a", "nested_namespace")
+    ro_notice = seat_jail.render_tool_sandbox_notice("codex:a", "read_only_tree")
+    unknown_notice = seat_jail.render_tool_sandbox_notice("codex:a", "unknown")
+    bogus_notice = seat_jail.render_tool_sandbox_notice("codex:a", "raw stderr secret")
+
+    assert ns_notice.code == CODE
+    assert ro_notice.code == CODE
+    assert ns_notice.why != ro_notice.why
+    assert ns_notice.fix != ro_notice.fix
+    assert "nested user namespace" in ns_notice.why
+    assert "unprivileged user namespaces" in ns_notice.fix
+    assert "read-only" in ro_notice.why.lower()
+    assert "writable" in ro_notice.fix.lower()
+    assert unknown_notice == seat_jail.render_notice(CODE, "codex:a")
+    assert bogus_notice == seat_jail.render_notice(CODE, "codex:a")
+    assert "raw stderr secret" not in bogus_notice.why
+    assert "raw stderr secret" not in bogus_notice.fix
+
+
+def test_panel_leg_result_and_streamed_verdict_preserve_tool_sandbox_cause(tmp_path):
+    ns_code = pi._HarnessCode(CODE, notice_cause="nested_namespace")
+    ro_code = pi._HarnessCode(CODE, notice_cause="read_only_tree")
+    unknown_code = pi._HarnessCode(CODE, notice_cause="unknown")
+
+    ns_detail = pi._leg_failure_detail("DEGRADED", 1, "", ns_code, leg="codex")
+    ro_detail = pi._leg_failure_detail("DEGRADED", 1, "", ro_code, leg="codex")
+    unknown_detail = pi._leg_failure_detail("DEGRADED", 1, "", unknown_code, leg="codex")
+
+    ns_leg = pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=ns_detail, seat_key="codex:a")
+    ro_leg = pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=ro_detail, seat_key="codex:a")
+    unknown_leg = pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=unknown_detail, seat_key="codex:a")
+    plain_leg = pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=CODE, seat_key="codex:a")
+    ok_leg = pi.PanelLegResult(leg="codex", status="OK", text="VERDICT: APPROVE", detail=None, seat_key="codex:a")
+
+    assert ns_leg.detail == CODE
+    assert ro_leg.detail == CODE
+    assert ns_leg.seat_notices == (seat_jail.render_tool_sandbox_notice("codex:a", "nested_namespace"),)
+    assert ro_leg.seat_notices == (seat_jail.render_tool_sandbox_notice("codex:a", "read_only_tree"),)
+    assert unknown_leg.seat_notices == (seat_jail.render_notice(CODE, "codex:a"),)
+    assert plain_leg.seat_notices == (seat_jail.render_notice(CODE, "codex:a"),)
+
+    # Streamed incremental .verdict.json preserves the cause-specific rendered notice.
+    pi._write_incremental_verdict(tmp_path, 0, ns_leg)
+    pi._write_incremental_verdict(tmp_path, 1, ro_leg)
+    pi._write_incremental_verdict(tmp_path, 2, ok_leg)
+    ns_payload = json.loads((tmp_path / "leg-0000-codex_a.verdict.json").read_text(encoding="utf-8"))
+    ro_payload = json.loads((tmp_path / "leg-0001-codex_a.verdict.json").read_text(encoding="utf-8"))
+    ok_payload = json.loads((tmp_path / "leg-0002-codex_a.verdict.json").read_text(encoding="utf-8"))
+    assert ns_payload["notices"] == [seat_jail.render_tool_sandbox_notice("codex:a", "nested_namespace").as_json()]
+    assert ro_payload["notices"] == [seat_jail.render_tool_sandbox_notice("codex:a", "read_only_tree").as_json()]
+    assert "notices" not in ok_payload
+
+
+@needs_owner
+def test_refused_namespace_probe_attaches_nested_namespace_notice_cause(
+    tmp_path, monkeypatch, owned_review_network
+):
+    rc, text, log = _run_codex_seat(tmp_path, monkeypatch, "namespace-refused", route="direct")
+    assert (rc, text, log) == (1, "", CODE)
+    assert type(log) is pi._HarnessCode
+    assert log._notice_cause == "nested_namespace"
+    detail = pi._leg_failure_detail("DEGRADED", rc, text, log, leg="codex")
+    leg = pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=detail, seat_key="codex:a")
+    assert leg.seat_notices == (seat_jail.render_tool_sandbox_notice("codex:a", "nested_namespace"),)
+
+
+def test_capabilities_card_documents_seat_tool_sandbox_unavailable():
+    card = Path(__file__).resolve().parents[2] / "docs" / "advisor-board-capabilities-card.md"
+    if not card.is_file():
+        pytest.skip("docs/ absent in clean-room wheel checkout")
+    text = card.read_text(encoding="utf-8")
+    assert CODE in text
+    assert "nested user namespace" in text
+    assert "historical" in text.lower()

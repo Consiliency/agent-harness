@@ -38,7 +38,9 @@ PREFIX = "grok_seat_"
 # agent-harness#2175 adds the board-wide `seat_review_bundle_too_large` notice.
 # agent-harness#2109 adds `seat_dependency_authority_missing` (ordinary) to both and
 # rewords `gemini_credential_near_expiry` (why text only; code and class unchanged).
-BASE_NOTICES = (116, "85cf5dfa757453912f758279d576327bbc978b1a25ebbda626c5f598a8c9107a")
+# agent-harness#1473 rewords `seat_tool_sandbox_unavailable` (fix text only; code and
+# class unchanged).
+BASE_NOTICES = (116, "2c07d5ca3a3230217188a52b8814838e333a474175c93f484637734e53fdfb4f")
 BASE_OD10_CLASSES = (140, "480be40e425717ff8c5a0698093290da67908c93c782e7737cdac0b91b1f084e")
 
 BASE_DESCEND_CODES = frozenset({
