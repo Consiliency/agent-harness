@@ -1144,20 +1144,19 @@ class _StderrTail:
         if not finalize_open_line:
             last_nl = self._buf.rfind("\n")
             if last_nl != -1 and last_nl + 1 < len(self._buf):
-                open_line = self._buf[last_nl + 1:]
                 scrubbed_full = credential_redaction.redact_text(self._buf)
                 s_nl = scrubbed_full.rfind("\n")
                 scrubbed_open = scrubbed_full[s_nl + 1:] if s_nl != -1 else scrubbed_full
                 if (
-                    len(open_line) <= self._cap
+                    len(scrubbed_open) <= self._cap
                     and not scrubbed_open.endswith(credential_redaction.PLACEHOLDER)
                 ):
                     prefix = scrubbed_full[:s_nl + 1] if s_nl != -1 else ""
-                    while len(prefix) + len(open_line) > self._cap and prefix:
+                    while len(prefix) + len(scrubbed_open) > self._cap and prefix:
                         nl = prefix.find("\n")
                         prefix = "" if nl == -1 else prefix[nl + 1:]
                         self._truncated = True
-                    self._buf = prefix + open_line
+                    self._buf = prefix + scrubbed_open
                     return
                 self._buf = scrubbed_full
                 self._drop_until_newline = True

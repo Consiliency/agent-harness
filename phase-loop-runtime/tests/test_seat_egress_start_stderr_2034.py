@@ -396,3 +396,39 @@ def test_split_tab_indented_line_at_cap_boundary_matches_single_read():
     assert "listen failed: EADDRINUSE" in single_tail
     assert "listen failed: EADDRINUSE" in split_tail
     assert split_tail == single_tail
+
+
+def test_continuation_line_credential_stays_redacted_across_eviction_and_read_splits():
+    class _ChunkedPipe:
+        def __init__(self, chunks: list[str]) -> None:
+            self._chunks = list(chunks)
+
+        def read(self, _size: int = -1) -> str:
+            return self._chunks.pop(0) if self._chunks else ""
+
+        def close(self) -> None:
+            return None
+
+    secret_pw = "synthetic_continuation_pw_value_404"
+    prior = ("x" * 80 + "\n") * 100 + "y" * 78 + "\npassword:\n"
+    assert len(prior) == 8189
+    tail_line = f"{secret_pw} bind failed: EADDRINUSE"
+
+    same_read = seat_egress_proxy._StderrTail(_ChunkedPipe([prior + tail_line + "\n"]))
+    split_before_nl = seat_egress_proxy._StderrTail(_ChunkedPipe([prior + tail_line, "\n"]))
+    split_mid_diag = seat_egress_proxy._StderrTail(
+        _ChunkedPipe([prior + f"{secret_pw} bind failed: ", "EADDRINUSE\n"])
+    )
+    try:
+        same_tail = same_read.tail(wait_s=2.0)
+        split_nl_tail = split_before_nl.tail(wait_s=2.0)
+        split_diag_tail = split_mid_diag.tail(wait_s=2.0)
+    finally:
+        same_read.close(timeout=1.0)
+        split_before_nl.close(timeout=1.0)
+        split_mid_diag.close(timeout=1.0)
+
+    for observed in (same_tail, split_nl_tail, split_diag_tail):
+        assert secret_pw not in observed
+        assert "<redacted>" in observed
+        assert "bind failed: EADDRINUSE" in observed
