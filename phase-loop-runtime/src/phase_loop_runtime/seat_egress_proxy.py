@@ -1144,19 +1144,36 @@ class _StderrTail:
         if not finalize_open_line:
             last_nl = self._buf.rfind("\n")
             if last_nl != -1 and last_nl + 1 < len(self._buf):
+                complete = self._buf[:last_nl + 1]
+                open_line = self._buf[last_nl + 1:]
+                # Preserve the immediately preceding complete line (which may carry a
+                # multi-line credential key) and the raw unfinished line whenever evicting
+                # earlier complete lines alone fits within the cap.
+                scrubbed_complete = credential_redaction.redact_text(complete)
+                while len(scrubbed_complete) + len(open_line) > self._cap:
+                    nl = scrubbed_complete.find("\n")
+                    if nl == -1 or nl + 1 >= len(scrubbed_complete):
+                        break
+                    scrubbed_complete = scrubbed_complete[nl + 1:]
+                    self._truncated = True
+                if len(scrubbed_complete) + len(open_line) <= self._cap:
+                    self._buf = scrubbed_complete + open_line
+                    return
+                # Even the immediately preceding line must be evicted: scrub the full buffer
+                # first and keep `open_line` raw only when no credential redaction touched it.
                 scrubbed_full = credential_redaction.redact_text(self._buf)
                 s_nl = scrubbed_full.rfind("\n")
                 scrubbed_open = scrubbed_full[s_nl + 1:] if s_nl != -1 else scrubbed_full
                 if (
-                    len(scrubbed_open) <= self._cap
-                    and not scrubbed_open.endswith(credential_redaction.PLACEHOLDER)
+                    len(open_line) <= self._cap
+                    and credential_redaction.PLACEHOLDER not in scrubbed_open
                 ):
                     prefix = scrubbed_full[:s_nl + 1] if s_nl != -1 else ""
-                    while len(prefix) + len(scrubbed_open) > self._cap and prefix:
+                    while len(prefix) + len(open_line) > self._cap and prefix:
                         nl = prefix.find("\n")
                         prefix = "" if nl == -1 else prefix[nl + 1:]
                         self._truncated = True
-                    self._buf = prefix + scrubbed_open
+                    self._buf = prefix + open_line
                     return
                 self._buf = scrubbed_full
                 self._drop_until_newline = True

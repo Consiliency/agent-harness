@@ -432,3 +432,43 @@ def test_continuation_line_credential_stays_redacted_across_eviction_and_read_sp
         assert secret_pw not in observed
         assert "<redacted>" in observed
         assert "bind failed: EADDRINUSE" in observed
+
+
+@pytest.mark.parametrize("huge_preceding_line", [False, True])
+def test_split_authorization_basic_header_at_cap_boundary_never_exposes_credential(
+    huge_preceding_line,
+):
+    class _ChunkedPipe:
+        def __init__(self, chunks: list[str]) -> None:
+            self._chunks = list(chunks)
+
+        def read(self, _size: int = -1) -> str:
+            return self._chunks.pop(0) if self._chunks else ""
+
+        def close(self) -> None:
+            return None
+
+    b64_cred = base64.b64encode(b"srt:split_header_secret_value_505").decode("ascii")
+    if huge_preceding_line:
+        # Preceding line alone approaches the cap so Case 2 eviction must drop it.
+        prior = "x" * 8185 + "\n"
+    else:
+        prior = ("x" * 80 + "\n") * 101 + "y" * 8 + "\n"
+
+    complete = seat_egress_proxy._StderrTail(
+        _ChunkedPipe([prior + f"Authorization: Basic {b64_cred}\nfatal: rejected\n"])
+    )
+    split = seat_egress_proxy._StderrTail(
+        _ChunkedPipe([prior + "Authorization: Basic ", f"{b64_cred}\nfatal: rejected\n"])
+    )
+    try:
+        complete_tail = complete.tail(wait_s=2.0)
+        split_tail = split.tail(wait_s=2.0)
+    finally:
+        complete.close(timeout=1.0)
+        split.close(timeout=1.0)
+
+    for observed in (complete_tail, split_tail):
+        assert b64_cred not in observed
+        assert "<redacted>" in observed
+        assert "fatal: rejected" in observed
