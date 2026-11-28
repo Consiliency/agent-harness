@@ -3270,6 +3270,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "Gemini broker stream has no successful terminal response",
     "Gemini broker stream final response reports truncation",
     "Gemini broker native exit without an accepted review",
+    "Gemini broker native print timeout",
     "Gemini broker native timeout under heartbeat-only", "Gemini broker deadline exceeded",
     "Gemini broker denied a tool permission without review text",
     "Gemini broker completed without review text", "Gemini broker response lacks a terminal verdict",
@@ -8213,6 +8214,7 @@ _GEMINI_BROKER_DETAILS = frozenset({
     "Gemini broker stream has no successful terminal response",
     "Gemini broker stream final response reports truncation",
     "Gemini broker native exit without an accepted review",
+    "Gemini broker native print timeout",
     "Gemini broker native timeout under heartbeat-only",
     "Gemini broker deadline exceeded",
     "Gemini broker denied a tool permission without review text",
@@ -8292,6 +8294,31 @@ def _jailed_gemini_tool_refusal(step: Mapping) -> str | None:
     return None
 
 
+def _gemini_stream_step_violation(step: Mapping[str, object], *, tooled: bool) -> str | None:
+    """Return the closed containment refusal code for a Gemini ``step_update`` payload,
+    or ``None`` when the step is permitted on this route (or is an unhashable malformed value).
+
+    Shared by ``_broker_gemini_stream_result`` and ``_gemini_stream_has_containment_violation``
+    so nonzero-exit containment checks apply the exact same step/tool rules as the stream
+    parser without raising ``TypeError`` on malformed JSON values (agent-harness#1929)."""
+    if tooled:
+        if _jailed_gemini_inert_system_step(step):
+            return None
+        step_type = step.get("step_type")
+        if not isinstance(step_type, str):
+            if isinstance(step_type, (list, dict)):
+                return None
+            return _JAILED_GEMINI_UNKNOWN_EVENT
+        if step_type not in _JAILED_GEMINI_STEP_TYPES or "subagent_info" in step:
+            return _JAILED_GEMINI_UNKNOWN_EVENT
+        if _jailed_gemini_tool_refusal(step) is not None:
+            return _JAILED_GEMINI_UNKNOWN_EVENT
+        return None
+    if step.get("step_type") == "tool" or "tool_info" in step or "subagent_info" in step:
+        return "Gemini broker stream rejected: tool or subagent activity observed"
+    return None
+
+
 def _broker_gemini_stream_result(
     raw: str, protocol: _BrokerGeminiStreamProtocol, *, tooled: bool = False,
 ) -> tuple[int, str, str, dict[str, object]]:
@@ -8351,18 +8378,15 @@ def _broker_gemini_stream_result(
                     conversation_ids.add(step_conversation)
                 if tooled and _jailed_gemini_inert_system_step(step):
                     system_steps += 1
-                elif tooled:
-                    if step.get("step_type") not in _JAILED_GEMINI_STEP_TYPES or "subagent_info" in step:
-                        diagnostic = _JAILED_GEMINI_UNKNOWN_EVENT
-                        raise ValueError("subagent or unrecorded activity observed")
-                    if _jailed_gemini_tool_refusal(step) is not None:
-                        diagnostic = _JAILED_GEMINI_UNKNOWN_EVENT
-                        raise ValueError("refused or invalid tool name")
-                    if step.get("step_type") == "tool":
+                else:
+                    if tooled and isinstance(step.get("step_type"), (list, dict)):
+                        raise ValueError("malformed stream step")
+                    violation = _gemini_stream_step_violation(step, tooled=tooled)
+                    if violation is not None:
+                        diagnostic = violation
+                        raise ValueError("stream containment violation")
+                    if tooled and step.get("step_type") == "tool":
                         tool_steps += 1
-                elif step.get("step_type") == "tool" or "tool_info" in step or "subagent_info" in step:
-                    diagnostic = "Gemini broker stream rejected: tool or subagent activity observed"
-                    raise ValueError("tool or subagent activity observed")
             elif event["event"] == "result":
                 candidate = event.get("result")
                 if not isinstance(candidate, dict):
@@ -18228,17 +18252,24 @@ def _exec_jailed_gemini_leg(
         return "UNAVAILABLE", "review_operation_cancelled"
     expired = seat.expires_at is not None and time.time() >= seat.expires_at
     if proc.returncode != 0:
-        if broker_evidence is not None:
-            error_class = (
-                ProviderErrorClass.AUTH_EXPIRED if expired else _agy_provider_error_class(
-                    native_rc=proc.returncode, native_stdout=proc.stdout, native_stderr=proc.stderr,
-                )
+        error_class = (
+            ProviderErrorClass.AUTH_EXPIRED if expired else _agy_provider_error_class(
+                native_rc=proc.returncode, native_stdout=proc.stdout, native_stderr=proc.stderr,
             )
+        )
+        if broker_evidence is not None:
             broker_evidence["provider_error_class"] = error_class.value
             _retain_agy_stream_progress(broker_evidence, proc.stdout, protocol, tooled=True)
-        return _jailed_failure("gemini_seat_token_expired" if expired
-                               else "Gemini broker native exit without an accepted review",
-                               failure_detail_sink)
+        return _jailed_failure(
+            "gemini_seat_token_expired" if expired
+            else _gemini_native_timeout_detail(review_monitor)
+            if (
+                not _gemini_stream_has_containment_violation(proc.stdout or "", tooled=True)
+                and _gemini_print_timeout_applies(proc.stdout or "", proc.stderr or "", error_class=error_class)
+            )
+            else "Gemini broker native exit without an accepted review",
+            failure_detail_sink,
+        )
     rc, text, detail, metadata = _broker_gemini_stream_result(proc.stdout, protocol, tooled=True)
     if window_board is not None:
         steps = metadata.get("provider_stream_tool_steps")
@@ -18247,9 +18278,17 @@ def _exec_jailed_gemini_leg(
         broker_evidence.update(metadata)
         _retain_agy_stream_progress(broker_evidence, proc.stdout, protocol, metadata, tooled=True)
     if rc != 0:
+        diag_class = _agy_native_text_error_class(proc.stdout or "", proc.stderr or "")
+        is_print_timeout = (
+            not expired
+            and detail != _JAILED_GEMINI_UNKNOWN_EVENT
+            and _gemini_print_timeout_applies(proc.stdout or "", proc.stderr or "", error_class=diag_class)
+        )
         if broker_evidence is not None:
             error_class = (
-                ProviderErrorClass.AUTH_EXPIRED if expired else _agy_provider_error_class(
+                ProviderErrorClass.AUTH_EXPIRED if expired
+                else ProviderErrorClass.TIMEOUT if is_print_timeout
+                else _agy_provider_error_class(
                     native_rc=0, stream=metadata, response_present=bool(text.strip()),
                     native_stdout=proc.stdout, native_stderr=proc.stderr,
                 )
@@ -18259,21 +18298,37 @@ def _exec_jailed_gemini_leg(
             seat.notices.append(_JAILED_GEMINI_UNKNOWN_EVENT)
             # What the refused line was, as closed fields, for the leg's private record.
             _note_stream_rejection(_jailed_gemini_stream_rejection(proc.stdout))
-        return _jailed_failure("gemini_seat_token_expired" if expired else detail,
-                               failure_detail_sink)
+        return _jailed_failure(
+            "gemini_seat_token_expired" if expired
+            else detail if detail == _JAILED_GEMINI_UNKNOWN_EVENT
+            else _gemini_native_timeout_detail(review_monitor) if is_print_timeout
+            else detail,
+            failure_detail_sink,
+        )
     status = _classify_leg(0, text, "", "review")
     if status != "OK":
+        diag_class = _agy_native_text_error_class(proc.stdout or "", proc.stderr or "")
+        is_print_timeout = (
+            not expired
+            and not text.strip()
+            and _gemini_print_timeout_applies(proc.stdout or "", proc.stderr or "", error_class=diag_class)
+        )
         if broker_evidence is not None:
             error_class = (
-                ProviderErrorClass.AUTH_EXPIRED if expired else _agy_provider_error_class(
+                ProviderErrorClass.AUTH_EXPIRED if expired
+                else ProviderErrorClass.TIMEOUT if is_print_timeout
+                else _agy_provider_error_class(
                     native_rc=0, stream=metadata, response_present=bool(text.strip()),
                     native_stdout=proc.stdout, native_stderr=proc.stderr,
                 )
             )
             broker_evidence["provider_error_class"] = error_class.value
-        return _jailed_failure("Gemini broker response lacks a terminal verdict"
-                               if text.strip() else "Gemini broker completed without review text",
-                               failure_detail_sink)
+        return _jailed_failure(
+            "Gemini broker response lacks a terminal verdict" if text.strip()
+            else _gemini_native_timeout_detail(review_monitor) if is_print_timeout
+            else "Gemini broker completed without review text",
+            failure_detail_sink,
+        )
     return status, text
 
 
@@ -19412,7 +19467,7 @@ _AGY_NATIVE_EXIT_PATTERNS = tuple((error_class, re.compile(pattern, re.IGNORECAS
 ))
 
 
-def _agy_native_diagnostic_class(output: str, *, stream_json: bool = False) -> ProviderErrorClass | None:
+def _agy_bounded_tail(output: str, *, stream_json: bool = False) -> bytes:
     # Bound the temporary encoding as well as the bytes scanned. The extra byte
     # tells the stdout fallback whether the first line starts inside a record.
     limit = _LEG_LOG_MAX_BYTES
@@ -19429,6 +19484,11 @@ def _agy_native_diagnostic_class(output: str, *, stream_json: bool = False) -> P
             line for line in tail.split(b"\n")
             if not line.lstrip().startswith((b"{", b"[", b'"'))
         )
+    return tail
+
+
+def _agy_native_diagnostic_class(output: str, *, stream_json: bool = False) -> ProviderErrorClass | None:
+    tail = _agy_bounded_tail(output, stream_json=stream_json)
     return next((error_class for error_class, pattern in _AGY_NATIVE_EXIT_PATTERNS
                  if pattern.search(tail)), None)
 
@@ -19463,8 +19523,8 @@ def _agy_extract_result_error_fragments(obj: Mapping[str, object], *, depth: int
     return fragments
 
 
-def _agy_result_error_class(output: str) -> ProviderErrorClass | None:
-    """Classify structured error fields inside failed agy NDJSON ``event='result'`` records
+def _agy_result_error_blob(output: str) -> bytes | None:
+    """Bounded structured error fragments from failed agy NDJSON ``event='result'`` records
     (agent-harness#2215). Ignores ``step_update``, ``tool_info``, and any ``response`` prose."""
     limit = _LEG_LOG_MAX_BYTES
     tail = output[-(limit + 1):].encode("utf-8", errors="replace")[-(limit + 1):]
@@ -19503,11 +19563,91 @@ def _agy_result_error_class(output: str) -> ProviderErrorClass | None:
             bounded.append(b"\n")
         bounded.append(encoded)
         used += sep + len(encoded)
-    if not bounded:
+    return b"".join(bounded) if bounded else None
+
+
+def _agy_result_error_class(output: str) -> ProviderErrorClass | None:
+    blob = _agy_result_error_blob(output)
+    if blob is None:
         return None
-    blob = b"".join(bounded)
     return next((error_class for error_class, pattern in _AGY_NATIVE_EXIT_PATTERNS
                  if pattern.search(blob)), None)
+
+
+_AGY_PRINT_TIMEOUT_MARKER_B = b"timeout waiting for response"
+
+
+def _agy_native_text_error_class(stdout: str, stderr: str) -> ProviderErrorClass | None:
+    """Resolve agy native diagnostic precedence once across stderr, structured failed
+    NDJSON ``event='result'`` records, and plain non-JSON stdout diagnostics."""
+    return (
+        _agy_native_diagnostic_class(stderr)
+        or _agy_result_error_class(stdout)
+        or _agy_native_diagnostic_class(stdout, stream_json=True)
+    )
+
+
+def _gemini_native_print_timeout(stdout: str, stderr: str) -> bool:
+    """True when agy reported its ``--print-timeout`` budget (``timeout waiting for response``)
+    on stderr, in structured failed NDJSON ``result`` fields, or on a short (<200 byte) plain
+    non-JSON CLI diagnostic on stdout.
+
+    JSON-shaped stdout lines (valid ``SUCCESS`` records, malformed JSON such as
+    ``quoted-timeout``, or ``step_update``/``tool_info`` payloads) are never matched by the
+    plain-text fallback (agent-harness#1929)."""
+    if stderr and _AGY_PRINT_TIMEOUT_MARKER_B in _agy_bounded_tail(stderr).lower():
+        return True
+    if stdout:
+        blob = _agy_result_error_blob(stdout)
+        if blob is not None and _AGY_PRINT_TIMEOUT_MARKER_B in blob.lower():
+            return True
+        plain = _agy_bounded_tail(stdout, stream_json=True).strip()
+        if plain and len(plain) < 200 and _AGY_PRINT_TIMEOUT_MARKER_B in plain.lower():
+            return True
+    return False
+
+
+def _gemini_print_timeout_applies(
+    stdout: str, stderr: str, *, error_class: ProviderErrorClass | None,
+) -> bool:
+    """Require ``ProviderErrorClass.TIMEOUT`` to win precedence before naming a failure as
+    agy's ``--print-timeout``, keeping ``detail`` and ``provider_error_class`` aligned."""
+    return error_class is ProviderErrorClass.TIMEOUT and _gemini_native_print_timeout(stdout, stderr)
+
+
+def _gemini_stream_has_containment_violation(raw: str, *, tooled: bool) -> bool:
+    """True when ``raw`` contains a disallowed Gemini stream event, sharing
+    ``_gemini_stream_step_violation`` with ``_broker_gemini_stream_result``.
+    Checked across all lines even on nonzero exits so a trailing timeout cannot mask or
+    retry a containment refusal (agent-harness#1929)."""
+    if not raw:
+        return False
+    for line in raw.splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            event = json.loads(stripped)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict) or type(event.get("event")) is not str:
+            continue
+        kind = event["event"]
+        if kind == "step_update":
+            step = event.get("step_update")
+            if isinstance(step, dict) and _gemini_stream_step_violation(step, tooled=tooled) is not None:
+                return True
+        elif tooled and kind not in {"init", "result"}:
+            return True
+    return False
+
+
+def _gemini_native_timeout_detail(review_monitor: "_ReviewMonitor | None") -> str:
+    return (
+        "Gemini broker native timeout under heartbeat-only"
+        if review_monitor is not None
+        else "Gemini broker native print timeout"
+    )
 
 
 def _agy_provider_error_class(
@@ -20088,22 +20228,48 @@ def _exec_leg(
                 error_evidence = (
                     broker_evidence if native_rc != 0 and review_monitor is not None else qualification_evidence
                 )
-                if error_evidence is not None:
-                    error_evidence["provider_error_class"] = _agy_provider_error_class(
-                        native_rc=native_rc, stream=stream_metadata, response_present=bool(review_text.strip()),
-                        native_stdout=raw_stream, native_stderr=original_log,
-                    ).value
-                native_timeout = "timeout waiting for response" in original_log.lower() or (
-                    len(raw_stream.strip()) < 200 and "timeout waiting for response" in raw_stream.lower()
+                containment_violation = (
+                    log_text == "Gemini broker stream rejected: tool or subagent activity observed"
+                    or _gemini_stream_has_containment_violation(raw_stream, tooled=False)
                 )
-                if review_monitor is not None and (native_rc != 0 or rc != 0 or not review_text.strip()) and native_timeout:
+                if containment_violation:
+                    if error_evidence is not None:
+                        error_evidence["provider_error_class"] = _agy_provider_error_class(
+                            native_rc=native_rc, stream=stream_metadata, response_present=bool(review_text.strip()),
+                            native_stdout=raw_stream, native_stderr=original_log,
+                        ).value
+                    return 1, "", _HarnessCode("Gemini broker stream rejected: tool or subagent activity observed")
+                if native_rc == 0 and rc == 0 and not review_text.strip() and _TOOL_DENIED_RE.search(original_log):
+                    if error_evidence is not None:
+                        error_evidence["provider_error_class"] = _agy_provider_error_class(
+                            native_rc=native_rc, stream=stream_metadata, response_present=False,
+                            native_stdout=raw_stream, native_stderr=original_log,
+                        ).value
+                    return 1, "", _HarnessCode("Gemini broker denied a tool permission without review text")
+                diag_class = _agy_native_text_error_class(raw_stream, original_log)
+                print_timeout = (
+                    (native_rc != 0 or rc != 0 or not review_text.strip())
+                    and _gemini_print_timeout_applies(raw_stream, original_log, error_class=diag_class)
+                )
+                if error_evidence is not None:
+                    error_evidence["provider_error_class"] = (
+                        ProviderErrorClass.TIMEOUT.value if print_timeout
+                        else _agy_provider_error_class(
+                            native_rc=native_rc, stream=stream_metadata, response_present=bool(review_text.strip()),
+                            native_stdout=raw_stream, native_stderr=original_log,
+                        ).value
+                    )
+                if review_monitor is not None and print_timeout:
                     return 1, "", _HarnessCode("Gemini broker native timeout under heartbeat-only")
-                if native_rc != 0:
+                if print_timeout:
+                    review_text = ""
+                    rc = native_rc or 1
+                    log_text = _HarnessCode("Gemini broker native print timeout")
+                    bounded_stall = True
+                elif native_rc != 0:
                     review_text = ""
                     log_text = "Gemini broker native exit without an accepted review"
                 elif rc == 0 and not review_text.strip():
-                    if _TOOL_DENIED_RE.search(original_log):
-                        return 1, "", _HarnessCode("Gemini broker denied a tool permission without review text")
                     log_text = "Gemini broker completed without review text"
                 elif rc == 0:
                     log_text = "" if _completion_ok(review_text, mode) else "Gemini broker response lacks a terminal verdict"
