@@ -18097,7 +18097,10 @@ def _exec_jailed_gemini_leg(
         return _jailed_failure(
             "gemini_seat_token_expired" if expired
             else _gemini_native_timeout_detail(review_monitor)
-            if _gemini_print_timeout_applies(proc.stdout or "", proc.stderr or "", error_class=error_class)
+            if (
+                not _gemini_stream_has_containment_violation(proc.stdout or "", tooled=True)
+                and _gemini_print_timeout_applies(proc.stdout or "", proc.stderr or "", error_class=error_class)
+            )
             else "Gemini broker native exit without an accepted review",
             failure_detail_sink,
         )
@@ -19446,6 +19449,38 @@ def _gemini_print_timeout_applies(
     return error_class is ProviderErrorClass.TIMEOUT and _gemini_native_print_timeout(stdout, stderr)
 
 
+def _gemini_stream_has_containment_violation(raw: str, *, tooled: bool) -> bool:
+    """True when ``raw`` contains a disallowed Gemini stream event (tool/subagent in a
+    non-tooled brokered run, or subagent/unrecorded step/event in a jailed tooled run).
+    Checked across all lines even on nonzero exits so a trailing timeout cannot mask or
+    retry a containment refusal (agent-harness#1929)."""
+    if not raw:
+        return False
+    for line in raw.splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            event = json.loads(stripped)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict) or type(event.get("event")) is not str:
+            continue
+        kind = event["event"]
+        if kind == "step_update":
+            step = event.get("step_update")
+            if not isinstance(step, dict):
+                continue
+            if tooled:
+                if step.get("step_type") not in _JAILED_GEMINI_STEP_TYPES or "subagent_info" in step:
+                    return True
+            elif step.get("step_type") == "tool" or "tool_info" in step or "subagent_info" in step:
+                return True
+        elif tooled and kind not in {"init", "result"}:
+            return True
+    return False
+
+
 def _gemini_native_timeout_detail(review_monitor: "_ReviewMonitor | None") -> str:
     return (
         "Gemini broker native timeout under heartbeat-only"
@@ -20032,20 +20067,40 @@ def _exec_leg(
                 error_evidence = (
                     broker_evidence if native_rc != 0 and review_monitor is not None else qualification_evidence
                 )
-                if error_evidence is not None:
-                    error_evidence["provider_error_class"] = _agy_provider_error_class(
-                        native_rc=native_rc, stream=stream_metadata, response_present=bool(review_text.strip()),
-                        native_stdout=raw_stream, native_stderr=original_log,
-                    ).value
-                if native_rc == 0 and log_text == "Gemini broker stream rejected: tool or subagent activity observed":
-                    return 1, "", _HarnessCode(log_text)
+                containment_violation = (
+                    log_text == "Gemini broker stream rejected: tool or subagent activity observed"
+                    or _gemini_stream_has_containment_violation(raw_stream, tooled=False)
+                )
+                if containment_violation:
+                    if error_evidence is not None:
+                        error_evidence["provider_error_class"] = _agy_provider_error_class(
+                            native_rc=native_rc, stream=stream_metadata, response_present=bool(review_text.strip()),
+                            native_stdout=raw_stream, native_stderr=original_log,
+                        ).value
+                    return 1, "", _HarnessCode("Gemini broker stream rejected: tool or subagent activity observed")
                 if native_rc == 0 and rc == 0 and not review_text.strip() and _TOOL_DENIED_RE.search(original_log):
+                    if error_evidence is not None:
+                        error_evidence["provider_error_class"] = _agy_provider_error_class(
+                            native_rc=native_rc, stream=stream_metadata, response_present=False,
+                            native_stdout=raw_stream, native_stderr=original_log,
+                        ).value
                     return 1, "", _HarnessCode("Gemini broker denied a tool permission without review text")
                 diag_class = _agy_native_text_error_class(raw_stream, original_log)
-                print_timeout = _gemini_print_timeout_applies(raw_stream, original_log, error_class=diag_class)
-                if review_monitor is not None and (native_rc != 0 or rc != 0 or not review_text.strip()) and print_timeout:
+                print_timeout = (
+                    (native_rc != 0 or rc != 0 or not review_text.strip())
+                    and _gemini_print_timeout_applies(raw_stream, original_log, error_class=diag_class)
+                )
+                if error_evidence is not None:
+                    error_evidence["provider_error_class"] = (
+                        ProviderErrorClass.TIMEOUT.value if print_timeout
+                        else _agy_provider_error_class(
+                            native_rc=native_rc, stream=stream_metadata, response_present=bool(review_text.strip()),
+                            native_stdout=raw_stream, native_stderr=original_log,
+                        ).value
+                    )
+                if review_monitor is not None and print_timeout:
                     return 1, "", _HarnessCode("Gemini broker native timeout under heartbeat-only")
-                if (native_rc != 0 or rc != 0 or not review_text.strip()) and print_timeout:
+                if print_timeout:
                     review_text = ""
                     rc = native_rc or 1
                     log_text = _HarnessCode("Gemini broker native print timeout")

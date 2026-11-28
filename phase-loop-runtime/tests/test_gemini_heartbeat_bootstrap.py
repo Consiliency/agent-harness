@@ -708,7 +708,7 @@ def test_the_qualification_worker_spawns_agy_from_a_non_git_cwd(fixture_cli, tmp
 @pytest.mark.parametrize(("mode", "status", "error_class"), [
     ("empty", "EMPTY", "empty_response"),
     ("denied-empty", "ERROR", "empty_response"),
-    ("empty-timeout", "ERROR", "empty_response"),
+    ("empty-timeout", "ERROR", "timeout"),
     ("native-timeout", "ERROR", "timeout"),
     ("final", "ERROR", "unknown"),
 ])

@@ -631,3 +631,93 @@ def test_brokered_bounded_preserves_tool_denial_and_stream_refusal_over_timeout(
     assert attempts == 1
     assert rc == 1 and text == ""
     assert log == "Gemini broker stream rejected: tool or subagent activity observed"
+
+    # 3. Round 2 P2 #1: nonzero exit after a tool event + structured timeout must still
+    # refuse containment immediately with zero retries (never retry to AGREE).
+    nonzero_tool_timeout = "\n".join([
+        json.dumps({"event": "init", "conversation_id": "conv-1"}),
+        json.dumps({
+            "event": "step_update",
+            "step_update": {"conversation_id": "conv-1", "step_type": "tool", "tool_info": {}},
+        }),
+        json.dumps({
+            "event": "result",
+            "conversation_id": "conv-1",
+            "result": {"status": "ERROR", "error": {"message": "timeout waiting for response"}},
+        }),
+    ]) + "\n"
+    ok_stream = "\n".join([
+        json.dumps({"event": "init", "conversation_id": "conv-1"}),
+        json.dumps({
+            "event": "result",
+            "conversation_id": "conv-1",
+            "result": {"status": "SUCCESS", "response": "Should never run.\n\nAGREE"},
+        }),
+    ]) + "\n"
+    attempts = 0
+
+    def nonzero_tool_then_ok(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return pi._LegRun(1, nonzero_tool_timeout, "")
+        return pi._LegRun(0, ok_stream, "")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", nonzero_tool_then_ok)
+    rc, text, log = pi._exec_leg(
+        "gemini", review_dir, out_dir, timeout_s=60, artifact="synthetic artifact",
+        mode="review", model=broker_model, deadline_s=120,
+        broker_prompt="review this bundle", broker_evidence={},
+    )
+    assert attempts == 1
+    assert rc == 1 and text == ""
+    assert log == "Gemini broker stream rejected: tool or subagent activity observed"
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        json.dumps({"event": "init", "conversation_id": "conv-1"}) + "\n"
+        + json.dumps({
+            "event": "result",
+            "conversation_id": "conv-1",
+            "result": {"status": "SUCCESS", "response": ""},
+        }) + "\n",
+    ],
+    ids=["zero-exit-empty-stdout", "zero-exit-empty-success-result"],
+)
+def test_heartbeat_qualification_zero_exit_timeout_aligns_detail_and_error_class(
+    monkeypatch, tmp_path, stdout,
+):
+    """Round 2 P2 #2: heartbeat-only qualification zero-exit timeout must retain
+    provider_error_class == 'timeout' alongside 'Gemini broker native timeout under heartbeat-only'."""
+    import contextlib
+
+    review_dir = tmp_path / "review"
+    out_dir = tmp_path / "out"
+    review_dir.mkdir()
+    out_dir.mkdir()
+
+    @contextlib.contextmanager
+    def fake_owned_profile(env, **_kwargs):
+        yield SimpleNamespace(executable="agy", env=dict(env), evidence={})
+
+    monkeypatch.setattr(pi.gemini_heartbeat, "owned_profile", fake_owned_profile)
+    monkeypatch.setattr(pi, "_measuring_qualification_candidate", lambda: True)
+    monkeypatch.setattr(
+        pi, "_run_leg_with_liveness",
+        lambda *_a, **_k: pi._LegRun(0, stdout, "Error: timeout waiting for response\n"),
+    )
+    broker_model = pi.harden_subscription_model("gemini", "gemini-4-argon", None)
+    monitor = SimpleNamespace(cancel=threading.Event())
+    evidence: dict[str, object] = {}
+    rc, text, log = pi._exec_leg(
+        "gemini", review_dir, out_dir, timeout_s=60, artifact="synthetic artifact",
+        mode="review", model=broker_model, deadline_s=120,
+        broker_prompt="review this bundle", broker_evidence=evidence,
+        review_monitor=monitor,
+    )
+    assert rc == 1 and text == ""
+    assert log == "Gemini broker native timeout under heartbeat-only"
+    assert evidence["provider_error_class"] == "timeout"
