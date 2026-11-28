@@ -319,6 +319,75 @@ def test_backend_codes_are_validated_at_registration():
     assert "drx" not in sp._REGISTRY
 
 
+def test_backend_codes_reject_core_notice_and_leg_detail_vocabulary_1501():
+    """agent-harness#1501: register_backend refuses any code colliding with seat_jail.NOTICES,
+    seat_route_contract.OD10_CLASSES, or panel_invoker's leg-detail vocabulary, without
+    sandbox_placement importing panel_invoker."""
+    import ast
+    import os
+    import subprocess
+    import sys
+    from phase_loop_runtime import leg_detail_vocabulary, seat_jail, seat_route_contract
+
+    backend = FarSide("drx", None)
+    # Every valid identifier-shaped key in seat_jail.NOTICES, OD10_CLASSES,
+    # panel_invoker._HARNESS_DETAIL_CODES, and _PARAMETER_FREE_FAILURES is rejected.
+    vocabulary_samples = (
+        "seat_sandbox_unavailable_host",  # seat_jail.NOTICES & NOTICE_CODES
+        seat_jail.REVIEW_BUNDLE_TOO_LARGE,  # seat_jail.NOTICES outside NOTICE_CODES
+        seat_jail.SEAT_MEMORY_NOTICE,  # seat_jail.NOTICES telemetry key
+        "grok_seat_credential_missing",  # seat_jail.NOTICES / OD10_CLASSES
+        "codex_seat_credential_missing",  # seat_jail.CODEX_SEAT_CODES
+        "under_claude_code",  # panel_invoker._HARNESS_DETAIL_CODES & OD10_CLASSES
+        "unavailable",  # panel_invoker._HARNESS_DETAIL_CODES (not in NOTICES)
+        "native_fill",  # panel_invoker._HARNESS_DETAIL_CODES (not in NOTICES)
+        "review_operation_cancelled",  # panel_invoker._HARNESS_DETAIL_CODES
+        "timeout",  # panel_invoker._PARAMETER_FREE_FAILURES
+        "auth_failure",  # panel_invoker._PARAMETER_FREE_FAILURES
+        "usage_limit",  # panel_invoker._PARAMETER_FREE_FAILURES
+        "research_audit_denied",  # panel_invoker._HARNESS_DETAIL_CODE_TEMPLATES
+    )
+    for reserved in vocabulary_samples:
+        with pytest.raises(ValueError, match="invalid backend placement code"):
+            sp.register_backend("drx", backend, {reserved: "fix line"})
+    assert "drx" not in sp._REGISTRY
+
+    # Exhaustive parity: every identifier-shaped member of NOTICES, OD10_CLASSES,
+    # _HARNESS_DETAIL_CODES, and _PARAMETER_FREE_FAILURES is in RESERVED_DETAIL_VOCABULARY.
+    identifier_codes = {
+        code
+        for code in (
+            set(seat_jail.NOTICES)
+            | set(seat_route_contract.OD10_CLASSES)
+            | set(panel_invoker._HARNESS_DETAIL_CODES)
+            | set(panel_invoker._PARAMETER_FREE_FAILURES)
+        )
+        if sp._BACKEND_CODE.fullmatch(code)
+    }
+    assert identifier_codes <= leg_detail_vocabulary.RESERVED_DETAIL_VOCABULARY
+
+    # Verify sandbox_placement and leg_detail_vocabulary never import panel_invoker
+    # (both statically via AST and dynamically in a fresh interpreter).
+    for mod in (sp, leg_detail_vocabulary):
+        tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert "panel_invoker" not in alias.name
+            elif isinstance(node, ast.ImportFrom):
+                assert "panel_invoker" not in (node.module or "")
+                for alias in node.names:
+                    assert alias.name != "panel_invoker"
+
+    probe = (
+        "import sys; "
+        "from phase_loop_runtime import sandbox_placement as sp; "
+        "assert 'phase_loop_runtime.panel_invoker' not in sys.modules"
+    )
+    env = {**os.environ, "PYTHONPATH": str(Path(sp.__file__).resolve().parents[1])}
+    subprocess.run([sys.executable, "-c", probe], env=env, check=True, timeout=30)
+
+
 def test_existing_call_forms_still_work(tmp_path):
     """`commit` with two arguments, `release` with one, `register_backend` with two, and a
     request in today's form. Mutation: make a new parameter required."""

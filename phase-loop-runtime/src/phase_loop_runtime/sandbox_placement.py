@@ -59,6 +59,7 @@ import time
 from typing import TYPE_CHECKING, Callable, Iterable, Literal, Mapping, NamedTuple, Protocol, Sequence, runtime_checkable
 
 from . import review_stage, sandbox_policy, sandbox_retention
+from .leg_detail_vocabulary import RESERVED_DETAIL_VOCABULARY
 
 if TYPE_CHECKING:
     from .launch_process_contract import LaunchRequest, PreparedPaths
@@ -602,7 +603,12 @@ def register_backend(
         )
     own: dict[str, str] = {}
     for code, fix in dict(codes or {}).items():
-        if not isinstance(code, str) or not _BACKEND_CODE.fullmatch(code) or code in PLACEMENT_CODES:
+        if (
+            not isinstance(code, str)
+            or not _BACKEND_CODE.fullmatch(code)
+            or code in PLACEMENT_CODES
+            or code in RESERVED_DETAIL_VOCABULARY
+        ):
             raise ValueError("invalid backend placement code")
         if (
             not isinstance(fix, str) or not fix.strip() or len(fix) > _FIX_LINE_MAX
