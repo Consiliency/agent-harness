@@ -1052,3 +1052,52 @@ def test_editor_prose_states_the_consumption_rule(editor):
 
 def test_scan_sets_are_non_empty():
     assert len(PLANNERS) == 4 and len(EDITORS) == 4 and len(BUNDLED_PROMPTS) == 4
+
+
+def test_manifest_caps_boilerplate_lines_stripped_at_500_chars(tmp_path):
+    """agent-harness#1661: manifest boilerplate_lines_stripped items cap at 500 chars + ellipsis."""
+    exact_500 = "x" * 500
+    over_500 = "y" * 501
+    trailing_ws = "a" * 498 + "   " + "b" * 20
+    # Redaction must run before capping: a secret spanning char 500 is redacted first
+    # rather than truncated mid-token, and a raw >500 line that redacts to <=500 stays uncapped.
+    secret = "sk-" + "Z" * 48
+    spanning_secret = "z" * 489 + " " + secret + " " + "t" * 30
+    redacts_under_cap = "p" * 450 + " https://example.com/" + "q" * 80
+
+    root = tmp_path / "root"
+    long_boilerplate = "Repeated repo-specific observation on demo#42 " + "w" * 520
+    for idx in range(3):
+        put(
+            root,
+            "claude-plan-phase",
+            "h1",
+            f"b{idx}",
+            f"run{idx}",
+            reflection(worked=f"- {long_boilerplate}"),
+        )
+
+    corpus, collected_boilerplate = rc.collect([root], min_reflections=1)
+    assert collected_boilerplate, "expected repeated long line to be stripped as boilerplate"
+    collected_manifest = rc.manifest(corpus, collected_boilerplate)
+    stripped = collected_manifest["boilerplate_lines_stripped"]
+    assert len(stripped) == 1
+    assert stripped[0].endswith("…")
+    assert "demo#42" not in stripped[0]
+    assert len(stripped[0]) <= rc.MAX_MANIFEST_BOILERPLATE_LINE_CHARS + 1
+    assert stripped[0] == rc.redact_text(rc.redact(long_boilerplate))[:500].rstrip() + "…"
+
+    direct = rc.manifest(
+        corpus,
+        [exact_500, over_500, trailing_ws, spanning_secret, redacts_under_cap],
+    )["boilerplate_lines_stripped"]
+    assert direct[0] == exact_500
+    assert direct[1] == "y" * 500 + "…"
+    assert direct[2] == "a" * 498 + "…"
+    assert secret not in direct[3]
+    assert "sk-" not in direct[3]
+    assert direct[3].endswith("…")
+    assert len(direct[3]) <= rc.MAX_MANIFEST_BOILERPLATE_LINE_CHARS + 1
+    assert not direct[4].endswith("…")
+    assert "https://example.com/" not in direct[4]
+    assert len(direct[4]) <= rc.MAX_MANIFEST_BOILERPLATE_LINE_CHARS

@@ -69,6 +69,9 @@ DEFAULT_PER_BRANCH_CAP = 3
 MAX_REFLECTION_BYTES = 32 * 1024
 DEFAULT_BOILERPLATE_MIN = 3
 BOILERPLATE_MIN_CHARS = 40
+# agent-harness#1661 (carried from agent-harness#1622 r3): bound each manifest
+# boilerplate_lines_stripped item to 500 characters plus an ellipsis.
+MAX_MANIFEST_BOILERPLATE_LINE_CHARS = 500
 
 # Deliberately broad: bare `repo#N` refs are how this fleet names issues, so an
 # occasional false hit (`step#3`) is the cheaper error than leaking a real ref.
@@ -522,11 +525,18 @@ def consumed(corpus: Corpus) -> list[Reflection]:
     ]
 
 
+def _cap_manifest_line(text: str) -> str:
+    if len(text) <= MAX_MANIFEST_BOILERPLATE_LINE_CHARS:
+        return text
+    return text[:MAX_MANIFEST_BOILERPLATE_LINE_CHARS].rstrip() + "…"
+
+
 def manifest(corpus: Corpus, boilerplate: list[str]) -> dict[str, object]:
     return {
         "inventory": inventory(corpus),
-        # The planner reads this file too, so stripped lines get the same redaction.
-        "boilerplate_lines_stripped": [redact_text(redact(line)) for line in boilerplate],
+        # The planner reads this file too, so stripped lines get the same redaction
+        # and are capped at MAX_MANIFEST_BOILERPLATE_LINE_CHARS plus an ellipsis.
+        "boilerplate_lines_stripped": [_cap_manifest_line(redact_text(redact(line))) for line in boilerplate],
         "reflections_consumed": [str(r.path) for r in consumed(corpus)],
         "reflections": [
             {
