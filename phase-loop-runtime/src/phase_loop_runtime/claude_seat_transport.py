@@ -1104,7 +1104,14 @@ SDK_PROOF_UNBOUND: Mapping[str, frozenset[str]] = MappingProxyType({
         "SEAT_TMP_DIRNAME", "SEAT_TREE", "SeatJail", "SeatSandboxRefused", "_owner_argv",
         "_require_safe_dependency_destinations", "actual_profile_digest",
         "build_seccomp_filter", "close_jail_fds", "filter_digest", "host_arch",
-        "open_dir_nofollow", "refused", "tree_manifest_sha256_at", "write_new_file_at",
+        "open_dir_nofollow", "refused", "tree_manifest_sha256_at",
+        # agent-harness#1952: standalone Codex runtime projection helpers in
+        # `seat_jail.build_seat_jail` and `panel_invoker.launch_provider`, guarded on
+        # `standalone_runtime` / `standalone_runtime_mount_args`, which only standalone
+        # Codex seats carry (never the Claude SDK path).
+        "_build_standalone_runtime_projection",
+        "verify_standalone_runtime_projection",
+        "write_new_file_at",
     }),
     _UID: frozenset({
         "NEWGIDMAP", "NEWUIDMAP", "SEAT_DIR_NAMES", "_privileged_helper", "_pythonpath_env",

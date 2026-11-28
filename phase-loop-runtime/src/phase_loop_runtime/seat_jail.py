@@ -1589,6 +1589,22 @@ def installed_filter_sha256(jail: "SeatJail") -> str:
     return filter_digest(os.pread(jail.seccomp_fd, size, 0))
 
 
+def _build_standalone_runtime_projection(leg: str, standalone_runtime: object):
+    from . import seat_codex_runtime as codex_runtime
+
+    if not isinstance(
+        standalone_runtime, codex_runtime.AdmittedStandaloneRuntime
+    ) or getattr(standalone_runtime, "leg", None) != leg:
+        raise SeatSandboxRefused(refused("identity"), "invalid standalone codex runtime")
+    _require_safe_dependency_destinations(
+        leg,
+        tuple(item.destination for item in standalone_runtime.entries),
+        standalone_runtime.subject_destination,
+    )
+    standalone_runtime.revalidate()
+    return standalone_runtime.reopen_projection()
+
+
 def verify_standalone_runtime_projection(jail: "SeatJail") -> tuple[int, ...]:
     """Verify live standalone Codex runtime projection descriptors and mounts before digesting
     or spawning."""
@@ -1932,19 +1948,7 @@ def build_seat_jail(
             dependency.revalidate()
             dependency_projection = dependency.reopen_projection()
         if standalone_runtime is not None:
-            from . import seat_codex_runtime as codex_runtime
-
-            if not isinstance(
-                standalone_runtime, codex_runtime.AdmittedStandaloneRuntime
-            ) or getattr(standalone_runtime, "leg", None) != leg:
-                raise SeatSandboxRefused(refused("identity"), "invalid standalone codex runtime")
-            _require_safe_dependency_destinations(
-                leg,
-                tuple(item.destination for item in standalone_runtime.entries),
-                standalone_runtime.subject_destination,
-            )
-            standalone_runtime.revalidate()
-            standalone_projection = standalone_runtime.reopen_projection()
+            standalone_projection = _build_standalone_runtime_projection(leg, standalone_runtime)
         arch = arch or host_arch()
         review_dir = Path(review_dir)
         tree = Path(tree) if tree is not None else review_dir / HOST_TREE_DIRNAME

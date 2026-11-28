@@ -5,7 +5,8 @@ Branch B (president ruling on agent-harness#2080): the fence is one declaration 
 own supplier, ``seat_window_supply_codex.EXPIRED_LEG_PROXY``, which both the kit's proxy
 start (``panel_invoker._open_window_launch``) and Codex's own reducer read.
 The shared qualification reducer stays byte-identical outside the Gemini changes
-authorized by agent-harness#2157.
+authorized by agent-harness#2157 and the qualification probe launcher amendment
+authorized by agent-harness#1952.
 
 Every test is provider-free: launches are stubbed at the spawn boundary, and the one real
 proxy runs against a loopback fixture upstream.
@@ -331,30 +332,33 @@ def _base() -> str | None:
     return None
 
 
-def _without_gemini_proxy_regions(source: bytes) -> bytes:
+def _without_authorized_amendments(source: bytes) -> bytes:
     lines = source.splitlines(keepends=True)
     regions = {}
     for node in ast.parse(source).body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_gemini_shape":
-            regions["_gemini_shape"] = node
+        if isinstance(node, ast.FunctionDef) and node.name in {
+            "_gemini_shape",
+            "_run_probe_in_jail",
+        }:
+            regions[node.name] = node
         elif isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "_FAIL_CLOSED_FRONT"
             for target in node.targets
         ):
             regions["_FAIL_CLOSED_FRONT"] = node
-    assert set(regions) == {"_gemini_shape", "_FAIL_CLOSED_FRONT"}
+    assert set(regions) == {"_gemini_shape", "_FAIL_CLOSED_FRONT", "_run_probe_in_jail"}
     for node in sorted(regions.values(), key=lambda node: node.lineno, reverse=True):
         del lines[node.lineno - 1:node.end_lineno]
     return b"".join(lines)
 
 
 def test_t4_seat_jail_qualification_is_unedited():
-    """Keep the Codex fence from changing the reducer outside the Gemini amendment."""
+    """Keep the Codex fence from changing the reducer outside authorized amendments."""
     if not (REPO / ".git").exists():
         pytest.skip("not a source checkout")
     base = _base()
     if base is None:
         pytest.skip("no base ref to diff against")
     old = subprocess.check_output(["git", "-C", str(REPO), "show", f"{base}:{FROZEN_REDUCER}"])
-    assert _without_gemini_proxy_regions((REPO / FROZEN_REDUCER).read_bytes()) == (
-        _without_gemini_proxy_regions(old))
+    assert _without_authorized_amendments((REPO / FROZEN_REDUCER).read_bytes()) == (
+        _without_authorized_amendments(old))

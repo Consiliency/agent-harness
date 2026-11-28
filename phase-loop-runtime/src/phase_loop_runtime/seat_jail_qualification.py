@@ -36,7 +36,6 @@ the outcome is the parent's own observation.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import datetime
 import hashlib
 import json
@@ -415,6 +414,7 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
 
 def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mutate) -> dict:
     """The probe, as the seat, in the production jail on the D8 chain."""
+    import contextlib
     from . import panel_invoker as pi
 
     review = base / "seat" / "review"
