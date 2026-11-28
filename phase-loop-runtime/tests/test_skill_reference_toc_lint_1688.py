@@ -149,63 +149,46 @@ def _render_non_code_inline(fragment: str) -> str:
 def _heading_plain_text(heading: str) -> str:
     """Render CommonMark inline spans in a heading to plain text for GitHub slugging.
 
-    Code spans are tokenized first so literal content such as ``<Widget>`` inside
-    backticks is preserved rather than stripped as raw HTML.
+    Code spans are extracted first into unique NUL-delimited placeholders (non-word,
+    non-whitespace) so literal content such as ``<Widget>`` is protected from
+    HTML/emphasis stripping while emphasis spanning across or adjacent to a code span
+    (e.g. ``_Call `<Widget>`_`` or `` `foo`_bar_ ``) still matches across the whole
+    heading.
     """
-    parts: list[str] = []
-    buf: list[str] = []
+    salt = 0
+    while f"\x00CODE{salt}X" in heading:
+        salt += 1
+    prefix = f"\x00CODE{salt}X"
+
+    placeholders: dict[str, str] = {}
+    out: list[str] = []
     i = 0
     n = len(heading)
     while i < n:
         if heading[i] == "\\" and i + 1 < n:
-            buf.append(heading[i : i + 2])
+            out.append(heading[i : i + 2])
             i += 2
             continue
         if heading[i] == "`":
             span = _find_matching_backticks(heading, i)
             if span is not None:
-                if buf:
-                    parts.append(_render_non_code_inline("".join(buf)))
-                    buf.clear()
                 content_start, span_end = span
                 tick_len = content_start - i
                 code = heading[content_start : span_end - tick_len]
                 if len(code) >= 2 and code.startswith(" ") and code.endswith(" ") and code.strip(" "):
                     code = code[1:-1]
-                parts.append(code)
+                token = f"{prefix}{len(placeholders)}\x00"
+                placeholders[token] = code
+                out.append(token)
                 i = span_end
                 continue
-        if heading[i] in ("!", "["):
-            # Handle inline link/image whose label itself may contain code spans.
-            label_start = i + 2 if heading.startswith("![", i) else (i + 1 if heading[i] == "[" else -1)
-            if label_start != -1:
-                j = label_start
-                while j < n:
-                    if heading[j] == "\\" and j + 1 < n:
-                        j += 2
-                        continue
-                    if heading[j] == "`":
-                        inner_span = _find_matching_backticks(heading, j)
-                        if inner_span is not None:
-                            j = inner_span[1]
-                            continue
-                    if heading[j] == "]":
-                        break
-                    j += 1
-                if j + 1 < n and heading[j] == "]" and heading[j + 1] == "(":
-                    close_paren = heading.find(")", j + 2)
-                    if close_paren != -1:
-                        if buf:
-                            parts.append(_render_non_code_inline("".join(buf)))
-                            buf.clear()
-                        parts.append(_heading_plain_text(heading[label_start:j]))
-                        i = close_paren + 1
-                        continue
-        buf.append(heading[i])
+        out.append(heading[i])
         i += 1
-    if buf:
-        parts.append(_render_non_code_inline("".join(buf)))
-    return "".join(parts)
+
+    rendered = _render_non_code_inline("".join(out))
+    for token, literal in placeholders.items():
+        rendered = rendered.replace(token, literal)
+    return rendered
 
 
 def _strip_emphasis(fragment: str) -> str:
@@ -302,6 +285,24 @@ def _html_block_end_kind(line: str, *, allow_type7: bool = True) -> str | None:
     return None
 
 
+def _starts_non_paragraph_block(line: str) -> bool:
+    """Return True if ``line`` begins a non-paragraph block at container/block start."""
+    if not line.strip(" \t"):
+        return True
+    if _leading_columns(line) >= 4:
+        return True
+    if _ATX_HEADING_RE.match(line) or _THEMATIC_BREAK_RE.match(line) or _BLOCKQUOTE_RE.match(line):
+        return True
+    open_match = _OPEN_FENCE_RE.match(line)
+    if open_match and not (open_match.group(2)[0] == "`" and "`" in open_match.group(3)):
+        return True
+    if _html_block_end_kind(line, allow_type7=True) is not None:
+        return True
+    if _LIST_START_RE.match(line):
+        return True
+    return False
+
+
 def _line_interrupts_paragraph(line: str) -> bool:
     """Return True if ``line`` can interrupt a CommonMark paragraph (not blank, not lazy continuation)."""
     if not line.strip(" \t"):
@@ -313,7 +314,16 @@ def _line_interrupts_paragraph(line: str) -> bool:
         return True
     if _html_block_end_kind(line, allow_type7=False) is not None:
         return True
-    if _LIST_START_RE.match(line):
+    list_match = _LIST_START_RE.match(line)
+    if list_match:
+        marker = list_match.group(2)
+        after_marker = line[list_match.end() :]
+        # Per CommonMark §5.2: an empty list item cannot interrupt a paragraph, and an
+        # ordered list item can interrupt a paragraph ONLY when its start number is 1.
+        if not after_marker.strip(" \t"):
+            return False
+        if marker not in {"-", "*", "+"} and int(marker[:-1]) != 1:
+            return False
         return True
     return False
 
@@ -537,7 +547,8 @@ def _parse_document(
             capture_bullet = (in_contents or collect_nested_bullets) and is_bullet_item
 
             item_lines: list[str] = [first_body_line]
-            first_para_open = bool(rest_after_ws) and not _line_interrupts_paragraph(first_body_line)
+            lazy_indices: set[int] = set()
+            first_para_open = bool(rest_after_ws) and not _starts_non_paragraph_block(first_body_line)
             i += 1
             pending_blanks: list[str] = []
             while i < total:
@@ -560,6 +571,7 @@ def _parse_document(
                     continue
                 # CommonMark §5.2 lazy paragraph continuation line (only while the first paragraph is still open).
                 if first_para_open and not pending_blanks and not _line_interrupts_paragraph(next_line):
+                    lazy_indices.add(len(item_lines))
                     item_lines.append(next_line.strip(" \t"))
                     i += 1
                     continue
@@ -568,19 +580,28 @@ def _parse_document(
             i -= len(pending_blanks)
 
             if capture_bullet and rest_after_ws:
-                if _line_interrupts_paragraph(first_body_line):
+                if _starts_non_paragraph_block(first_body_line):
                     bullet_text = rest_after_ws.strip(" \t")
                 else:
                     para_parts: list[str] = [item_lines[0].strip(" \t")]
-                    for cont in item_lines[1:]:
-                        if not cont.strip(" \t") or _line_interrupts_paragraph(cont) or _SETEXT_UNDERLINE_RE.match(cont):
+                    for idx, cont in enumerate(item_lines[1:], start=1):
+                        if idx not in lazy_indices and (
+                            not cont.strip(" \t")
+                            or _line_interrupts_paragraph(cont)
+                            or _SETEXT_UNDERLINE_RE.match(cont)
+                        ):
                             break
                         para_parts.append(cont.strip(" \t"))
                     bullet_text = " ".join(part for part in para_parts if part)
                 toc_bullets.append((lineno, bullet_text))
 
+            # CommonMark §4.3: a Setext heading underline cannot be a lazy continuation line.
+            nested_lines = [
+                ("\\" + ln if (idx in lazy_indices and _SETEXT_UNDERLINE_RE.match(ln)) else ln)
+                for idx, ln in enumerate(item_lines)
+            ]
             nested = _parse_document(
-                "\n".join(item_lines),
+                "\n".join(nested_lines),
                 top_level=False,
                 collect_templates=collect_templates,
                 collect_nested_bullets=capture_bullet,
@@ -915,6 +936,31 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         )
         self.assertEqual(reference_toc_findings(lazy_wrapped_match, "fixture/lazy-wrapped-match.md"), [])
 
+        # 9. Ordered list starting at 2 (`2. extra`) cannot interrupt a bullet's paragraph.
+        ordered_wrap_stale = (
+            "# Ref\n\n"
+            "## Contents\n\n"
+            "- Real\n"
+            "  2. extra\n\n"
+            "## Real\n"
+        )
+        findings = reference_toc_findings(ordered_wrap_stale, "fixture/ordered-wrap-stale.md")
+        self.assertEqual(len(findings), 1)
+        self.assertIn("Real 2. extra", findings[0].message)
+
+        # 10. Raw HTML type-7 block inside a list item (`- <widget>`) ends with the list item;
+        # unindented `Contents\n---` starts a valid top-level Setext TOC.
+        after_html_list_item = (
+            "# Ref\n\n"
+            "- <widget>\n"
+            "Contents\n"
+            "---\n\n"
+            "- Real\n\n"
+            "## Real\n"
+            + ("body line\n" * 100)
+        )
+        self.assertEqual(reference_toc_findings(after_html_list_item, "fixture/after-html-list.md"), [])
+
     def test_anchor_slug_allocation_emphasis_blockquotes_and_template_separation(self) -> None:
         # 1. Heading inside an md template satisfies plain bullet, NEVER #anchor.
         tpl_anchor = (
@@ -941,12 +987,16 @@ class SkillReferenceTocLintTest(unittest.TestCase):
             "- [Bold](#bold)\n"
             "- [Snake](#foo_bar)\n"
             "- [Widget](#call-widget)\n"
+            "- [EmphWidget](#emph-widget)\n"
+            "- [Adjacent](#foobar)\n"
             "- [Quoted](#quoted)\n\n"
             "## _Real_\n\n"
             "## *Star*\n\n"
             "## **Bold**\n\n"
             "## foo_bar\n\n"
             "## Call `<Widget>`\n\n"
+            "## _Emph `<Widget>`_ \n\n"
+            "## `foo`_bar_\n\n"
             "> ## Quoted\n"
         )
         self.assertEqual(reference_toc_findings(formatted, "fixture/formatted.md"), [])
