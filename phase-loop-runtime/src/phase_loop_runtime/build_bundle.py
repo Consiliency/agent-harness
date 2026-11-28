@@ -28,10 +28,15 @@ HARNESS_AUX_SUBDIRS: tuple[str, ...] = ("references",)
 # Shared link grammar for `references/` and `assets/` links in a SKILL.md
 # (agent-harness#1649). Used by both `build_bundle` (references placement) and
 # `test_skills_canon_parity` (installed-bundle verification) so placement and
-# parity checks always agree.
+# parity checks always agree. Leading `../` traversal is captured so parity
+# rejects escaping links while `canonical_direct_aux_path` keeps them ineligible
+# for shared placement.
 SKILL_AUX_LINK_RE = re.compile(
-    r"(?<![\w./-])(?:\./)?((?:references|assets)/[\w./-]+\.md)(?![\w/-]|\.\w)"
-    r"(?:`|(?:#[\w.-]+)?\))?(?:\s+from the installed `([\w-]+)` directory)?"
+    r"(?<![\w./-])(?:\./)?((?:\.\./)*(?:references|assets)/[\w./-]+\.[A-Za-z0-9]+)"
+    r"(?![\w/-]|\.[A-Za-z0-9])"
+    r"(?:#[\w./-]+)?"
+    r"(?:`|(?:\s+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^()\n]*\)))?\))?"
+    r"(?:\s+from the installed `([\w-]+)` directory)?"
 )
 
 
@@ -40,17 +45,37 @@ def iter_skill_aux_links(text: str) -> list[tuple[str, str]]:
     return sorted(set(SKILL_AUX_LINK_RE.findall(text)))
 
 
+def canonical_direct_aux_path(rel: str) -> str | None:
+    """Return `rel` if it names a direct child of `references/` or `assets/` in canonical form.
+
+    Rejects backslashes, `.` / `..` segments, empty segments (`//`), and nested
+    subdirectories so placement (`build_bundle`) and parity verification
+    (`test_skills_canon_parity`) interpret paths identically (agent-harness#1649).
+    """
+    if "\\" in rel:
+        return None
+    parts = rel.split("/")
+    if len(parts) != 2 or parts[0] not in ("references", "assets") or parts[1] in ("", ".", ".."):
+        return None
+    return rel
+
+
 def linked_own_aux_paths(text: str, *, skill_name: str) -> set[str]:
-    """Return relative `references/` / `assets/` paths in `text` owned by `skill_name`.
+    """Return canonical direct `references/` / `assets/` paths in `text` owned by `skill_name`.
 
     Links qualified with ``from the installed `<other-skill>` directory`` belong to
     `<other-skill>` rather than `skill_name` (unless `<other-skill> == skill_name`).
+    Non-canonical or escaping paths (e.g. `references/./a.md`, `references//a.md`,
+    `../references/a.md`) are excluded.
     """
-    return {
-        rel
-        for rel, owner in iter_skill_aux_links(text)
-        if not owner or owner == skill_name
-    }
+    owned: set[str] = set()
+    for rel, owner in iter_skill_aux_links(text):
+        if owner and owner != skill_name:
+            continue
+        canonical = canonical_direct_aux_path(rel)
+        if canonical is not None:
+            owned.add(canonical)
+    return owned
 # IF-0-CANON-1: the canonical phase-loop skill sources now live IN this repo
 # under `skills-src/<harness>/` (one tree per active harness, each holding
 # `<harness>-<skill>/` dirs). `build_bundle` consumes these to produce the
