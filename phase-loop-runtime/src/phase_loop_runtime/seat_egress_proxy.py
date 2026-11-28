@@ -20,23 +20,28 @@ the recorded integrities and the digest of the installed files.
 
 from __future__ import annotations
 
+import base64
+import codecs
 import contextlib
 import hashlib
 import json
 import os
 import re
 import secrets
+import selectors
 import shutil
 import stat
 import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from typing import Iterator, Literal, Mapping
 
+from . import credential_redaction
 from .sandbox_egress import _unix_front_identity
 from .seat_route_contract import AllowlistRef
 
@@ -923,6 +928,420 @@ def start_private_gemini_proxy(*, allowlist_id: str, refuse_all: bool = False
     )
 
 
+_START_STDERR_TAIL_CHARS = 8192
+_START_STDERR_DETAIL_CHARS = 512
+_START_STDERR_DRAIN_WAIT_S = 0.5
+_START_EXIT_SETTLE_S = 0.2
+_PEM_CARRY_CHARS = 128
+_READY_TOKEN_FALLBACK_RE = re.compile(r'"token"\s*:\s*"([^"\\\r\n]+)"')
+_PEM_BEGIN_RE = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
+_PEM_END_RE = re.compile(r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
+
+
+def _pipe_fileno(pipe) -> int | None:
+    """Return ``pipe``'s OS file descriptor when backed by a real open fd, else ``None``."""
+    fileno = getattr(pipe, "fileno", None)
+    if not callable(fileno):
+        return None
+    try:
+        candidate = fileno()
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(candidate, int) or isinstance(candidate, bool) or candidate < 0:
+        return None
+    try:
+        os.fstat(candidate)
+    except OSError:
+        return None
+    return candidate
+
+
+def _expand_secret_variants(redact: tuple[str, ...]) -> tuple[str, ...]:
+    """Expand observed launch tokens to literal, Basic-auth, and URL-encoded forms.
+
+    Malformed strings (such as lone surrogates decoded from untrusted JSON) fall back
+    to UTF-8 replacement encoding so diagnostic redaction never raises.
+    """
+    variants: set[str] = set()
+    for secret in redact:
+        if not secret:
+            continue
+        variants.add(secret)
+        variants.add(f"srt:{secret}")
+        replaced = secret.encode("utf-8", errors="replace").decode("utf-8")
+        if replaced:
+            variants.add(replaced)
+            variants.add(f"srt:{replaced}")
+        for form in (f"srt:{secret}", secret):
+            try:
+                encoded = form.encode("utf-8")
+            except UnicodeEncodeError:
+                encoded = form.encode("utf-8", errors="replace")
+            variants.add(base64.b64encode(encoded).decode("ascii"))
+        try:
+            quoted = urllib.parse.quote(secret, safe="")
+        except UnicodeEncodeError:
+            quoted = urllib.parse.quote(secret.encode("utf-8", errors="replace"), safe=b"")
+        if quoted:
+            variants.add(quoted)
+    return tuple(sorted(variants, key=len, reverse=True))
+
+
+def _extract_ready_secrets(line: str, ready: object) -> tuple[str, ...]:
+    """Extract any token emitted on the ready line even when validation fails."""
+    found: list[str] = []
+    if isinstance(ready, dict):
+        tok = ready.get("token")
+        if isinstance(tok, str) and tok:
+            found.append(tok)
+    if not found and line:
+        for match in _READY_TOKEN_FALLBACK_RE.finditer(line):
+            tok = match.group(1)
+            if tok and tok not in found:
+                found.append(tok)
+    return tuple(found)
+
+
+def _sanitize_stderr_tail(
+    raw: str,
+    *,
+    limit: int = _START_STDERR_DETAIL_CHARS,
+    redact: tuple[str, ...] = (),
+    was_truncated: bool = False,
+) -> str:
+    """Scrub credentials, launch tokens, and control characters from a stderr excerpt."""
+    if not raw:
+        return ""
+    cleaned = credential_redaction.redact_text(raw)
+    for variant in _expand_secret_variants(redact):
+        cleaned = cleaned.replace(variant, credential_redaction.PLACEHOLDER)
+    lines = [line.strip() for line in cleaned.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    joined = " | ".join(line for line in lines if line)
+    sanitized = "".join(
+        " " if (ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F or ch in ("\u2028", "\u2029")) else ch
+        for ch in joined
+    ).strip()
+    if was_truncated and sanitized and not sanitized.startswith("..."):
+        sanitized = "..." + sanitized
+    if len(sanitized) > limit:
+        sanitized = "..." + sanitized[-(limit - 3):]
+    return sanitized
+
+
+class _StderrTail:
+    """Drain a proxy child's stderr pipe in the background, retaining a bounded tail
+    until startup completes and then discarding everything in steady state so the pipe
+    can never fill and block the proxy.
+
+    When backed by a real OS file descriptor, reads use a cancellable selector and
+    self-pipe and the drainer closes ``pipe`` itself on exit, so teardown never blocks
+    on a buffered reader lock if a descendant holds stderr open.
+
+    PEM private-key blocks are scrubbed in a streaming pass before buffering, and any
+    eviction runs the shared credential scrubber before dropping whole lines so tail
+    truncation never exposes private-key or credential payloads whose opening delimiter
+    was evicted.
+    """
+
+    def __init__(self, pipe, *, cap: int = _START_STDERR_TAIL_CHARS) -> None:
+        self._pipe = pipe
+        self._cap = cap
+        self._lock = threading.Lock()
+        self._cancel_lock = threading.Lock()
+        self._buf = ""
+        self._pem_carry = ""
+        self._in_pem = False
+        self._drop_until_newline = False
+        self._raw_line_len = 0
+        self._truncated = False
+        self._discard = False
+        self._stop_event = threading.Event()
+        self._done = threading.Event()
+        self._cancel_signaled = False
+        self._fd = _pipe_fileno(pipe)
+        self._cancel_r: int | None = None
+        self._cancel_w: int | None = None
+        if self._fd is not None:
+            self._cancel_r, self._cancel_w = os.pipe()
+            for cancel_fd in (self._cancel_r, self._cancel_w):
+                with contextlib.suppress(OSError, AttributeError):
+                    os.set_blocking(cancel_fd, False)
+        self._thread = threading.Thread(
+            target=self._drain, name="seat-egress-stderr", daemon=True,
+        )
+        try:
+            self._thread.start()
+        except BaseException:
+            self._close_cancel_fds()
+            raise
+
+    def _close_cancel_fds(self) -> None:
+        with self._cancel_lock:
+            cancel_r, cancel_w = self._cancel_r, self._cancel_w
+            self._cancel_r = None
+            self._cancel_w = None
+        for fd in (cancel_r, cancel_w):
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+
+    def _drain(self) -> None:
+        try:
+            if self._fd is not None and self._cancel_r is not None:
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                with contextlib.suppress(OSError, AttributeError):
+                    os.set_blocking(self._fd, False)
+                selector_cls = getattr(selectors, "PollSelector", selectors.DefaultSelector)
+                with selector_cls() as sel:
+                    sel.register(self._fd, selectors.EVENT_READ, data="stderr")
+                    sel.register(self._cancel_r, selectors.EVENT_READ, data="cancel")
+                    while not self._stop_event.is_set():
+                        events = sel.select()
+                        cancelled = False
+                        readable = False
+                        for key, _ in events:
+                            if key.data == "cancel":
+                                cancelled = True
+                            elif key.data == "stderr":
+                                readable = True
+                        if cancelled or self._stop_event.is_set():
+                            break
+                        if readable:
+                            try:
+                                raw_chunk = os.read(self._fd, 4096)
+                            except BlockingIOError:
+                                continue
+                            if not raw_chunk:
+                                chunk = decoder.decode(b"", final=True)
+                                if chunk:
+                                    self._append(chunk)
+                                break
+                            chunk = decoder.decode(raw_chunk, final=False)
+                            if chunk:
+                                self._append(chunk)
+            else:
+                while not self._stop_event.is_set():
+                    raw_chunk = self._pipe.read(4096)
+                    if not raw_chunk:
+                        break
+                    chunk = (
+                        raw_chunk.decode("utf-8", errors="replace")
+                        if isinstance(raw_chunk, bytes)
+                        else raw_chunk
+                    )
+                    if chunk:
+                        self._append(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._done.set()
+            with contextlib.suppress(OSError, ValueError):
+                self._pipe.close()
+            self._close_cancel_fds()
+
+    def _scrub_and_evict(self, *, finalize_open_line: bool = False) -> None:
+        """Scrub credentials before evicting whole lines so dropped delimiters never leak tails."""
+        if not finalize_open_line:
+            last_nl = self._buf.rfind("\n")
+            if last_nl != -1 and last_nl + 1 < len(self._buf):
+                complete = self._buf[:last_nl + 1]
+                open_line = self._buf[last_nl + 1:]
+                # Preserve the immediately preceding complete line (which may carry a
+                # multi-line credential key) and the raw unfinished line whenever evicting
+                # earlier complete lines alone fits within the cap.
+                scrubbed_complete = credential_redaction.redact_text(complete)
+                while len(scrubbed_complete) + len(open_line) > self._cap:
+                    nl = scrubbed_complete.find("\n")
+                    if nl == -1 or nl + 1 >= len(scrubbed_complete):
+                        break
+                    scrubbed_complete = scrubbed_complete[nl + 1:]
+                    self._truncated = True
+                if len(scrubbed_complete) + len(open_line) <= self._cap:
+                    self._buf = scrubbed_complete + open_line
+                    return
+                # Even the immediately preceding line must be evicted: scrub the full buffer
+                # first and keep `open_line` raw only when no credential redaction touched it.
+                scrubbed_full = credential_redaction.redact_text(self._buf)
+                s_nl = scrubbed_full.rfind("\n")
+                scrubbed_open = scrubbed_full[s_nl + 1:] if s_nl != -1 else scrubbed_full
+                if (
+                    len(open_line) <= self._cap
+                    and credential_redaction.PLACEHOLDER not in scrubbed_open
+                ):
+                    prefix = scrubbed_full[:s_nl + 1] if s_nl != -1 else ""
+                    while len(prefix) + len(open_line) > self._cap and prefix:
+                        nl = prefix.find("\n")
+                        prefix = "" if nl == -1 else prefix[nl + 1:]
+                        self._truncated = True
+                    self._buf = prefix + open_line
+                    return
+                self._buf = scrubbed_full
+                self._drop_until_newline = True
+                self._raw_line_len = 0
+            else:
+                self._buf = credential_redaction.redact_text(self._buf)
+        else:
+            self._buf = credential_redaction.redact_text(self._buf)
+        while len(self._buf) > self._cap:
+            nl = self._buf.find("\n")
+            if nl != -1 and nl + 1 < len(self._buf):
+                self._buf = self._buf[nl + 1:]
+                self._truncated = True
+            else:
+                self._buf = "..."
+                self._truncated = True
+                break
+
+    def _append_safe(self, piece: str) -> None:
+        piece = piece.replace("\r\n", "\n").replace("\r", "\n")
+        while piece:
+            if self._drop_until_newline:
+                nl = piece.find("\n")
+                if nl == -1:
+                    return
+                self._drop_until_newline = False
+                self._raw_line_len = 0
+                if self._buf and not self._buf.endswith("\n"):
+                    self._buf += "\n"
+                piece = piece[nl + 1:]
+                continue
+            nl = piece.find("\n")
+            if nl != -1:
+                head = piece[:nl + 1]
+                piece = piece[nl + 1:]
+                if self._raw_line_len + len(head) > self._cap:
+                    self._buf += head
+                    self._scrub_and_evict(finalize_open_line=True)
+                    if self._buf and not self._buf.endswith("\n"):
+                        self._buf += "\n"
+                    self._raw_line_len = 0
+                    continue
+                self._buf += head
+                self._raw_line_len = 0
+                if len(self._buf) > self._cap:
+                    self._scrub_and_evict()
+                continue
+            if self._raw_line_len + len(piece) > self._cap:
+                self._buf += piece
+                self._scrub_and_evict(finalize_open_line=True)
+                self._drop_until_newline = True
+                self._raw_line_len = 0
+                return
+            self._buf += piece
+            self._raw_line_len += len(piece)
+            if len(self._buf) > self._cap:
+                self._scrub_and_evict()
+            return
+
+    def _append(self, chunk: str) -> None:
+        with self._lock:
+            if self._discard:
+                return
+            text = self._pem_carry + chunk
+            self._pem_carry = ""
+            while text:
+                norm = credential_redaction.normalize(text)
+                if self._in_pem:
+                    end_match = _PEM_END_RE.search(norm)
+                    if end_match is None:
+                        self._pem_carry = text[-_PEM_CARRY_CHARS:]
+                        return
+                    text = text[end_match.end():]
+                    self._in_pem = False
+                    continue
+                begin_match = _PEM_BEGIN_RE.search(norm)
+                if begin_match is None:
+                    if "-" in text[-_PEM_CARRY_CHARS:]:
+                        keep = max(0, len(text) - _PEM_CARRY_CHARS)
+                        if keep:
+                            self._append_safe(text[:keep])
+                        self._pem_carry = text[keep:]
+                    else:
+                        self._append_safe(text)
+                    return
+                if begin_match.start():
+                    self._append_safe(text[:begin_match.start()])
+                self._append_safe(credential_redaction.PLACEHOLDER)
+                text = text[begin_match.end():]
+                self._in_pem = True
+
+    def discard(self) -> None:
+        with self._lock:
+            self._discard = True
+            self._buf = ""
+            self._pem_carry = ""
+            self._in_pem = False
+            self._drop_until_newline = False
+            self._raw_line_len = 0
+
+    def tail(
+        self,
+        *,
+        limit: int = _START_STDERR_DETAIL_CHARS,
+        wait_s: float = 0.0,
+        redact: tuple[str, ...] = (),
+    ) -> str:
+        if wait_s > 0:
+            self._done.wait(timeout=wait_s)
+        with self._lock:
+            raw = self._buf if self._in_pem else self._buf + self._pem_carry
+            was_truncated = self._truncated
+        return _sanitize_stderr_tail(
+            raw, limit=limit, redact=redact, was_truncated=was_truncated,
+        )
+
+    def close(self, timeout: float = 1.0) -> None:
+        self.discard()
+        self._stop_event.set()
+        with self._cancel_lock:
+            cancel_w = self._cancel_w
+            if cancel_w is not None and not self._cancel_signaled:
+                self._cancel_signaled = True
+                with contextlib.suppress(OSError):
+                    os.write(cancel_w, b"\x01")
+        self._thread.join(timeout=timeout)
+
+
+def _start_failure_with_diagnostics(
+    exc: EgressLayerUnavailable,
+    process,
+    stderr_tail: _StderrTail | None,
+    *,
+    redact: tuple[str, ...] = (),
+) -> EgressLayerUnavailable:
+    """Attach exit status and a bounded sanitized stderr tail to a startup refusal.
+
+    Diagnostic enrichment never raises or replaces ``exc.code``.
+    """
+    poll = getattr(process, "poll", None)
+    rc = poll() if callable(poll) else getattr(process, "returncode", None)
+    if rc is None:
+        wait = getattr(process, "wait", None)
+        if callable(wait):
+            try:
+                rc = wait(timeout=_START_EXIT_SETTLE_S)
+            except (subprocess.TimeoutExpired, OSError, TypeError, ValueError):
+                rc = poll() if callable(poll) else getattr(process, "returncode", None)
+    tail = ""
+    if stderr_tail is not None:
+        try:
+            tail = stderr_tail.tail(
+                limit=_START_STDERR_DETAIL_CHARS,
+                wait_s=_START_STDERR_DRAIN_WAIT_S if rc is not None else 0.0,
+                redact=redact,
+            )
+        except Exception:
+            tail = ""
+    parts: list[str] = []
+    if rc is not None:
+        parts.append(f"exit={rc}")
+    if tail:
+        parts.append(f"stderr: {tail}")
+    if not parts:
+        return exc
+    return EgressLayerUnavailable(exc.code, f"{exc} ({'; '.join(parts)})")
+
+
 @contextlib.contextmanager
 def _start_proxy(*, allowlist_id: str, refuse_all: bool, front_config: Mapping[str, bool],
                  request_budget: int | None = None, named: tuple = ()) -> Iterator[SeatEgressProxy]:
@@ -962,56 +1381,85 @@ def _start_proxy(*, allowlist_id: str, refuse_all: bool, front_config: Mapping[s
             }), encoding="utf-8")
             process = subprocess.Popen(
                 [node, str(_data_path("proxy.mjs")), str(srt_index), str(config)],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env=_proxy_env(node, Path(work)), cwd=work, text=True, start_new_session=True)
         except (OSError, ValueError) as exc:
             raise EgressLayerUnavailable(
                 START_FAILED_CODE, "the seat egress proxy could not be started") from exc
+        stderr_pipe = getattr(process, "stderr", None)
+        stderr_tail: _StderrTail | None = None
         proxy: SeatEgressProxy | None = None
+        started = False
+        ready_token: str | None = None
         try:
-            ready = _read_ready(process)
-            if not all(ready.get(name) is True for name in (
-                "tls_inspection", "inner_sni_check", "fail_closed_front",
-            )):
-                raise EgressLayerUnavailable(
-                    TLS_UNTERMINATED_CODE,
-                    "the proxy did not attest its fail-closed TLS front",
-                )
-            attested = ready.get("request_budget")
-            if (request_budget is None) != (attested is None) or (
-                    request_budget is not None
-                    and (type(attested) is not int or attested != request_budget)):
-                raise EgressLayerUnavailable(
-                    START_FAILED_CODE, "the proxy did not attest its request budget")
-            token = str(ready["token"])
-            socket_path = str(ready["socket"])
-            front_identity = None
-            if private_gemini:
-                front_identity = _unix_front_identity(socket_path, process)
-                if front_identity is None:
-                    raise EgressLayerUnavailable(
-                        START_FAILED_CODE, "the private Gemini front did not bind its socket")
+            if stderr_pipe is not None:
+                stderr_tail = _StderrTail(stderr_pipe)
             try:
-                ca_sha256 = ca_fingerprint(cert)
-            except (OSError, ValueError) as exc:
-                raise EgressLayerUnavailable(
-                    INTEGRITY_CODE, "the seat egress CA certificate is invalid") from exc
-            proxy = SeatEgressProxy(
-                socket=socket_path,
-                proxy_url=(GEMINI_PROXY_URL if private_gemini else
-                           f"http://srt:{token}@127.0.0.1:{SEAT_PROXY_PORT}"),
-                front_identity=front_identity,
-                private_proxy_token=token.encode("utf-8") if private_gemini else b"",
-                ca_cert=cert, ca_sha256=ca_sha256,
-                inner_sni_check=True, process=process,
-                allowlist_id=selected.id, allowlist_digest=selected.content_digest,
-                allowlist_sha256=_digest(rules), _rules=tuple(rules),
-                request_budget=request_budget, named=named)
-            proxy._reader = threading.Thread(target=_read_stream, args=(proxy,), daemon=True,
-                                             name="seat-egress-stream")
-            proxy._reader.start()
+                ready = _read_ready(process)
+                ready_token = str(ready["token"])
+                if not all(ready.get(name) is True for name in (
+                    "tls_inspection", "inner_sni_check", "fail_closed_front",
+                )):
+                    raise EgressLayerUnavailable(
+                        TLS_UNTERMINATED_CODE,
+                        "the proxy did not attest its fail-closed TLS front",
+                    )
+                attested = ready.get("request_budget")
+                if (request_budget is None) != (attested is None) or (
+                        request_budget is not None
+                        and (type(attested) is not int or attested != request_budget)):
+                    raise EgressLayerUnavailable(
+                        START_FAILED_CODE, "the proxy did not attest its request budget")
+                token = ready_token
+                socket_path = str(ready["socket"])
+                front_identity = None
+                if private_gemini:
+                    front_identity = _unix_front_identity(socket_path, process)
+                    if front_identity is None:
+                        raise EgressLayerUnavailable(
+                            START_FAILED_CODE, "the private Gemini front did not bind its socket")
+                try:
+                    ca_sha256 = ca_fingerprint(cert)
+                except (OSError, ValueError) as exc:
+                    raise EgressLayerUnavailable(
+                        INTEGRITY_CODE, "the seat egress CA certificate is invalid") from exc
+                proxy = SeatEgressProxy(
+                    socket=socket_path,
+                    proxy_url=(GEMINI_PROXY_URL if private_gemini else
+                               f"http://srt:{token}@127.0.0.1:{SEAT_PROXY_PORT}"),
+                    front_identity=front_identity,
+                    private_proxy_token=token.encode("utf-8") if private_gemini else b"",
+                    ca_cert=cert, ca_sha256=ca_sha256,
+                    inner_sni_check=True, process=process,
+                    allowlist_id=selected.id, allowlist_digest=selected.content_digest,
+                    allowlist_sha256=_digest(rules), _rules=tuple(rules),
+                    request_budget=request_budget, named=named)
+                proxy._reader = threading.Thread(target=_read_stream, args=(proxy,), daemon=True,
+                                                 name="seat-egress-stream")
+                proxy._reader.start()
+            except EgressLayerUnavailable as exc:
+                secrets_to_redact: list[str] = []
+                if ready_token:
+                    secrets_to_redact.append(ready_token)
+                for secret in getattr(exc, "_observed_secrets", ()):
+                    if secret and secret not in secrets_to_redact:
+                        secrets_to_redact.append(secret)
+                if hasattr(exc, "_observed_secrets"):
+                    delattr(exc, "_observed_secrets")
+                enriched = _start_failure_with_diagnostics(
+                    exc, process, stderr_tail,
+                    redact=tuple(secrets_to_redact),
+                )
+                if enriched is not exc:
+                    raise enriched from exc.__cause__
+                raise
+            if stderr_tail is not None:
+                stderr_tail.discard()
+            started = True
             yield proxy
         finally:
+            if not started and stderr_tail is not None:
+                stderr_tail.discard()
             with contextlib.suppress(OSError, ValueError):
                 if process.stdin is not None:
                     process.stdin.close()
@@ -1030,6 +1478,11 @@ def _start_proxy(*, allowlist_id: str, refuse_all: bool, front_config: Mapping[s
                     proxy._returncode = getattr(process, "returncode", None)
                     if proxy._reader.is_alive():
                         proxy._protocol_error = True
+            if stderr_tail is not None:
+                stderr_tail.close(timeout=1.0)
+            elif stderr_pipe is not None:
+                with contextlib.suppress(OSError, ValueError):
+                    stderr_pipe.close()
             if process.stdout is not None:
                 with contextlib.suppress(OSError, ValueError):
                     process.stdout.close()
@@ -1039,6 +1492,7 @@ def _read_ready(process: "subprocess.Popen[str]") -> Mapping[str, object]:
     import select
 
     assert process.stdout is not None
+    line = ""
     try:
         readable, _, _ = select.select([process.stdout], [], [], _READY_TIMEOUT_S)
         line = process.stdout.readline() if readable else ""
@@ -1048,8 +1502,12 @@ def _read_ready(process: "subprocess.Popen[str]") -> Mapping[str, object]:
     if (not isinstance(ready, dict) or not isinstance(ready.get("socket"), str)
             or not ready["socket"] or not isinstance(ready.get("token"), str)
             or not ready["token"]):
-        raise EgressLayerUnavailable(
+        exc = EgressLayerUnavailable(
             START_FAILED_CODE, "the seat egress proxy did not start")
+        observed = _extract_ready_secrets(line, ready)
+        if observed:
+            exc._observed_secrets = observed
+        raise exc
     return ready
 
 
