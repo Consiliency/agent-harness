@@ -298,3 +298,188 @@ def test_zero_arg_profile_stubs_remain_compatible(monkeypatch, codex_profile):
     monkeypatch.setattr(seat_profiles, "profile_for", lambda leg: zero_arg if leg == "codex" else None)
     decision = _resolve(_route_request({"HOME": "/nonexistent"}, deadline_s=300.0), policy)
     assert decision.steps[-1].step == "L7"
+
+
+def test_expired_token_fails_closed_even_on_zero_exit(tmp_path, monkeypatch, codex_profile):
+    """Codex r1 P2: a leg (including heartbeat-only) that runs past copy.expires_at must
+    fail closed with ``codex_seat_token_expiring`` even when the provider exits 0 with valid
+    turn and command evidence."""
+    from test_seat_codex_leg import local_reads, stream
+
+    seat = _prepare_codex_with_deadline(
+        tmp_path, monkeypatch, expiry=int(time.time()) + 7200, deadline_s=None
+    )
+    local_reads(monkeypatch)
+    seat.codex_copy = replace(seat.codex_copy, expires_at=0)
+
+    out_path = seat.seat_dir / "seat-out/panel-codex.txt"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("## Verdict\n\nAPPROVE\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        pi,
+        "_run_leg_with_liveness",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=stream(command=True).decode("utf-8"), stderr="",
+        ),
+    )
+    sink: list = []
+    status, text = pi._exec_jailed_codex_leg(
+        seat,
+        deadline_s=1800,
+        model="gpt-5.4",
+        effort="high",
+        prompt="review",
+        broker_evidence={},
+        egress_evidence={},
+        failure_detail_sink=sink,
+        review_monitor=SimpleNamespace(cancel=SimpleNamespace(is_set=lambda: False)),
+    )
+    assert status == "DEGRADED"
+    assert text == ""
+    assert [item.template for item in sink] == ["codex_seat_token_expiring"]
+
+
+def test_normal_board_launch_hits_preflight_cached_route_with_one_lease(monkeypatch):
+    """Codex r1 P2: preflight caches under the full ``seat.seat_key`` while normal board
+    launch sets ``_SEAT_SESSION_SEAT`` without adding ``seat_key`` to ``_default_spawn``
+    kwargs; ``_seat_route_for_spawn`` must hit that cached route and its single lease."""
+    pi._JAILCORE_ROUTE_CACHE.clear()
+    calls: list[contract.RouteRequest] = []
+    held = {"leased": False}
+
+    class _OneLease:
+        seat_id = 0
+
+        def release(self) -> None:
+            held["leased"] = False
+
+    def fake_resolve(request, **kwargs):
+        calls.append(request)
+        if held["leased"]:
+            return contract.RouteDecision(
+                leg=request.leg,
+                vendor="codex",
+                mode="degraded",
+                code="seat_local_capacity_exhausted",
+                steps=(),
+                exception=None,
+                variant=None,
+                qualification_key=None,
+                also=(),
+                lease=None,
+            )
+        held["leased"] = True
+        return contract.RouteDecision(
+            leg=request.leg,
+            vendor="codex",
+            mode="jailed",
+            code=None,
+            steps=(),
+            exception=None,
+            variant=None,
+            qualification_key=None,
+            also=(),
+            lease=_OneLease(),
+        )
+
+    monkeypatch.setattr(seat_route, "resolve", fake_resolve)
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    full_seat_key = "codex:gpt-5.4:xhigh"
+    try:
+        preflight_route, _, preflight_refusal = pi._seat_route_for_spawn(
+            "codex", auth, eligible=True, seat_key=full_seat_key, env={}, cache_decision=True,
+        )
+        assert preflight_refusal is None
+        assert preflight_route is not None and preflight_route.jailed is True
+        assert len(calls) == 1 and calls[0].seat_key == full_seat_key
+
+        token = pi._SEAT_SESSION_SEAT.set(full_seat_key)
+        try:
+            launch_route, _, launch_refusal = pi._seat_route_for_spawn(
+                "codex", auth, eligible=True, seat_key=None, env={},
+            )
+        finally:
+            pi._SEAT_SESSION_SEAT.reset(token)
+
+        assert launch_refusal is None
+        assert launch_route is preflight_route
+        assert len(calls) == 1, "launch should reuse preflight's cached route and lease"
+    finally:
+        pi._JAILCORE_ROUTE_CACHE.clear()
+
+
+def test_egress_namespace_timeout_scales_with_extended_bounded_deadline(tmp_path, monkeypatch):
+    """Codex r1 P2: an extended bounded timeout (e.g. 3600 s) must scale the egress
+    namespace holder lifetime to ``deadline_s + 300 s`` (3900 s) rather than capping it at
+    2100 s."""
+    import contextlib
+
+    seen_timeouts: list[float | None] = []
+
+    @contextlib.contextmanager
+    def fake_isolated_network(*, timeout_s=None, **kwargs):
+        seen_timeouts.append(timeout_s)
+        raise sandbox_egress.EgressUnavailable("stop_after_capture")
+        yield ()
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    artifact = "# artifact\n"
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    auth = SimpleNamespace(staged_tree_sha256="b" * 64)
+
+    monkeypatch.setattr(pi._advisor_board_backing, "broker_socket_base", lambda: "/tmp")
+    monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda *a, **k: repo)
+    monkeypatch.setattr(pi, "_has_injected_review_execution_seam", lambda **k: False)
+    monkeypatch.setattr(
+        pi,
+        "_seat_route_for_spawn",
+        lambda *a, **k: (SimpleNamespace(jailed=False, lease=None, decision=None), [], None),
+    )
+    monkeypatch.setattr(pi._sandbox_policy, "effective_floor_bytes", lambda *a, **k: 0)
+    monkeypatch.setattr(pi._sandbox_retention, "reap_until_free", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_refuse_unless_executed_remotely", lambda *a, **k: None)
+    choice = SimpleNamespace(scheme="local", path=staged, fell_back=False)
+    monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root", lambda *a, **k: choice)
+    backend = SimpleNamespace(commit=lambda *a, **k: None, release=lambda *a, **k: None)
+    monkeypatch.setattr(pi._sandbox_placement, "resolve_backend", lambda *a, **k: backend)
+    monkeypatch.setattr(pi, "_placement_gate", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pi._sandbox_placement,
+        "prepare_local_stage",
+        lambda *a, **k: SimpleNamespace(local_tree=staged),
+    )
+    monkeypatch.setattr(
+        pi._sandbox_placement,
+        "LegPlacement",
+        lambda *a, **k: SimpleNamespace(
+            backend=backend, prepared=None, record_backend_receipt=lambda *a, **k: None,
+        ),
+    )
+    monkeypatch.setattr(pi, "_placement_request", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_record_sandbox_facts", lambda *a, **k: None)
+    monkeypatch.setattr(pi._advisor_board_backing, "_revalidate_staged_tree", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(sandbox_egress, "isolated_network", fake_isolated_network)
+
+    for timeout_s, monitor, expected in (
+        (3600, None, 3900.0),
+        (None, None, 2100.0),
+        (300, None, 2100.0),
+        (None, SimpleNamespace(cancel=SimpleNamespace(is_set=lambda: False)), None),
+    ):
+        seen_timeouts.clear()
+        result = pi._default_spawn(
+            "codex",
+            artifact,
+            repo_dir=repo,
+            mode="review",
+            timeout_s=timeout_s,
+            review_authorization=auth,
+            review_monitor=monitor,
+        )
+        assert result[0] == "DEGRADED"
+        assert seen_timeouts == [expected]

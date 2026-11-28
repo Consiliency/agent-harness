@@ -38,10 +38,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Thread the caller's environment (`RouteRequest.env`) through `seat_route` into Codex's
   `credential_present` and L6 credential preconditions (`seat_codex_credential.present(env)`,
   `seat_profile_codex`) so route pre-check, admission gate, and seat setup always resolve
-  the same auth file; tie Codex's access-token launch margin to `leg_deadline + 300 s` for
-  bounded legs (`seat_codex_credential.required_margin_s`, threaded from route resolution
-  through `codex_admission_gate` and `_prepare_jailed_codex`) and document the 2100 s
-  launch floor and non-refreshing `exp` bound for heartbeat-only Codex legs
+  the same auth file; reuse preflight's cached route and lease on normal board launches via
+  `_SEAT_SESSION_SEAT`; tie Codex's access-token launch margin and bounded egress namespace
+  holder lifetime to `leg_deadline + 300 s` (`seat_codex_credential.required_margin_s`,
+  threaded through route resolution, `codex_admission_gate`, and `_prepare_jailed_codex`);
+  enforce post-run `codex_seat_token_expiring` even on zero exit codes; and document the
+  2100 s launch floor and non-refreshing `exp` bound for heartbeat-only Codex legs
   (agent-harness#1951).
 - Enforce `grok_tool_surface.bridged_to(prefix, proxy)` inside `_check_context` so
   standalone `verify_launch_context` binds every issued `LaunchContext` mark directly to

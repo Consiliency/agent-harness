@@ -14979,7 +14979,7 @@ def _exec_jailed_codex_leg(
         return _jailed_failure("codex_seat_token_in_output", failure_detail_sink)
     if cred.tokens_changed(copy, observed):
         return _jailed_failure("codex_seat_token_refreshed_in_jail", failure_detail_sink)
-    if proc is not None and proc.returncode != 0 and time.time() >= copy.expires_at:
+    if proc is not None and time.time() >= copy.expires_at:
         return _jailed_failure("codex_seat_token_expiring", failure_detail_sink)
     record = evidence.read_tool_record(proc.stdout.encode() if proc is not None else b"")
     code = evidence.tools_ran_code(record)
@@ -19954,7 +19954,8 @@ def _seat_route_for_spawn(
         )
     if not eligible:
         return None, [], None
-    key = (id(review_authorization), leg, seat_key or leg)
+    resolved_seat_key = seat_key or _SEAT_SESSION_SEAT.get() or leg
+    key = (id(review_authorization), leg, resolved_seat_key)
     with _JAILCORE_ROUTE_CACHE_LOCK:
         cached = (_JAILCORE_ROUTE_CACHE.get(key) if cache_decision
                   else _JAILCORE_ROUTE_CACHE.pop(key, None))
@@ -19973,7 +19974,7 @@ def _seat_route_for_spawn(
         decision = _seat_route.resolve(
             _seat_route_contract.RouteRequest(
                 leg=leg,
-                seat_key=seat_key or leg,
+                seat_key=resolved_seat_key,
                 host_class=host_class,
                 run_kind=run_kind,
                 staged_tree_approved=(
@@ -20575,11 +20576,15 @@ def _default_spawn(
                     proxy_network["private_proxy"] = gemini_egress
                 else:
                     proxy_network["proxy_socket"] = gemini_egress.socket
+            namespace_timeout_s = (
+                None if review_monitor is not None
+                else float(max(_LEG_TIMEOUT_MAX_S, _leg_hard_deadline_s(timeout_s))) + 300.0
+            )
             egress_ctx = _grok_board_leg_egress(
-                timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
+                timeout_s=namespace_timeout_s,
             ) if grok_frozen else _sandbox_egress.isolated_network(
                 # Outlive the leg: the namespace must not expire under a long review.
-                timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
+                timeout_s=namespace_timeout_s,
                 **({"seat_uid_map": True, "required": True} if jailed else {}),
                 **proxy_network,
             )
@@ -20637,7 +20642,10 @@ def _default_spawn(
             # The sealed and unbrokered review forms stage no tree, so nothing above holds a
             # namespace for them: the grok-review one is held here for the leg (§4.6).
             egress_prefix = egress_stack.enter_context(_grok_board_leg_egress(
-                timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
+                timeout_s=(
+                    None if review_monitor is not None
+                    else float(max(_LEG_TIMEOUT_MAX_S, _leg_hard_deadline_s(timeout_s))) + 300.0
+                ),
             ))
             egress_token = _EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
             egress_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
