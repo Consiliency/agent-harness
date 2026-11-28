@@ -119,6 +119,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   pointing at a non-active or superseded roadmap, pin `state` -> `registry` -> `manifest`
   precedence, and add `registry` to the fail-closed selector source coverage
   (agent-harness#1510).
+- Derive `model_only_network` for jailed review pointer prompts from the seat's allowlisted
+  egress configuration (`_jailed_seat_model_only_network`) instead of hardcoding
+  `leg == "gemini"`, so jailed Codex and other allowlisted seats receive the model-only
+  network preamble rather than being told they have public internet access while jailed
+  Claude keeps its open-egress preamble (agent-harness#1949).
 
 ## [0.7.48] - 2026-11-27
 
