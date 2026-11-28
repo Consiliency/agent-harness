@@ -308,6 +308,7 @@ def test_failed_grok_review_prose_is_preserved_not_erased(tmp_path, monkeypatch)
     for prose in (
         "Not signed in users are redirected to login.py.\n",
         "Not signed in. Do not run grok login in the test.\n",
+        "Not signed in. Do not run:\n  grok login --device-code\n",
     ):
         monkeypatch.setattr(pi, "_exec_leg", lambda *a, _p=prose, **k: (1, _p, ""))
         panel = pi.invoke_panel("ARTIFACT", ["grok"])
@@ -337,6 +338,27 @@ def test_spaced_usage_limit_before_banner_reaches_panel_as_usage_limit(tmp_path,
     assert leg.status == "DEGRADED"
     assert leg.detail == "usage_limit"
     assert leg.seat_notices == ()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux seat jail")
+def test_jailed_grok_spaced_usage_limit_before_banner_carries_usage_limit(
+    jailed_grok_leg, monkeypatch,
+):
+    """P3 regression: the jailed executor also carries a recovered higher-priority
+    `usage_limit` diagnosis through its failure sink instead of dropping it."""
+    seat = jailed_grok_leg.prepare()
+    spaced_usage = (
+        "You hit your weekly limit.\n"
+        + "".join(f"ordinary line {i}\n" for i in range(25))
+        + _ISSUE_1821_CLI_LOG
+    )
+    monkeypatch.setattr(
+        pi, "_run_leg_with_liveness",
+        lambda *a, **k: pi._LegRun(1, "", spaced_usage),
+    )
+    status, text, failures, _evidence = _run_jailed_grok(seat)
+    assert (status, text) == ("DEGRADED", "")
+    assert failures == ["usage_limit"]
 
 
 def test_exec_leg_grok_does_not_retry_empty_rc0_sign_in_banner(tmp_path, monkeypatch):

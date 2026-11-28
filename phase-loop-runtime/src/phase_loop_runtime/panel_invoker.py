@@ -3120,6 +3120,10 @@ _GROK_LOGIN_INLINE_RE = re.compile(
     r"run:?\s+`?grok login(?:\s+--device-code)?`?\.?$",
     re.IGNORECASE,
 )
+_GROK_LOGIN_MULTILINE_LEAD_RE = re.compile(
+    r"^(?:to authenticate(?: without a browser)?,\s*)?run:$",
+    re.IGNORECASE,
+)
 _GROK_LOGIN_CMD_LINE_RE = re.compile(
     r"^`?grok login(?:\s+--device-code)?`?\.?$",
     re.IGNORECASE,
@@ -3858,7 +3862,7 @@ def _stream_has_grok_not_signed_in_banner(stream: str) -> bool:
         rest = match.group("rest")
         if _GROK_LOGIN_INLINE_RE.fullmatch(rest):
             return True
-        if rest.lower().endswith("run:") and idx + 1 < len(lines):
+        if _GROK_LOGIN_MULTILINE_LEAD_RE.fullmatch(rest) and idx + 1 < len(lines):
             if _GROK_LOGIN_CMD_LINE_RE.match(lines[idx + 1]):
                 return True
     return False
@@ -15671,8 +15675,14 @@ def _exec_jailed_grok_leg(
                                                                  proc.stderr, "review")
         return status, review
     status = _classify_leg(proc.returncode, review, proc.stderr, "review")
-    if status != "OK" and _grok_not_signed_in(proc.returncode, review, proc.stderr):
-        return _jailed_failure("grok_seat_credential_missing", failure_detail_sink)
+    if status != "OK":
+        grok_failure = _grok_banner_or_higher_failure(proc.returncode, review, proc.stderr)
+        if grok_failure is not None:
+            if grok_failure.template == "grok_seat_credential_missing":
+                return _jailed_failure("grok_seat_credential_missing", failure_detail_sink)
+            if failure_detail_sink is not None:
+                failure_detail_sink.append(grok_failure)
+            return "DEGRADED", review
     return status, review
 
 
