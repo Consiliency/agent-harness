@@ -1047,6 +1047,7 @@ def test_editor_prose_states_the_consumption_rule(editor):
     assert "archive with the rest" not in text and "the collector filtered it) is still archived" not in text
     for reason in rc.ARCHIVABLE_EXCLUSIONS:
         assert f"`{reason}`" in text, f"{editor} does not name {reason}"
+    assert "whose kept twin is also consumed" in text, f"{editor} must state that duplicate_of consumption follows its kept twin"
     assert "repo-specific" in text.lower() and "stay in place" in text
 
 
@@ -1129,6 +1130,15 @@ def test_collect_deduplicates_aliased_roots_by_resolve(tmp_path):
     assert corpus_alias_first.roots == [alias]
     assert len(corpus_alias_first.scanned) == 1
     assert corpus_alias_first.scanned[0].in_root is True
+
+    # An unusable path whose lexical resolve() collides with a real root (e.g.
+    # parent/missing/../skills before parent/skills) must not suppress the real root.
+    unusable = tmp_path / "missing" / ".." / "skills"
+    assert not unusable.is_dir() and unusable.resolve() == root.resolve()
+    corpus_unusable_first, _ = rc.collect([unusable, root], min_reflections=1)
+    assert corpus_unusable_first.roots == [root]
+    assert [r.path for r in corpus_unusable_first.scanned] == [original]
+
     out_alias = rc.write_corpus(corpus_alias_first, boilerplate_alias_first, tmp_path / "out-alias")
     assert rc.main(["archive", "--manifest", str(out_alias["manifest"]), "--root", str(alias)]) == 0
     assert not original.exists()

@@ -159,15 +159,24 @@ def _root_key(path: Path) -> Path:
 
 
 def _dedup_roots(roots: Iterable[Path]) -> list[Path]:
-    """Deduplicate scan roots by resolved canonical path, preserving first-seen order."""
+    """Deduplicate scan roots by resolved canonical path, preserving first-seen order.
+
+    When two paths collide on the same resolved key (for example
+    ``parent/missing/../skills`` followed by ``parent/skills``), prefer a
+    traversable directory over an unusable path so a non-existent alias cannot
+    suppress a valid scan root.
+    """
     deduped: list[Path] = []
-    seen: set[Path] = set()
+    index_by_key: dict[Path, int] = {}
     for raw in roots:
         expanded = Path(raw).expanduser()
         key = _root_key(expanded)
-        if key in seen:
+        existing = index_by_key.get(key)
+        if existing is not None:
+            if not deduped[existing].is_dir() and expanded.is_dir():
+                deduped[existing] = expanded
             continue
-        seen.add(key)
+        index_by_key[key] = len(deduped)
         deduped.append(expanded)
     return deduped
 
