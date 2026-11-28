@@ -154,9 +154,15 @@ def validate_codex_projection(dependency):
         raise ExecutableDependencyError("authority_invalid", "Codex runtime destinations")
 
 
-def codex_admission_gate(leg, env, execute, *, executable=None, dependency=None, deadline_s: float | None = None):
-    from . import seat_codex_credential as credential
+def codex_admission_gate(
+    leg, env, execute, *, executable=None, dependency=None, runtime=None,
+    deadline_s: float | None = None,
+):
+    from . import seat_codex_credential as credential, seat_codex_runtime
     from . import panel_invoker as pi, seat_admission, seat_jail
+    from .executable_dependency import ExecutableDependencyError
+    from .seat_subject import SeatSubject
+
     try:
         raw = credential.read_auth(env)
         for check in (credential.subscription_login_problem,
@@ -170,19 +176,77 @@ def codex_admission_gate(leg, env, execute, *, executable=None, dependency=None,
     if not execute:
         return seat_admission.Verdict(leg, "unknown", reason="launch_measurement")
     owns_dependency = executable is None
+    owns_runtime = False
+    subject = None
     if executable is None:
-        subject, dependency = pi._resolved_jail_subject(leg, pi._broker_subscription_env(env))
+        try:
+            subject, dependency = pi._resolved_jail_subject(leg, pi._broker_subscription_env(env))
+        except FileNotFoundError:
+            return seat_admission.Verdict(leg, "refuses", code="seat_provider_unavailable")
+        except ExecutableDependencyError:
+            return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+        except seat_jail.SeatSandboxRefused as exc:
+            return seat_admission.Verdict(leg, "refuses", code=exc.code)
         executable = dependency.subject_source if dependency is not None else subject.subject_path
     texts = []
     try:
         validate_codex_projection(dependency)
+        if dependency is not None and runtime is not None:
+            return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+        if dependency is None and runtime is None and isinstance(subject, SeatSubject):
+            resolved = seat_codex_runtime.subject_runtime(subject)
+            if isinstance(resolved, seat_codex_runtime.AdmittedStandaloneRuntime):
+                runtime = resolved
+                owns_runtime = True
+            elif isinstance(resolved, seat_codex_runtime.CodexRuntime):
+                runtime = seat_codex_runtime.admit_runtime(
+                    resolved, lookup_chain=getattr(subject, "lookup_chain", ()),
+                )
+                owns_runtime = True
+            else:
+                return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+            executable = Path(runtime.subject_source)
+        if dependency is None and runtime is None:
+            return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+        if runtime is not None:
+            if not isinstance(runtime, seat_codex_runtime.AdmittedStandaloneRuntime):
+                return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+            if executable is None or str(executable) != runtime.subject_source:
+                return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+            runtime.revalidate()
+        elif dependency is not None:
+            if hasattr(dependency, "subject_source") and (
+                executable is None or str(executable) != str(dependency.subject_source)
+            ):
+                return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+            if callable(getattr(dependency, "revalidate", None)):
+                dependency.revalidate()
         if executable is None:
             return seat_admission.Verdict(leg, "refuses", code="seat_provider_unavailable")
         for args in (("exec", "--help"), ("features", "list")):
-            done = pi.run_provider([str(executable), *args], env=dict(env),
-                                   capture_output=True, text=True, timeout=30)
+            if runtime is not None:
+                runtime.revalidate()
+            elif dependency is not None and callable(getattr(dependency, "revalidate", None)):
+                dependency.revalidate()
+            done = pi.run_provider(
+                [str(executable), *args],
+                env=dict(env),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                **({"standalone_runtime": runtime} if runtime is not None else {}),
+                **({"dependency": dependency} if dependency is not None else {}),
+            )
             texts.append(done.stdout if done.returncode == 0 else "")
+    except FileNotFoundError:
+        return seat_admission.Verdict(leg, "refuses", code="seat_provider_unavailable")
+    except ExecutableDependencyError:
+        return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+    except seat_jail.SeatSandboxRefused as exc:
+        return seat_admission.Verdict(leg, "refuses", code=exc.code)
     finally:
+        if owns_runtime and runtime is not None:
+            runtime.close()
         if owns_dependency and dependency is not None and getattr(dependency, "_jailcore_owned", False):
             dependency.close()
     if codex_cli_shape_problem(*texts):
@@ -208,7 +272,7 @@ CODEX_PROFILE = JailProfile(
         "codex_seat_token_scope_excess", "codex_seat_token_in_output",
         "codex_seat_token_refreshed_in_jail", "codex_seat_cli_shape",
         "codex_seat_tools_unavailable", "codex_seat_unknown_event",
-    }), window=CODEX_WINDOW_ROWS,
+    }), window=CODEX_WINDOW_ROWS, require_projected_runtime=True,
 )
 
 

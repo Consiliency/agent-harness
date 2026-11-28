@@ -1612,16 +1612,28 @@ def test_k1_t5_an_unused_reservation_of_an_expired_route_still_verifies(tmp_path
 def _codex_prepare_stubs(monkeypatch, tmp_path):
     from phase_loop_runtime import panel_invoker as panel, seat_codex_credential as cred
     from phase_loop_runtime import seat_codex_runtime, seat_profile_codex
+    from phase_loop_runtime.seat_subject import SeatSubject
     seen = {"installed": [], "builds": []}
     copy = cred.CodexSeatCopy(data=b'{"tokens":"fixture"}', secrets=(b"fixture-token",),
                               tokens_sha256="0" * 64, expires_at=10 ** 10)
+    root = tmp_path / "vendor/x86_64-unknown-linux-musl"
+    for relative in seat_codex_runtime.CODEX_RUNTIME_FILES:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_bytes(b"fixture codex image")
+        path.chmod(0o755 if relative.startswith(("bin/", "codex-path/")) else 0o644)
+    for directory in (tmp_path / "vendor", root, root / "bin", root / "codex-path"):
+        directory.chmod(0o755)
+    image = root / "bin/codex"
+    seen["image_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
+
     monkeypatch.setattr(panel, "_approved_stage_or_refuse", lambda d, a: tmp_path / "tree")
     monkeypatch.setattr(panel, "_resolved_jail_subject", lambda leg, env: (
-        SimpleNamespace(source="standalone", subject_path=tmp_path / "codex"), None))
+        SeatSubject("codex", "standalone", image, None, None), None))
     monkeypatch.setattr(panel, "_validate_jail_dependency", lambda leg, dependency: None)
     monkeypatch.setattr(seat_profile_codex, "validate_codex_projection", lambda d: None)
     monkeypatch.setattr(seat_profile_codex, "codex_admission_gate", lambda *a, **k: None)
-    monkeypatch.setattr(seat_codex_runtime, "subject_runtime", lambda subject: object())
     monkeypatch.setattr(cred, "read_auth", lambda env: {"fixture": "login"})
     for name in ("subscription_login_problem", "scope_problem"):
         monkeypatch.setattr(cred, name, lambda raw: None)
@@ -1631,18 +1643,20 @@ def _codex_prepare_stubs(monkeypatch, tmp_path):
                         lambda fd, value: seen["installed"].append(value))
     monkeypatch.setattr(panel, "_write_egress_ca", lambda directory, ca: directory / "ca.pem")
 
-    # The host file the stub jail binds as the provider (its digest is the bound image).
-    image = tmp_path / "codex"
-    if not image.exists():
-        image.write_bytes(b"fixture codex image")
-    seen["image_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
-
     def build(leg, seat_dir, executable, **kwargs):
-        seen["builds"].append((leg, {key: value for key, value in kwargs.items()
-                                     if key not in {"egress_ca"}}))
+        runtime_handle = kwargs.get("standalone_runtime")
+        normalized = {}
+        for key, value in kwargs.items():
+            if key == "egress_ca":
+                continue
+            if key == "standalone_runtime" and value is not None:
+                normalized[key] = value.projection_digest
+            else:
+                normalized[key] = value
+        seen["builds"].append((leg, normalized))
         return SimpleNamespace(provider_argv0="/seat/bin/codex", env={}, profile_digest="7" * 64,
                                filter_digest="8" * 64, pass_fds=(), profile_id="codex",
-                               provider_path=str(image))
+                               provider_path=str(image), standalone_runtime=runtime_handle)
     monkeypatch.setattr(panel, "_build_jail_with_owned_inputs", build)
     monkeypatch.setattr(panel._seat_jail, "open_dir_nofollow",
                         lambda path: os.open(str(tmp_path), os.O_RDONLY))

@@ -79,6 +79,7 @@ class SeatSubject:
     requirement: DependencyRequirement | None
     binary_sha256: str | None = None
     provider_version: str | None = None
+    lookup_chain: tuple[tuple[str, tuple[int, ...]], ...] = ()
 
 
 def normalize_claude_code_version(value: object) -> str:
@@ -198,7 +199,7 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
 
     try:
         source = Path(found).resolve(strict=True)
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         raise ExecutableDependencyError("subject_mismatch", "provider") from exc
 
     named_target = Path(found)
@@ -230,7 +231,7 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
             break
         try:
             candidate = named_target.resolve(strict=True)
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             if _names_managed_root(named_target):
                 raise ExecutableDependencyError("subject_mismatch", "wrapper target") from exc
             break
@@ -240,6 +241,21 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
 
     # Preserve the existing standalone trust checks.  The looked-up path keeps the provider
     # name that resolution classifies; a resolved versioned target has lost it.
+    if leg == "codex":
+        from . import seat_codex_runtime, seat_jail
+
+        try:
+            path, lookup_chain = seat_codex_runtime.resolve_trusted_codex_lookup(Path(found))
+        except seat_jail.SeatSandboxRefused as exc:
+            if exc.code == "seat_provider_unavailable":
+                raise FileNotFoundError("seat_provider_unavailable") from exc
+            raise ExecutableDependencyError("subject_mismatch", str(exc)) from exc
+        if _names_managed_root(path):
+            raise ExecutableDependencyError("subject_mismatch", "provider")
+        return SeatSubject(
+            leg, "standalone", path, None, None, provider_version=None, lookup_chain=lookup_chain,
+        )
+
     from . import panel_invoker
 
     try:

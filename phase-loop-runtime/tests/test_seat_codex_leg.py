@@ -45,6 +45,9 @@ def prepare(tmp_path, monkeypatch, *, expiry=None):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"fixture")
+        path.chmod(0o755 if relative.startswith(("bin/", "codex-path/")) else 0o644)
+    for directory in (tmp_path / "vendor", root, root / "bin", root / "codex-path"):
+        directory.chmod(0o755)
     review = tmp_path / "review"
     tree = review / "reviewed-tree"
     tree.mkdir(parents=True)
@@ -89,6 +92,10 @@ def local_reads(monkeypatch):
     def cleanup(seat, **kwargs):
         seat_jail.close_jail_fds(seat.jail)
         seat_jail.close_jail_fds(seat.probe_jail)
+        for jail in (seat.jail, seat.probe_jail):
+            runtime_handle = getattr(jail, "standalone_runtime", None)
+            if runtime_handle is not None and callable(getattr(runtime_handle, "close", None)):
+                runtime_handle.close()
     monkeypatch.setattr(pi, "_cleanup_jailed_seat", cleanup)
 
 

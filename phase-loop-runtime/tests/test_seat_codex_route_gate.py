@@ -74,7 +74,17 @@ def ready_codex(tmp_path, monkeypatch):
     monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_: None)
     monkeypatch.setattr(seat_jail_autoqualify, "ensure_qualified", lambda *a, **k:
                         seat_jail_autoqualify.Outcome(seat_jail_autoqualify.QUALIFIED))
-    subject = seat_subject.SeatSubject("codex", "standalone", Path("/synthetic/codex"), None, None)
+    from phase_loop_runtime import seat_codex_runtime
+
+    root = tmp_path / "vendor/x86_64-unknown-linux-musl"
+    for relative in seat_codex_runtime.CODEX_RUNTIME_FILES:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x7fELF" if relative.startswith(("bin/", "codex-path/")) else b"{}")
+        path.chmod(0o755 if relative.startswith(("bin/", "codex-path/")) else 0o644)
+    for directory in (tmp_path / "vendor", root, root / "bin", root / "codex-path"):
+        directory.chmod(0o755)
+    subject = seat_subject.SeatSubject("codex", "standalone", root / "bin/codex", None, None)
     monkeypatch.setattr(seat_subject, "resolve_seat_subject", lambda *_: subject)
     monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *_: (subject, None))
     monkeypatch.setattr(pi, "run_provider", lambda cmd, **k: SimpleNamespace(
@@ -146,8 +156,6 @@ def test_doctor_and_launch_agree_on_each_codex_prelaunch_refusal(ready_codex, mo
     # Enter actual preparation: the gate must refuse before creating the seat home.
     monkeypatch.setattr(pi, "_approved_stage_or_refuse", lambda *a: ready_codex.parent)
     monkeypatch.setattr(pi, "_validate_jail_dependency", lambda *a: None)
-    from phase_loop_runtime import seat_codex_runtime
-    monkeypatch.setattr(seat_codex_runtime, "subject_runtime", lambda *a: object())
     seat_dir = ready_codex.parents[1] / "refused-seat"
     with pytest.raises(seat_jail.SeatSandboxRefused) as refused:
         pi._prepare_jailed_codex(ready_codex.parent, seat_dir, object(), 1, 1,

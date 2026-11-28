@@ -125,6 +125,7 @@ class JailProfile:
     variant: Callable[[Mapping[str, str]], tuple[str | None, str | None]] | None
     notice_codes: frozenset[str]
     window: WindowRows | None
+    require_projected_runtime: bool = False
 
 
 class SeatLease(Protocol):

@@ -42,6 +42,10 @@ def _target(base: Path, layout: str = LAYOUTS[0]) -> Path:
     resources = target / "codex-resources"
     resources.mkdir()
     (resources / "bwrap").write_bytes(b"\x7fELF")
+    current = target
+    while current != base and base in current.parents:
+        current.chmod(0o755)
+        current = current.parent
     for directory in (target, target / "bin", target / "codex-path", resources):
         directory.chmod(0o755)
     return target

@@ -1776,9 +1776,36 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
     commit = "d" * 40
     repo = tmp_path / "repo"
     repo.mkdir()
-    provider_bin = tmp_path / f"fake-{leg}"
-    provider_bin.write_bytes(b"#!/bin/sh\nexit 0\n")
-    provider_bin.chmod(0o755)
+    standalone_runtime = None
+    if leg == "codex":
+        from phase_loop_runtime import seat_codex_runtime
+
+        codex_target = (
+            tmp_path
+            / "codex-runtime"
+            / "npm/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
+        )
+        for relpath in seat_codex_runtime.CODEX_RUNTIME_FILES:
+            path = codex_target / relpath
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(
+                b"\x7fELFfixture-" + relpath.encode("ascii")
+                if relpath.startswith(("bin/", "codex-path/"))
+                else b'{"name":"codex"}'
+            )
+            path.chmod(0o755 if relpath.startswith(("bin/", "codex-path/")) else 0o644)
+        current = codex_target
+        while current != tmp_path and tmp_path in current.parents:
+            current.chmod(0o755)
+            current = current.parent
+        for directory in (codex_target, codex_target / "bin", codex_target / "codex-path"):
+            directory.chmod(0o755)
+        standalone_runtime = seat_codex_runtime.open_runtime(codex_target / "bin/codex")
+        provider_bin = Path(standalone_runtime.subject_source)
+    else:
+        provider_bin = tmp_path / f"fake-{leg}"
+        provider_bin.write_bytes(b"#!/bin/sh\nexit 0\n")
+        provider_bin.chmod(0o755)
     egress_ca = tmp_path / "ca.pem"
     egress_ca.write_bytes(b"fixture-ca")
 
@@ -1831,6 +1858,8 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
             gcfg = subdir / seat_jail.HOST_GEMINI_CONFIG_DIRNAME
             gcfg.mkdir(mode=0o700, exist_ok=True)
             kwargs["gemini_config"] = gcfg
+        elif standalone_runtime is not None:
+            kwargs["standalone_runtime"] = standalone_runtime
         jail = pi._build_jail_with_owned_inputs(
             leg, subdir, provider_bin, artifact=b"bundle", instructions=b"instr", **kwargs,
         )
@@ -1971,6 +2000,8 @@ def test_window_control_launch_admitted_with_only_v2_qualification_key_pass(
     finally:
         for built in built_jails:
             seat_jail.close_jail_fds(built)
+        if standalone_runtime is not None:
+            standalone_runtime.close()
     # Two sentinel launches + provider launch (+ bracket launch for measured).
     expected_launches = 4 if kind == "measured" else 3
     assert len(admitted) == expected_launches

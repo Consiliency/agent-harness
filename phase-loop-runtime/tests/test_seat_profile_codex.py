@@ -64,15 +64,27 @@ def test_window_rows_reach_the_generic_plant_kit(codex_profile):
 
 
 @pytest.mark.parametrize("execute", [False, True])
-def test_admission_preconditions_and_shape(monkeypatch, execute):
+def test_admission_preconditions_and_shape(tmp_path, monkeypatch, execute):
     from types import SimpleNamespace
     from phase_loop_runtime import panel_invoker as pi, seat_codex_credential as credential
+    from phase_loop_runtime import seat_codex_runtime
+    from phase_loop_runtime.seat_subject import SeatSubject
+
+    root = tmp_path / "vendor/x86_64-unknown-linux-musl"
+    for relative in seat_codex_runtime.CODEX_RUNTIME_FILES:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x7fELF" if relative.startswith(("bin/", "codex-path/")) else b"{}")
+        path.chmod(0o755 if relative.startswith(("bin/", "codex-path/")) else 0o644)
+    for directory in (tmp_path / "vendor", root, root / "bin", root / "codex-path"):
+        directory.chmod(0o755)
     monkeypatch.setattr(credential, "read_auth", lambda env: b"fixture")
     order = []
     for name in ("subscription_login_problem", "token_margin_problem", "scope_problem"):
         monkeypatch.setattr(credential, name,
                             lambda raw, _name=name, **k: order.append(_name))
-    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (SimpleNamespace(subject_path="fixture"), None))
+    subject = SeatSubject("codex", "standalone", root / "bin/codex", None, None)
+    monkeypatch.setattr(pi, "_resolved_jail_subject", lambda *a: (subject, None))
     monkeypatch.setattr(pi, "run_provider", lambda *a, **k: SimpleNamespace(returncode=0, stdout=""))
     verdict = codex.codex_admission_gate("codex", {}, execute)
     assert order == ["subscription_login_problem", "token_margin_problem", "scope_problem"]
@@ -114,35 +126,56 @@ def test_preconditions_return_the_auth_file_code(tmp_path, monkeypatch):
         assert precondition.check() == "seat_sandbox_refused:token_file_unsafe"
 
 
+def _close_built(built):
+    jail.close_jail_fds(built)
+    runtime_handle = getattr(built, "standalone_runtime", None)
+    if runtime_handle is not None and callable(getattr(runtime_handle, "close", None)):
+        runtime_handle.close()
+
+
 def _jail(tmp_path, *, dependency=False):
+    from phase_loop_runtime import seat_codex_runtime
+
     directory = tmp_path / "jail"
     tree = directory / "reviewed-tree"
     tree.mkdir(parents=True)
-    provider = tmp_path / "vendor/x86_64-unknown-linux-musl/bin/codex"
-    provider.parent.mkdir(parents=True)
-    provider.write_bytes(b"fixture")
+    root = tmp_path / "vendor/x86_64-unknown-linux-musl"
+    for relative in seat_codex_runtime.CODEX_RUNTIME_FILES:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
+        path.chmod(0o755 if relative.startswith(("bin/", "codex-path/")) else 0o644)
+    for item in (tmp_path / "vendor", root, root / "bin", root / "codex-path"):
+        item.chmod(0o755)
+    provider = root / "bin/codex"
     ca = tmp_path / "ca.pem"
     ca.write_bytes(b"certificate")
-    built = jail.build_seat_jail(
-        "codex", directory, provider, tree=tree,
-        bundle_memfd=jail.memfd_with("b", b"b"), instructions_memfd=jail.memfd_with("i", b"i"),
-        seat_ids=(1, 1), egress_ca=ca, egress_proxy="http://fixture:password@127.0.0.1:3128")
+    admitted = seat_codex_runtime.open_runtime(provider)
+    try:
+        built = jail.build_seat_jail(
+            "codex", directory, provider, tree=tree,
+            bundle_memfd=jail.memfd_with("b", b"b"), instructions_memfd=jail.memfd_with("i", b"i"),
+            seat_ids=(1, 1), egress_ca=ca, egress_proxy="http://fixture:password@127.0.0.1:3128",
+            standalone_runtime=admitted)
+    except BaseException:
+        admitted.close()
+        raise
     if not dependency:
         return built
     from phase_loop_runtime.seat_codex_runtime import CODEX_RUNTIME_DESTINATIONS
     owner = list(built.process_owner)
-    provider_index = owner.index(str(provider)) - 1
-    del owner[provider_index:provider_index + 3]
     for destination in CODEX_RUNTIME_DESTINATIONS:
-        index = owner.index(destination) - 2
-        del owner[index:index + 3]
+        index = owner.index(destination) - 4
+        del owner[index:index + 5]
     mounts = tuple(arg for i, dst in enumerate(CODEX_RUNTIME_DESTINATIONS)
                    for arg in ("--perms", "0555", "--ro-bind-data", str(900+i), dst))
     anchor = owner.index("--remount-ro")
     owner[anchor:anchor] = mounts
     return replace(built, process_owner=tuple(owner), dependency_mount_args=mounts,
                    dependency_destinations=CODEX_RUNTIME_DESTINATIONS,
-                   provider_argv0=CODEX_RUNTIME_DESTINATIONS[0])
+                   provider_argv0=CODEX_RUNTIME_DESTINATIONS[0],
+                   standalone_runtime=None, standalone_runtime_fds=(),
+                   standalone_runtime_mount_args=(), standalone_runtime_projection_digest="")
 
 
 @pytest.mark.parametrize("dependency", [False, True])
@@ -151,7 +184,7 @@ def test_registered_profile_has_the_canonical_digest(tmp_path, codex_profile, de
     try:
         assert jail.actual_profile_digest(built) == jail.jail_profile_digest("codex")
     finally:
-        jail.close_jail_fds(built)
+        _close_built(built)
 
 
 @pytest.mark.parametrize("dependency", [False, True])
@@ -161,14 +194,14 @@ def test_runtime_bind_mutations_remain_observable(tmp_path, codex_profile, depen
     built = _jail(tmp_path, dependency=dependency)
     try:
         owner = list(built.process_owner)
-        width = 5 if dependency else 3
+        width = 5
         index = owner.index(CODEX_RUNTIME_DESTINATIONS[-1]) - width + 1
         if mutation == "extra":
             owner[index:index] = owner[index:index + width]
         elif mutation == "missing":
             del owner[index:index + width]
         elif mutation == "altered":
-            owner[index + (2 if dependency else 0)] = "--bind"
+            owner[index + 2] = "--bind"
         elif mutation == "source":
             owner[index + width - 2] = "/different/source"
         else:
@@ -179,7 +212,7 @@ def test_runtime_bind_mutations_remain_observable(tmp_path, codex_profile, depen
         except jail.SeatSandboxRefused:
             pass
     finally:
-        jail.close_jail_fds(built)
+        _close_built(built)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "altered"])
@@ -200,7 +233,7 @@ def test_profile_projection_binds_changed_refuses_identity(tmp_path, codex_profi
             jail.actual_profile_digest(replace(built, process_owner=tuple(owner)))
         assert caught.value.code == jail.refused("identity")
     finally:
-        jail.close_jail_fds(built)
+        _close_built(built)
 
 
 def test_admission_measures_the_prepared_binary_without_resolving_or_closing_it(monkeypatch):
@@ -215,14 +248,18 @@ def test_admission_measures_the_prepared_binary_without_resolving_or_closing_it(
     def forbidden(*args):
         pytest.fail("prepared subject was resolved again or its dependency was closed")
     monkeypatch.setattr(pi, "_resolved_jail_subject", forbidden)
+    executable = Path("/prepared/runtime/bin/codex")
+    revalidations = []
     dependency = SimpleNamespace(_jailcore_owned=True, close=forbidden,
+        subject_source=str(executable),
+        revalidate=lambda: revalidations.append(True),
         entries=[SimpleNamespace(kind="file", destination=p) for p in CODEX_RUNTIME_DESTINATIONS],
         subject_destination=CODEX_RUNTIME_DESTINATIONS[0])
     seen = []
     def run(cmd, **kwargs):
-        seen.append(cmd[0])
+        seen.append((cmd[0], kwargs.get("dependency")))
         return SimpleNamespace(returncode=0, stdout=EXEC_HELP_0_167_0 if "--help" in cmd else FEATURES_0_167_0)
     monkeypatch.setattr(pi, "run_provider", run)
-    executable = Path("/prepared/runtime/bin/codex")
     assert codex.codex_admission_gate("codex", {}, True, executable=executable, dependency=dependency) is None
-    assert seen == [str(executable), str(executable)]
+    assert seen == [(str(executable), dependency), (str(executable), dependency)]
+    assert len(revalidations) >= 2

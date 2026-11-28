@@ -85,6 +85,9 @@ def _prepare_codex_with_deadline(tmp_path: Path, monkeypatch, *, expiry: int, de
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"fixture")
+        path.chmod(0o755 if relative.startswith(("bin/", "codex-path/")) else 0o644)
+    for directory in (tmp_path / "vendor", root, root / "bin", root / "codex-path"):
+        directory.chmod(0o755)
     review = tmp_path / "review"
     tree = review / "reviewed-tree"
     tree.mkdir(parents=True)
