@@ -195,7 +195,9 @@ OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
 # high (maintainer, 2026-10-14; it was 3.5 Flash high): `agy models` exposes NO
 # flash-lite, so the matrix's gemini-3.5-flash-lite lite cell is ASPIRATIONAL (target,
 # not live) — the live worker runs real 3.8 Flash, named in the deferral below (a real
-# version/family gap, like grok-4.3, NOT representational).
+# version/family gap, like grok-4.3, NOT representational). The worker class (3.8 Flash)
+# and the lite tier / `gemini-3.5-flash-lite` alias (`advisor_board/harness_mapping.py`,
+# which still renders 3.5 Flash high) intentionally point at different Flash generations.
 GEMINI_WORKER_MODEL = "gemini-3.8-flash-high"
 
 # CLASS_MODEL_OVERRIDES + resolve_model_class are defined BELOW the tier matrix
