@@ -409,6 +409,15 @@ class AmbiguousRoadmapError(RuntimeError):
         super().__init__("ambiguous roadmap selection")
 
 
+_STATE_NON_ACTIVE_REMEDY = (
+    ". Run `phase-loop archive-state` to archive stale state "
+    "(archives are dot-prefixed—e.g. `.phase-loop__state.json` / "
+    "`.phase-loop__events.jsonl` for the current `.phase-loop/` layout, "
+    "or `.codex__phase-loop__*` for legacy `.codex/phase-loop/` state—visible "
+    "with `ls -a`) and fall through to the active roadmap."
+)
+
+
 class SupersededRoadmapStateError(RuntimeError):
     """agent-harness#375: the phase-loop state file selects a roadmap whose manifest
     entries are ALL retired (``orphaned`` / ``completed``-unless-hatch). After a roadmap
@@ -423,12 +432,25 @@ class SupersededRoadmapStateError(RuntimeError):
         self.roadmap = roadmap
         super().__init__(
             f"phase-loop state selects a superseded roadmap: {roadmap} "
-            "(all manifest entries are retired). Remove stale state to fall through "
+            "(all manifest entries are retired). Run `phase-loop archive-state` "
+            "(archives are dot-prefixed—e.g. `.phase-loop__state.json` / "
+            "`.phase-loop__events.jsonl` for the current `.phase-loop/` layout, "
+            "or `.codex__phase-loop__*` for legacy `.codex/phase-loop/` state—visible "
+            "with `ls -a`) or remove stale state to fall through "
             "to the active roadmap: rm .phase-loop/state.json"
         )
 
 
 def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
+    """Select the active roadmap in fixed source precedence order:
+    ``explicit`` -> ``authority`` -> ``state`` -> ``registry`` -> ``manifest``
+    -> ``handoff`` -> ``singleton-glob`` (agent-harness#1510).
+
+    ``state`` intentionally precedes ``registry`` so a checkout whose
+    ``.phase-loop/state.json`` still points at a superseded or otherwise
+    non-active roadmap fails closed with the ``phase-loop archive-state``
+    remedy instead of silently switching to the newly registered active
+    roadmap."""
     if explicit:
         path = Path(explicit).expanduser()
         if not path.is_absolute():
@@ -532,8 +554,9 @@ def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path
             raise
 
     if banner_status is not None and banner_status != "active":
+        remedy = _STATE_NON_ACTIVE_REMEDY if source == "state" else ""
         raise roadmap_lint.NonActiveSelectionError(
-            f"{rel}: recognized non-active roadmap ({banner_status}) cannot be selected"
+            f"{rel}: recognized non-active roadmap ({banner_status}) cannot be selected{remedy}"
         )
 
     status = roadmap_lint.validate_roadmap_status_coherence(repo_root, required=True)
@@ -546,8 +569,9 @@ def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path
                 f"{rel}: tracked roadmap carries no lifecycle declaration"
             )
         elif rel != status["selected_roadmap"]:
+            remedy = _STATE_NON_ACTIVE_REMEDY if source == "state" else ""
             raise roadmap_lint.NonActiveSelectionError(
-                f"{rel} is not the registered active roadmap ({status['selected_roadmap']})"
+                f"{rel} is not the registered active roadmap ({status['selected_roadmap']}){remedy}"
             )
 
     return candidate.resolve()
