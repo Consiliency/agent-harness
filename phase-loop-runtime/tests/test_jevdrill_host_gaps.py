@@ -415,9 +415,11 @@ def test_routing_id_without_a_live_binding_fails_closed(tmp_path):
     assert "routing_provenance" not in json.dumps(prepared["prompt_bundle"].to_json())
 
 
-def linked_fixture(tmp_path, *, max_attempts=1):
+def linked_fixture(tmp_path, *, max_attempts=1, valid_until=None):
     adapter, inputs, decision, kwargs, calls, _ = adapter_fixture(tmp_path)
     inputs["request"]["hard_constraints"]["max_attempts"] = max_attempts
+    if valid_until is not None:
+        decision["readiness"]["valid_until"] = valid_until
     ref = {"discovery_id": str(uuid4()), "work_objective_id": str(uuid4()), "trace_digest": "a" * 64}
     adapter.queue.bind_objective(inputs["request"]["envelope"], ref)
     decision["details"]["discovery_ref"] = ref
@@ -729,18 +731,22 @@ def with_guidance(inputs, decision):
         "benchmark_effort": None, "benchmark_protocol": None, "benchmark_split": None}]}
 
 
-@pytest.mark.parametrize("case, expected", [
-    ("completed", "guidance_scoped_to_task_prompt"),
-    ("unavailable", "executor_unavailable"),
-    ("identity_mismatch", "executor_identity_mismatch"),
-    ("canceled", "launch_canceled"),
-    ("raised", "launch_aborted"),
+@pytest.mark.parametrize("case, expected, expected_terminal", [
+    ("completed", "guidance_scoped_to_task_prompt", "completed"),
+    ("timed_out", "guidance_scoped_to_task_prompt", "failed"),
+    ("stalled", "guidance_scoped_to_task_prompt", "failed"),
+    ("unavailable", "executor_unavailable", "failed"),
+    ("identity_mismatch", "executor_identity_mismatch", "completed"),
+    ("canceled", "launch_canceled", "canceled"),
+    ("raised", "launch_aborted", "failed"),
 ])
-def test_deactivation_reports_the_host_limitation(tmp_path, case, expected):
+def test_deactivation_reports_the_host_limitation(tmp_path, case, expected, expected_terminal):
     adapter, inputs, decision, kwargs, calls, _ = adapter_fixture(tmp_path)
     with_guidance(inputs, decision)
     prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
-    fields = {"completed": {}, "unavailable": {"returncode": None, "available": False},
+    fields = {"completed": {}, "timed_out": {"returncode": None, "timed_out": True},
+              "stalled": {"returncode": None, "stalled": True},
+              "unavailable": {"returncode": None, "available": False},
               "identity_mismatch": {"selected_model": "other"}, "canceled": {"interrupted": True}}
 
     def execute(spec, **_kwargs):
@@ -754,8 +760,10 @@ def test_deactivation_reports_the_host_limitation(tmp_path, case, expected):
     else:
         adapter.launch(execute, spec_for(prepared))
     drain(adapter)
-    deactivated = [event["payload"] for event in delivered(calls)
-                   if event["payload"].get("event_type") == "guidance_deactivated"]
+    events = [event["payload"] for event in delivered(calls)]
+    lifecycle_types = [payload["event_type"] for payload in events if payload.get("kind") == "lifecycle"]
+    assert lifecycle_types == ["started", expected_terminal, "guidance_deactivated"]
+    deactivated = [payload for payload in events if payload.get("event_type") == "guidance_deactivated"]
     assert len(deactivated) == 1
     assert deactivated[0]["reason"] == expected
 
@@ -959,6 +967,53 @@ def test_readiness_expiring_during_the_started_write_refuses_launch(tmp_path, mo
     assert_refused_after_started(adapter, prepared, calls)
 
 
+@pytest.mark.parametrize("when", ["during_discovery_recheck", "during_started_write"])
+def test_readiness_expiring_before_discovery_linked_launch_refuses_launch(tmp_path, monkeypatch, when):
+    now = patched_clock(monkeypatch)
+    valid_until = (now[0] + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    adapter, kwargs, calls = linked_fixture(tmp_path, valid_until=valid_until)
+    prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
+    calls_before_launch = len(calls)
+    if when == "during_discovery_recheck":
+        call = adapter.transport.call
+
+        def slow_inspect(command, payload, **options):
+            response = call(command, payload, **options)
+            if command == "inspect-discovery":
+                now[0] += timedelta(hours=2)
+            return response
+
+        adapter.transport.call = slow_inspect
+        entries = []
+        refused = None
+        try:
+            adapter.launch(counting_executor(entries), spec_for(prepared))
+        except JevDrillUnavailable as exc:
+            refused = exc
+        assert entries == [], "the discovery-linked executor launched after readiness expired"
+        assert refused is not None and "not enforceable" in str(refused)
+        assert queued_event_types(adapter) == []
+    else:
+        enqueue = adapter.queue.enqueue
+        inspect_before_started = []
+
+        def slow_enqueue(report):
+            if report["event"]["payload"].get("event_type") == "started":
+                inspect_before_started.append(
+                    any(command == "inspect-discovery" for command, _ in calls[calls_before_launch:])
+                )
+            disposition = enqueue(report)
+            if report["event"]["payload"].get("event_type") == "started":
+                now[0] += timedelta(hours=2)
+            return disposition
+
+        adapter.queue.enqueue = slow_enqueue
+        assert_refused_after_started(adapter, prepared, calls)
+        assert inspect_before_started == [True], "launch-time inspect-discovery did not run before started enqueue"
+    assert any(command == "inspect-discovery" for command, _ in calls[calls_before_launch:])
+    assert all(not entry["attempts"] for entry in adapter._ledger.values()), "a refused launch was charged"
+
+
 def test_fresh_launch_reports_started_before_dispatch(tmp_path):
     adapter, _, _, kwargs, _, _ = adapter_fixture(tmp_path)
     prepared = adapter.prepare(mode="main", dry_run=False, **kwargs)
@@ -1000,9 +1055,12 @@ def test_budget_reserves_spawn_time(tmp_path, monkeypatch):
     started_at = clock.monotonic() - 2.0  # 3000 ms remain on the parent deadline
     with pytest.raises(Captured):
         cli.call("notices", fixture("NoticeRequest"), started_at=started_at)
-    assert len(argvs) == 1
+    expected_budget_ms = 3000 - 250
+    assert argvs == [[*cli.argv, "--storage", str(cli.storage),
+                      "--remaining-budget-ms", str(expected_budget_ms), "notices"]]
+    assert argvs[0].count("--remaining-budget-ms") == 1
     budget_ms = int(argvs[0][argvs[0].index("--remaining-budget-ms") + 1])
-    assert budget_ms == 3000 - 250, "the child budget does not reserve the 250 ms spawn allowance"
+    assert budget_ms == expected_budget_ms, "the child budget does not reserve the 250 ms spawn allowance"
     deadline = started_at + 5
     assert budget_ms / 1000 + 250 / 1000 <= deadline - clock.monotonic()
     assert getattr(jevdrill_adapter, "SPAWN_ALLOWANCE_MS", None) == 250
@@ -1571,3 +1629,185 @@ def test_run_bound_report_disposition_matches_durable_queue_and_counts(tmp_path,
     else:
         assert adapter.run_report_counts(run_id) == {"queued": 3, "losses": {expected: 1}}
     assert after == before
+
+
+# --- macOS leased refusal observation (Consiliency/jevdrill#153) ----------------------------
+
+
+_FORWARD_AUDIT_EVENTS = frozenset({
+    "subprocess.Popen", "os.exec", "os.posix_spawn", "os.spawn", "os.system",
+    "os.fork", "os.forkpty", "pty.fork", "_posixsubprocess.fork_exec",
+    "_thread.start_new_thread", "_thread.start_joinable_thread",
+    "seat_test.fork_exec", "seat_test.fork", "seat_test.forkpty", "seat_test.pty_fork",
+})
+_FORWARD_AUDIT_PREFIXES = ("socket.", "http.client.", "urllib.", "ftplib.", "smtplib.")
+
+
+_MACOS_LEASE_AUDIT_CHILD = """
+import json, os, socket, subprocess, sys, threading
+from pathlib import Path
+
+FORWARD_EVENTS = set(json.loads(sys.argv[1]))
+FORWARD_PREFIXES = tuple(json.loads(sys.argv[2]))
+entry_point = sys.argv[3]
+work_dir = Path(sys.argv[4])
+
+observed = []
+mode = ["off"]  # "off" | "record" | "reject"
+
+def audit(event, args):
+    if mode[0] != "off" and (event in FORWARD_EVENTS or event.startswith(FORWARD_PREFIXES)):
+        observed.append(event)
+        if mode[0] == "reject":
+            raise RuntimeError(f"forbidden forward during leased macOS refusal: {event}")
+
+sys.addaudithook(audit)
+
+if os.name == "posix":
+    import _posixsubprocess
+    import pty
+
+    def _wrap_fork(original, event):
+        def audited(*args, **kwargs):
+            sys.audit(event, *args)
+            return original(*args, **kwargs)
+        return audited
+
+    _posixsubprocess.fork_exec = _wrap_fork(_posixsubprocess.fork_exec, "seat_test.fork_exec")
+    os.fork = _wrap_fork(os.fork, "seat_test.fork")
+    os.forkpty = _wrap_fork(os.forkpty, "seat_test.forkpty")
+    pty.fork = _wrap_fork(pty.fork, "seat_test.pty_fork")
+
+# Positive control: prove the audit observer records process, socket, and thread starts.
+mode[0] = "record"
+try:
+    subprocess.run([sys.executable, "-c", "pass"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
+            client.connect(("127.0.0.1", port))
+            conn, _ = listener.accept()
+            conn.close()
+    worker = threading.Thread(target=lambda: None)
+    worker.start()
+    worker.join(timeout=5)
+finally:
+    mode[0] = "off"
+
+control_events = sorted(set(observed))
+
+from phase_loop_runtime import launcher
+from phase_loop_runtime.launcher import LaunchSpec
+from phase_loop_runtime.models import InjectionMetadata, PromptBundle
+
+class UnusedAuthority:
+    def fileno(self):
+        raise AssertionError("lease must not be transferred")
+
+marker = work_dir / "must-not-start"
+if entry_point == "launch_with_spec":
+    child = work_dir / "codex"
+    child.write_text(
+        "#!" + sys.executable + "\\n"
+        "from pathlib import Path\\n"
+        f"Path({str(marker)!r}).touch()\\n",
+        encoding="utf-8",
+    )
+    child.chmod(0o700)
+    os.environ["PATH"] = str(work_dir) + os.pathsep + os.environ.get("PATH", "")
+    bundle = PromptBundle("workflow", "SYNTHETIC_PRIVATE_TASK", "inline")
+    command = ([sys.executable, str(child), "exec", "--json", bundle.render_context()]
+               if os.name == "nt" else ["codex", "exec", "--json", bundle.render_context()])
+    spec = LaunchSpec(
+        executor="codex", command=command, prompt_bundle=bundle,
+        injection_metadata=InjectionMetadata("codex", "inline"),
+        delivery_mode="inline", dispatch_decision=None, available=True,
+        selected_model="synthetic", selected_effort="high",
+    )
+elif entry_point in ("claude_channel", "claude_agent_view"):
+    os.environ["PATH"] = str(work_dir)
+    bundle = PromptBundle("workflow", "SYNTHETIC_PRIVATE_TASK", "inline")
+    spec = LaunchSpec(
+        executor="claude", command=[sys.executable, "-c", "raise AssertionError('must not run')"],
+        prompt_bundle=bundle, injection_metadata=InjectionMetadata("claude", "inline"),
+        delivery_mode="inline", dispatch_decision=None, available=True,
+        selected_model="claude-opus-5", selected_effort="high",
+        claude_route=entry_point, claude_sidecar_url="http://127.0.0.1:1",
+    )
+
+launcher.sys.platform = "darwin"
+observed.clear()
+mode[0] = "reject"
+try:
+    if entry_point == "launch":
+        result = launcher.launch(
+            [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+            lease_authority=UnusedAuthority(),
+        )
+    else:
+        result = launcher.launch_with_spec(
+            spec, codex_usage_capture=True, codex_input_capture=True,
+            lease_authority=UnusedAuthority(),
+        )
+finally:
+    mode[0] = "off"
+
+print(json.dumps({
+    "control_events": control_events,
+    "observed": observed,
+    "available": result.available,
+    "returncode": result.returncode,
+    "unavailable_reason": result.unavailable_reason,
+    "supervisor_receipt": result.supervisor_receipt,
+    "process_pid": result.process_pid,
+    "output": result.output,
+    "marker_exists": marker.exists(),
+}))
+"""
+
+
+@pytest.mark.parametrize("entry_point", ["launch", "launch_with_spec", "claude_channel", "claude_agent_view"])
+def test_macos_leased_launch_refusal_starts_no_process_and_opens_no_connection(
+    tmp_path, entry_point,
+):
+    from phase_loop_runtime import launcher
+
+    # Run the audit observer inside a fresh child interpreter so pytest accumulates
+    # no permanent sys.addaudithook listeners and no unrelated threads can interfere.
+    src_root = str(os.path.dirname(os.path.dirname(launcher.__file__)))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = src_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    completed = subprocess.run(
+        [
+            sys.executable, "-c", _MACOS_LEASE_AUDIT_CHILD,
+            json.dumps(sorted(_FORWARD_AUDIT_EVENTS)),
+            json.dumps(list(_FORWARD_AUDIT_PREFIXES)),
+            entry_point,
+            str(tmp_path),
+        ],
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert completed.returncode == 0, f"audit child failed ({completed.returncode}): {completed.stderr}"
+    payload = json.loads(completed.stdout)
+
+    control_events = set(payload["control_events"])
+    assert "subprocess.Popen" in control_events, f"process control missed subprocess.Popen: {control_events}"
+    assert "socket.__new__" in control_events and "socket.connect" in control_events, (
+        f"connection control missed socket events: {control_events}"
+    )
+    assert control_events & {"_thread.start_new_thread", "_thread.start_joinable_thread"}, (
+        f"thread control missed thread start event: {control_events}"
+    )
+
+    assert payload["observed"] == [], (
+        f"leased macOS refusal ({entry_point}) emitted process/connection/thread audit events: {payload['observed']}"
+    )
+    assert payload["available"] is False
+    assert payload["returncode"] == 1
+    assert payload["unavailable_reason"] == "native_macos_leased_execution_requires_linux_worker"
+    assert payload["supervisor_receipt"] is None
+    assert payload["process_pid"] is None
+    assert "Linux worker" in payload["output"]
+    assert payload["marker_exists"] is False

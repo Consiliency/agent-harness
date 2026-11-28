@@ -232,6 +232,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `compose_review_board_report` via shared `harness_mapping.validate_gemini_base_model`
   (matching `PHASE_LOOP_GEMINI_MODEL` validation before any availability or auth probes run)
   (agent-harness#1724).
+- Add the four `Consiliency/jevdrill#153` host-gap test controls in
+  `phase-loop-runtime/tests/test_jevdrill_host_gaps.py`: add `timed_out` and `stalled`
+  cases (with terminal-lifecycle assertions) to
+  `test_deactivation_reports_the_host_limitation`; add a discovery-linked readiness-expiry
+  test covering both expiry during `inspect-discovery` revalidation and during the
+  `started` write; assert the full argv and single `--remaining-budget-ms` occurrence in
+  `test_budget_reserves_spawn_time`; observe in an isolated child interpreter via
+  `sys.addaudithook` (with subprocess, loopback-socket, and thread positive controls)
+  that native macOS leased-launch refusal across `launcher.launch`,
+  `launcher.launch_with_spec`, `claude_channel`, and `claude_agent_view` starts no
+  process, opens no socket/connection, and spawns no thread beside returning the refusal;
+  enforce the native macOS leased-launch refusal before `claude_channel` and
+  `claude_agent_view` dispatch in `launch_with_spec`; and preserve runtime
+  `available=False` / `unavailable_reason` in `launcher._result_with_spec` so
+  `launch_with_spec` does not overwrite launch-time refusals with `spec.available`
+  (Consiliency/jevdrill#153).
 - Re-arm and verify `PR_SET_PDEATHSIG(SIGKILL)` inside `seat_keyring_exec.execute()` after
   the `NO_NEW_PRIVS` check and before installing the seccomp filter so owned review
   providers retain parent-death `SIGKILL` across AppArmor transitions such as Ubuntu 25.04+
