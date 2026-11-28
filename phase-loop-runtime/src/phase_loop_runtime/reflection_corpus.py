@@ -217,18 +217,21 @@ def _strip_blank_edges(lines: Sequence[str]) -> str:
 def parse_sections(text: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current: str | None = None
-    # (fence_char, fence_len, min_indent_or_None): when a fence opens inside a list
-    # item, dedenting below the item's content column implicitly closes the fence
-    # under CommonMark so an unclosed list fence cannot swallow later `##` sections.
+    # (fence_char, fence_len, min_indent_or_None): track fences across the entire
+    # document (including preamble and unknown `##` sections) so fenced examples
+    # cannot inject fake headings, while bounding list-contained fences to their
+    # enclosing list item's content column so unclosed list fences close on dedent.
     open_fence: tuple[str, int, int | None] | None = None
-    active_list_indent: int | None = None
+    list_indents: list[int] = []
     saw_blank = False
     for line in text.splitlines():
         if open_fence is not None:
             char, length, min_indent = open_fence
             if min_indent is not None and line.strip() and _indent_width(line) < min_indent:
                 open_fence = None
-                active_list_indent = None
+                cur_indent = _indent_width(line)
+                while list_indents and cur_indent < list_indents[-1]:
+                    list_indents.pop()
             else:
                 if current is not None:
                     sections[current].append(line)
@@ -242,36 +245,39 @@ def parse_sections(text: str) -> dict[str, str]:
             # An unknown second-level heading ends the current section; trailing
             # ledger/successor sections are not reflection content.
             current = key
-            active_list_indent = None
+            list_indents.clear()
             saw_blank = False
             if key is not None:
                 sections.setdefault(key, [])
             continue
         if current is not None:
             sections[current].append(line)
-            if not line.strip():
-                saw_blank = True
-                continue
-            cur_indent = _indent_width(line)
-            if active_list_indent is not None and saw_blank and cur_indent < active_list_indent:
-                active_list_indent = None
-            saw_blank = False
-            item_indent = _list_item_content_indent(line)
-            if item_indent is not None:
-                if active_list_indent is None or cur_indent < active_list_indent:
-                    active_list_indent = item_indent
-                inline_fence = _fence_open_after_list_marker(line)
-                if inline_fence is not None:
-                    open_fence = (inline_fence[0], inline_fence[1], active_list_indent)
-                continue
-            if active_list_indent is not None and cur_indent >= active_list_indent:
-                opener = _fence_open(line, min_indent=active_list_indent, max_indent=active_list_indent + 3)
-                if opener is not None:
-                    open_fence = (opener[0], opener[1], active_list_indent)
-            else:
-                opener = _fence_open(line, min_indent=0, max_indent=3)
-                if opener is not None:
-                    open_fence = (opener[0], opener[1], None)
+        if not line.strip():
+            saw_blank = True
+            continue
+        cur_indent = _indent_width(line)
+        if saw_blank:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+        saw_blank = False
+        item_indent = _list_item_content_indent(line)
+        if item_indent is not None:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+            list_indents.append(item_indent)
+            inline_fence = _fence_open_after_list_marker(line)
+            if inline_fence is not None:
+                open_fence = (inline_fence[0], inline_fence[1], list_indents[-1])
+            continue
+        active_indent = list_indents[-1] if list_indents else None
+        if active_indent is not None and cur_indent >= active_indent:
+            opener = _fence_open(line, min_indent=active_indent, max_indent=active_indent + 3)
+            if opener is not None:
+                open_fence = (opener[0], opener[1], active_indent)
+        else:
+            opener = _fence_open(line, min_indent=0, max_indent=3)
+            if opener is not None:
+                open_fence = (opener[0], opener[1], None)
     return {key: _strip_blank_edges(lines) for key, lines in sections.items()}
 
 
@@ -664,28 +670,50 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
     non_blank = [line for line in unit if line.strip()]
     if not non_blank or _unit_is_empty_fence(unit):
         return True
-    # Strip any empty fenced blocks nested inside a list item (e.g. `- ```sh\n  ``` `).
+    # Strip any empty fenced blocks nested inside list items (using the same
+    # enclosing list-item content-column bounds as `_split_improvement_units`).
     idx = 0
     residual: list[str] = []
+    list_indents: list[int] = []
     while idx < len(non_blank):
         line = non_blank[idx]
-        content_indent = _list_item_content_indent(line)
-        opener = (
-            _fence_open_after_list_marker(line)
-            if content_indent is not None
-            else _fence_open(line, min_indent=0, max_indent=3)
-        )
-        if opener is not None:
-            min_ind = content_indent if content_indent is not None else 0
-            block, next_idx = _consume_fence(non_blank, idx, opener, min_indent=content_indent)
-            char, length = opener
-            body = block[1:]
-            if body and _fence_close(body[-1], char, length, min_indent=min_ind, max_indent=min_ind + 3):
-                body = body[:-1]
-            if body:
-                return False
-            idx = next_idx
-            continue
+        cur_indent = _indent_width(line)
+        item_indent = _list_item_content_indent(line)
+        if item_indent is not None:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+            list_indents.append(item_indent)
+            opener = _fence_open_after_list_marker(line)
+            if opener is not None:
+                min_ind = list_indents[-1]
+                block, next_idx = _consume_fence(non_blank, idx, opener, min_indent=min_ind)
+                char, length = opener
+                body = block[1:]
+                if body and _fence_close(body[-1], char, length, min_indent=min_ind, max_indent=min_ind + 3):
+                    body = body[:-1]
+                if body:
+                    return False
+                idx = next_idx
+                continue
+        else:
+            active_indent = list_indents[-1] if list_indents else None
+            if active_indent is not None and cur_indent >= active_indent:
+                fence_min = active_indent
+                bound: int | None = active_indent
+            else:
+                fence_min = 0
+                bound = None
+            opener = _fence_open(line, min_indent=fence_min, max_indent=fence_min + 3)
+            if opener is not None:
+                block, next_idx = _consume_fence(non_blank, idx, opener, min_indent=bound)
+                char, length = opener
+                body = block[1:]
+                if body and _fence_close(body[-1], char, length, min_indent=fence_min, max_indent=fence_min + 3):
+                    body = body[:-1]
+                if body:
+                    return False
+                idx = next_idx
+                continue
         residual.append(line)
         idx += 1
     return all(_line_is_non_proposal_marker(line) for line in residual)

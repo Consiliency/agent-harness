@@ -1703,3 +1703,48 @@ def test_standalone_heading_above_rejected_bullet_does_not_trigger_archival(tmp_
     assert corpus.scanned[0].improvements_class == "repo_specific"
     assert corpus.scanned[0].excluded == "improvements_repo_specific"
     assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_empty_four_space_indented_fence_inside_bullet_is_non_proposal(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "- Fix agent-harness#1371.\n"
+        "- None.\n\n"
+        "    ```sh\n"
+        "    ```"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_fenced_markdown_example_in_preamble_does_not_inject_improvements_section(tmp_path):
+    root = tmp_path / "skills"
+    text = (
+        "```markdown\n"
+        "## Improvements to SKILL.md\n"
+        "- Example bullet inside preamble fence.\n"
+        "```\n\n"
+        "## Run context\n"
+        "- Timestamp: 2026-10-01T00:00:00Z\n"
+        "- Repo: repo\n"
+        "- Branch: branch\n"
+        "- Run: run1\n\n"
+        "## Improvements to SKILL.md\n"
+        "- Fix agent-harness#1371.\n"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", text)
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
