@@ -400,16 +400,21 @@ def test_owner_death_reaps_detached_descendant(tmp_path):
 def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
     marker = tmp_path / "owned-descendant"
     capability_sets = tmp_path / "owned-capabilities"
+    pdeathsig_file = tmp_path / "owned-pdeathsig"
     child_code = (
         "import os,time,pathlib; os.setsid(); "
         f"pathlib.Path({str(marker)!r}).write_text(os.readlink('/proc/self/ns/pid')+' '+str(os.getpid())); "
         "time.sleep(60)"
     )
     provider_code = (
-        "import subprocess,sys,time,pathlib; "
-        # This path never carried the setpriv --pdeathsig step (the composed prefix
-        # replaces it with the bwrap owner), so PDEATHSIG here depends on the host's
-        # bwrap. Assert the empty capability sets; owner-loss reaping is the guarantee.
+        "import ctypes,subprocess,sys,time,pathlib; "
+        # seat_keyring_exec.execute() re-arms PR_SET_PDEATHSIG(SIGKILL) after NO_NEW_PRIVS
+        # so the provider receives SIGKILL on parent death even on Ubuntu 25.04+ hosts with
+        # bwrap-userns-restrict AppArmor profiles (agent-harness#1921).
+        "libc = ctypes.CDLL(None, use_errno=True); "
+        "sig = ctypes.c_int(-1); "
+        "rc = libc.prctl(2, ctypes.byref(sig), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)); "
+        f"pathlib.Path({str(pdeathsig_file)!r}).write_text(f'{{rc}} {{sig.value}}'); "
         "caps = [line.split()[1] for line in pathlib.Path('/proc/self/status').read_text().splitlines() "
         "if line.startswith(('CapInh:', 'CapPrm:', 'CapEff:', 'CapBnd:', 'CapAmb:'))]; "
         f"pathlib.Path({str(capability_sets)!r}).write_text(' '.join(caps)); "
@@ -423,7 +428,7 @@ def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
         " token=p._EGRESS_LAUNCH_PREFIX.set(prefix)\n"
         " try:\n"
         f"  with p._seat_command_profile(['/usr/bin/python3','-c',{provider_code!r}],"
-        f"cwd=Path({str(tmp_path)!r}),env=os.environ,outputs=(Path({str(marker)!r}),Path({str(capability_sets)!r}))) as (cmd,profile):\n"
+        f"cwd=Path({str(tmp_path)!r}),env=os.environ,outputs=(Path({str(marker)!r}),Path({str(capability_sets)!r}),Path({str(pdeathsig_file)!r}))) as (cmd,profile):\n"
         f"   p.launch_owned(cmd,role=p.SeatLaunchRole.PROVIDER_REVIEW,profile=profile,cwd={str(tmp_path)!r},start_new_session=True).wait()\n"
         " finally: p._EGRESS_LAUNCH_PREFIX.reset(token)"
     )
@@ -436,6 +441,7 @@ def test_owned_launch_owner_death_reaps_detached_descendant(tmp_path):
             assert owner.poll() is None
             time.sleep(.02)
         assert marker.exists()
+        assert pdeathsig_file.read_text().split() == ["0", str(int(signal.SIGKILL))]
         caps = capability_sets.read_text().split()
         assert len(caps) == 5 and all(int(value, 16) == 0 for value in caps)
         descendant = _host_pid(marker.read_text())
