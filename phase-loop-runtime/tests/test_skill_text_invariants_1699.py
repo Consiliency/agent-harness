@@ -214,6 +214,13 @@ def _visible_prose(text: str) -> str:
             out.append("")
             continue
 
+        # Step 4a: A Setext heading underline (`===`, `---`, or single `-`) closes an active
+        # paragraph before a bare `-` can be misread as an empty list item (CommonMark §4.3).
+        if in_paragraph and _SETEXT_UNDERLINE_RE.match(rest):
+            in_paragraph = False
+            out.append(rest)
+            continue
+
         # Step 4: Open any new nested containers on this line (blockquote / list item).
         opened_container = False
         while True:
@@ -1010,6 +1017,7 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                 "fenced-nested-list-quote.md",
                 "indented-code.md",
                 "indented-after-setext.md",
+                "indented-after-single-hyphen.md",
                 "padded-list-code.md",
                 "commented-only.md",
                 "prefix-only.md",
@@ -1045,6 +1053,9 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                 "Setext Heading\n"
                 "--------------\n"
                 "    [indented-after-setext](references/indented-after-setext.md)\n\n"
+                "Single Hyphen Setext\n"
+                "-\n"
+                "    [indented-after-single-hyphen](references/indented-after-single-hyphen.md)\n\n"
                 "-     [padded-list-code](references/padded-list-code.md)\n\n"
                 "```markdown\n"
                 "[top-fence](references/fenced-top.md)\n"
@@ -1080,7 +1091,7 @@ class ShippedReferenceLinksTest(unittest.TestCase):
             )
 
             count, findings = unlinked_reference_findings_for_skill(skill, label_root=root)
-            self.assertEqual(count, 28)
+            self.assertEqual(count, 29)
             self.assertEqual(
                 findings,
                 [
@@ -1094,6 +1105,7 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                     "demo-skill/SKILL.md: shipped `references/image-inline.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/image-ref.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/indented-after-setext.md` is not linked from SKILL.md",
+                    "demo-skill/SKILL.md: shipped `references/indented-after-single-hyphen.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/indented-code.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/malformed-angle.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/orphan.md` is not linked from SKILL.md",
