@@ -355,10 +355,12 @@ def compose_review_board_report(
     """
     if target < floor:
         raise ValueError(f"target {target} is below the floor {floor}")
-    if gemini_model is None:
-        from .harness_mapping import gemini_default_model
+    from .harness_mapping import gemini_default_model, validate_gemini_base_model
 
+    if gemini_model is None:
         gemini_model = gemini_default_model(_VENDOR_SEAT["gemini"]["model"])
+    else:
+        gemini_model = validate_gemini_base_model(gemini_model, source="gemini_model")
     # A bare production composition executes availability and subscription-auth
     # probes. Bind and validate one operation before either probe can run. Injected
     # static probes remain pure configuration controls and require no authority.

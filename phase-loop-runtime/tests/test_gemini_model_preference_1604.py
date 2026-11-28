@@ -4,7 +4,10 @@ from pathlib import Path
 import pytest
 
 from phase_loop_runtime.advisor_board import Seat, render_seat_invocation
-from phase_loop_runtime.advisor_board.composition import compose_review_board_report
+from phase_loop_runtime.advisor_board.composition import (
+    compose_review_board,
+    compose_review_board_report,
+)
 from phase_loop_runtime.advisor_board.config import load_boards
 from phase_loop_runtime.advisor_board.harness_mapping import render_agy_model
 from phase_loop_runtime.advisor_board.registries import DEFAULT_MODEL_REGISTRY
@@ -176,3 +179,49 @@ def test_set_preference_moves_only_unpinned_gemini_routes(monkeypatch):
     plan_pin = _launch("plan", plan=ExecutionPolicyRule(model="gemini-4-argon"))
     assert plan_pin[plan_pin.index("--model") + 1] == "gemini-4-argon-high"
     assert resolve_profile_for_executor(action="plan", executor="codex") == codex_plan
+
+
+# agent-harness#1724: explicit gemini_model= kwargs on compose_review_board(_report)
+# must be validated against the same registered canonical Gemini base-model contract
+# as PHASE_LOOP_GEMINI_MODEL, before any availability/auth probes execute.
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "   ",
+        "not-a-model",
+        "gpt-6-astra",
+        "gemini-4-argon-high",
+        "gemini-4-neon-high",
+        "gemini-5-argon",
+        "Gemini 4 Argon",
+        "Gemini 4 Argon (High)",
+        "gemini-3.1-pro-preview",
+        123,
+    ],
+)
+@pytest.mark.parametrize("fn", [compose_review_board, compose_review_board_report])
+def test_invalid_explicit_gemini_model_fails_before_board_probes(fn, value):
+    calls: list[str] = []
+    with pytest.raises(ValueError, match="gemini_model must name a registered Gemini base model"):
+        fn(
+            is_available=lambda v: calls.append(v) or True,
+            auth_ok=lambda _: True,
+            gemini_model=value,
+        )
+    assert calls == []
+
+
+def test_valid_explicit_gemini_model_normalizes_and_ignores_invalid_env(monkeypatch):
+    monkeypatch.setenv("PHASE_LOOP_GEMINI_MODEL", "not-a-model")
+    probes = {"is_available": lambda _: True, "auth_ok": lambda _: True}
+    board = compose_review_board(**probes, gemini_model=" gemini-4-argon ")
+    seat = next(s for s in board.seats if s.harness == "gemini")
+    assert seat.model == "gemini-4-argon"
+    report = compose_review_board_report(
+        is_available=lambda v: v != "gemini",
+        auth_ok=lambda _: True,
+        gemini_model=" gemini-3.8-flash ",
+    )
+    excluded = next(s for s in report.excluded if s.vendor == "gemini")
+    assert excluded.seat_key.startswith("gemini:gemini-3.8-flash:")

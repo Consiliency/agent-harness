@@ -182,6 +182,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   generic unknown failure, or leaking private cause text into review text (scoped to
   review-leg results; qualification window launches are tracked separately in
   agent-harness#2231) (agent-harness#1908).
+- Validate explicit `gemini_model=` keyword arguments in `compose_review_board` and
+  `compose_review_board_report` via shared `harness_mapping.validate_gemini_base_model`
+  (matching `PHASE_LOOP_GEMINI_MODEL` validation before any availability or auth probes run)
+  (agent-harness#1724).
 - Re-arm and verify `PR_SET_PDEATHSIG(SIGKILL)` inside `seat_keyring_exec.execute()` after
   the `NO_NEW_PRIVS` check and before installing the seccomp filter so owned review
   providers retain parent-death `SIGKILL` across AppArmor transitions such as Ubuntu 25.04+
