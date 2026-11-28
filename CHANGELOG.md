@@ -199,6 +199,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `observed_landed` and forbid `attested_not_landed`; also distinguish non-generation
   terminal write failures (`could not be recorded`) and returned `no_effect_terminal_proven`
   evidence references on `ProviderEffectGenerationRefused` handoffs (agent-harness#1701).
+- List `grok` (`--reasoning-effort high`) as a concrete effort lane in the ABDFREEZE
+  contract (`advisor_board/CONTRACTS.md`) and name the `[sandbox]` `roots` key in the
+  `phase-loop placement reap` exit-2 documentation (`docs/phase-loop/convergence-runtime.md`)
+  (agent-harness#1619).
 - Enforce `grok_tool_surface.bridged_to(prefix, proxy)` inside `_check_context` so
   standalone `verify_launch_context` binds every issued `LaunchContext` mark directly to
   the live namespace holder and proxy pair instead of relying solely on outer board-leg

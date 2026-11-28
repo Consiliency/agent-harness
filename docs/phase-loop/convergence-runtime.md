@@ -283,8 +283,8 @@ directory, the command and the settings ship in this release.
   time. An entry is cleared only when the backend acknowledged a kill by that lease id and
   lists nothing for it; anything else is kept for the next run. It prints
   `placement reap: <n> cleared, <m> kept` and exits 1 while something is kept. A
-  malformed sandbox root setting is refused (`placement reap: refused: …`, exit 2), and
-  an I/O failure exits 1.
+  malformed `[sandbox]` `roots` setting in `advisor-boards.toml` is refused
+  (`placement reap: refused: …`, exit 2), and an I/O failure exits 1.
 - **The settings.**
 
   | Variable | Default | Meaning |
