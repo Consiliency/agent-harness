@@ -107,6 +107,7 @@ class _ParsedDoc:
     rendered_headings: list[_Heading]
     template_titles: set[str]
     toc_bullets: list[tuple[int, str]]
+    prose_lines: list[str]
 
 
 def _commonmark_lines(text: str) -> list[str]:
@@ -531,6 +532,7 @@ def _parse_document(
     rendered_headings: list[_Heading] = []
     template_titles: set[str] = set()
     toc_bullets: list[tuple[int, str]] = []
+    prose_lines: list[str] = []
 
     def _flush_markdown_template(fence: _Fence, raw_lines: list[str]) -> None:
         if not collect_templates or not fence.is_markdown:
@@ -665,6 +667,7 @@ def _parse_document(
             )
             rendered_headings.extend(nested.rendered_headings)
             template_titles.update(nested.template_titles)
+            prose_lines.extend(nested.prose_lines)
             continue
 
         # 9. ATX heading (CommonMark §4.2).
@@ -674,6 +677,8 @@ def _parse_document(
             level = len(atx_match.group(1))
             title = _strip_atx_heading(atx_match.group(2) or "")
             _record_heading(lineno, level, title)
+            if title:
+                prose_lines.append(title)
             i += 1
             continue
 
@@ -758,12 +763,14 @@ def _parse_document(
             )
             rendered_headings.extend(nested.rendered_headings)
             template_titles.update(nested.template_titles)
+            prose_lines.extend(nested.prose_lines)
             if capture_bullet:
                 toc_bullets.extend(nested.toc_bullets)
             continue
 
         # 12. Ordinary paragraph line (candidate for a following Setext underline).
         para_lines.append((lineno, line))
+        prose_lines.append(line)
         i += 1
 
     # Unclosed trailing markdown fence still parses its inner lines per CommonMark §4.5.
@@ -776,6 +783,7 @@ def _parse_document(
         rendered_headings=rendered_headings,
         template_titles=template_titles,
         toc_bullets=toc_bullets,
+        prose_lines=prose_lines,
     )
 
 
@@ -905,6 +913,334 @@ _NEEDS_FULL_SKILLS_SRC = unittest.skipUnless(
     _has_full_skills_src(),
     "lints the full canonical skills-src tree; sparse Gate A and wheel-only trees omit it",
 )
+
+
+_REFERENCE_MENTION_RE = re.compile(
+    r"(?<![\w./-])(?:\./)?(references/[\w./-]+\.md)(?!(?:[\w/-]|\.\w))`?(?:\s+from the installed `([\w-]+)` directory)?"
+)
+_ESCAPING_REF_MENTION_RE = re.compile(
+    r"(?<![\w-])((?:\.\.?/)+(?:[\w.-]+/)*references/[\w./-]+\.md)(?!(?:[\w/-]|\.\w))"
+)
+_REF_DEF_LINE_RE = re.compile(r"^ {0,3}\[([^\]]+)\]:[ \t]*(\S+)(?:[ \t]+.*)?$")
+_INSTALLED_OWNER_FOLLOW_RE = re.compile(r"\s+from the installed `([\w-]+)` directory")
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _extract_prose(text: str) -> str:
+    """Extract CommonMark prose lines outside fences, indented code, and HTML blocks/comments."""
+    doc = _parse_document(text, top_level=True, collect_templates=False)
+    return _HTML_COMMENT_RE.sub("", "\n".join(doc.prose_lines))
+
+
+def _normalize_md_link_dest(raw: str) -> str:
+    dest = raw.strip()
+    if dest.startswith("<") and ">" in dest:
+        dest = dest[1 : dest.index(">")].strip()
+    else:
+        dest = dest.split()[0] if dest else ""
+    dest = dest.split("#", 1)[0].split("?", 1)[0]
+    return dest
+
+
+def _norm_ref_label(label: str) -> str:
+    return " ".join(label.strip().split()).casefold()
+
+
+def _find_balanced_bracket_end(text: str, open_idx: int) -> int | None:
+    """Find matching `]` for `[` at `open_idx`, handling nested brackets, escapes, and code spans."""
+    n = len(text)
+    depth = 0
+    i = open_idx
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "`":
+            span = _find_matching_backticks(text, i)
+            if span is not None:
+                i = span[1]
+                continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        elif ch in ("\r", "\n") and i + 1 < n and text[i + 1] in ("\r", "\n"):
+            return None
+        i += 1
+    return None
+
+
+def _parse_inline_dest(text: str, paren_idx: int) -> tuple[str, int] | None:
+    """Parse `(dest ...)` starting at `(` at `paren_idx`; return `(raw_dest, end_after_paren)`."""
+    n = len(text)
+    i = paren_idx + 1
+    while i < n and text[i] in (" ", "\t"):
+        i += 1
+    if i >= n:
+        return None
+    if text[i] == "<":
+        close_angle = text.find(">", i + 1)
+        if close_angle == -1:
+            return None
+        close_paren = text.find(")", close_angle + 1)
+        if close_paren == -1:
+            return None
+        return text[i : close_angle + 1], close_paren + 1
+    depth = 0
+    start = i
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                return text[start:i], i + 1
+            depth -= 1
+        elif ch in ("\r", "\n"):
+            return None
+        i += 1
+    return None
+
+
+def _scan_markdown_links(prose: str) -> tuple[list[tuple[int, int, str]], str, str]:
+    """Scan inline and reference-style Markdown links (supporting nested bracket labels).
+
+    Returns ``(links, body, stripped_prose)`` where ``links`` is a list of
+    ``(span_start, span_end, raw_dest)``, ``body`` has link reference definition lines
+    blanked (for matching qualifiers immediately following each link span), and
+    ``stripped_prose`` additionally replaces every matched link span with spaces so link
+    labels and unused definitions cannot satisfy bare-prose mention checks.
+    """
+    ref_defs: dict[str, str] = {}
+    kept_lines: list[str] = []
+    for line in prose.splitlines():
+        m = _REF_DEF_LINE_RE.match(line)
+        if m:
+            key = _norm_ref_label(m.group(1))
+            if key and key not in ref_defs:
+                ref_defs[key] = m.group(2)
+            kept_lines.append("")
+        else:
+            kept_lines.append(line)
+    body = "\n".join(kept_lines)
+
+    links: list[tuple[int, int, str]] = []
+    out_parts: list[str] = []
+    n = len(body)
+    i = 0
+    last = 0
+    while i < n:
+        if body[i] == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if body[i] == "`":
+            span = _find_matching_backticks(body, i)
+            if span is not None:
+                i = span[1]
+                continue
+        if body[i] == "[":
+            span_start = i - 1 if i > 0 and body[i - 1] == "!" else i
+            close_idx = _find_balanced_bracket_end(body, i)
+            if close_idx is not None:
+                label_text = body[i + 1 : close_idx]
+                next_idx = close_idx + 1
+                matched: tuple[int, int, str] | None = None
+                if next_idx < n and body[next_idx] == "(":
+                    parsed = _parse_inline_dest(body, next_idx)
+                    if parsed is not None:
+                        raw_dest, end_idx = parsed
+                        matched = (span_start, end_idx, raw_dest)
+                elif next_idx < n and body[next_idx] == "[":
+                    ref_close = _find_balanced_bracket_end(body, next_idx)
+                    if ref_close is not None:
+                        ref_key = _norm_ref_label(body[next_idx + 1 : ref_close] or label_text)
+                        if ref_key in ref_defs:
+                            matched = (span_start, ref_close + 1, ref_defs[ref_key])
+                else:
+                    ref_key = _norm_ref_label(label_text)
+                    if ref_key in ref_defs:
+                        matched = (span_start, next_idx, ref_defs[ref_key])
+                if matched is not None:
+                    links.append(matched)
+                    out_parts.append(body[last : matched[0]])
+                    out_parts.append("\x00" * (matched[1] - matched[0]))
+                    i = matched[1]
+                    last = i
+                    continue
+        i += 1
+    out_parts.append(body[last:])
+    return links, body, "".join(out_parts)
+
+
+def _extract_skill_direct_links(skill_prose: str, default_owner: str) -> set[tuple[str, str]]:
+    """Extract direct ``references/<file>.md`` links from ``SKILL.md`` prose.
+
+    Inline and reference-style Markdown links contribute only their normalized destination
+    (never their link label, even with nested brackets or reference definitions, so
+    ``[references/b.md][a]`` and ``[**[references/b.md]**](references/a.md)`` index only
+    ``references/a.md`` while ``[B](./references/b.md)`` indexes ``references/b.md``).
+    Bare and backticked prose mentions outside link spans are extracted separately.
+    """
+    links: set[tuple[str, str]] = set()
+    md_links, body, prose_without_md_links = _scan_markdown_links(skill_prose)
+    for _start, end_idx, raw_dest in md_links:
+        dest = _normalize_md_link_dest(raw_dest)
+        if not dest or dest.startswith(("http://", "https://", "mailto:")):
+            continue
+        if dest.startswith("./"):
+            dest = dest[2:]
+        parts = Path(dest).parts
+        if (
+            len(parts) == 2
+            and parts[0] == "references"
+            and parts[1].endswith(".md")
+            and parts[1] not in ("", ".", "..")
+        ):
+            follow = _INSTALLED_OWNER_FOLLOW_RE.match(body, end_idx)
+            owner = follow.group(1) if follow else default_owner
+            links.add((f"references/{parts[1]}", owner))
+    for target, owner in _REFERENCE_MENTION_RE.findall(prose_without_md_links):
+        parts = Path(target).parts
+        if len(parts) == 2 and parts[0] == "references" and parts[1] not in ("", ".", ".."):
+            links.add((f"references/{parts[1]}", owner or default_owner))
+    return links
+
+
+def reference_mention_findings(
+    skills_src: Path, *, repo_root: Path | None = None,
+) -> tuple[int, list[str]]:
+    """agent-harness#1650: verify references/ layout, SKILL.md index completeness, and
+    sibling reference-to-reference mentions stay one level deep.
+
+    Checks across every ``skills-src/<harness>/<skill>/``:
+    1. Every file under ``references/`` lives directly under ``references/`` (no nested subdirs).
+    2. Every ``references/*.md`` file is linked directly from the owning ``SKILL.md`` outside
+       CommonMark fences, indented code blocks, and HTML blocks/comments.
+    3. Every Markdown ``.md`` link inside a ``references/*.md`` (excluding upward ``../SKILL.md``
+       and flat ``../assets/<file>`` links) resolves relative to ``references/`` (so only flat
+       ``<file>.md`` / ``./<file>.md`` targets are valid, never ``references/<file>.md`` or
+       escaping ``../...`` paths) and targets a file that exists and is linked from ``SKILL.md``.
+    4. Every prose/backtick ``references/...md`` mention outside Markdown link spans targets a
+       flat ``references/<file>.md`` that exists on disk and is linked directly from ``SKILL.md``
+       (including verifying explicit ``from the installed `<owner>` directory`` owners/files).
+    """
+    violations: list[str] = []
+    mentions_checked = 0
+
+    for harness_dir in sorted(p for p in skills_src.iterdir() if p.is_dir()):
+        for skill_dir in sorted(p for p in harness_dir.iterdir() if p.is_dir()):
+            refs_dir = skill_dir / "references"
+            if not refs_dir.is_dir():
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            rel_skill = skill_dir.relative_to(repo_root).as_posix() if repo_root else skill_dir.as_posix()
+            if not skill_md.is_file():
+                violations.append(f"{rel_skill}/references: missing owning SKILL.md")
+                continue
+
+            skill_prose = _extract_prose(skill_md.read_text(encoding="utf-8"))
+            skill_links = _extract_skill_direct_links(skill_prose, skill_dir.name)
+
+            def _target_exists(target: str, resolved_owner: str) -> bool:
+                owner_parts = Path(resolved_owner).parts
+                if (
+                    len(owner_parts) != 1
+                    or resolved_owner in ("", ".", "..")
+                    or "/" in resolved_owner
+                    or "\\" in resolved_owner
+                ):
+                    return False
+                owner_dir = harness_dir / resolved_owner
+                if owner_dir.is_symlink() or not owner_dir.is_dir():
+                    return False
+                owner_refs = owner_dir / "references"
+                if owner_refs.is_symlink() or not owner_refs.is_dir():
+                    return False
+                candidate = owner_refs / Path(target).name
+                return (not candidate.is_symlink()) and candidate.is_file()
+
+            all_ref_files = sorted(
+                p for p in refs_dir.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+            )
+            for ref_path in all_ref_files:
+                rel_ref = ref_path.relative_to(repo_root).as_posix() if repo_root else ref_path.as_posix()
+                rel_under_refs = ref_path.relative_to(refs_dir)
+                if len(rel_under_refs.parts) != 1:
+                    violations.append(f"{rel_ref}: nested file under references/ violates one-level-deep layout")
+                    continue
+                if ref_path.suffix != ".md":
+                    continue
+                own_target = f"references/{ref_path.name}"
+                if (own_target, skill_dir.name) not in skill_links:
+                    violations.append(f"{rel_ref}: unindexed reference file is not linked directly from SKILL.md")
+
+                ref_prose = _extract_prose(ref_path.read_text(encoding="utf-8"))
+
+                # Check local Markdown inline & reference links inside the reference file (relative to references/).
+                ref_md_links, _ref_body, ref_without_md_links = _scan_markdown_links(ref_prose)
+                for _start, _end, raw_dest in ref_md_links:
+                    dest = _normalize_md_link_dest(raw_dest)
+                    if not dest or dest.startswith(("http://", "https://", "mailto:")):
+                        continue
+                    if dest == "../SKILL.md":
+                        continue
+                    dest_parts = Path(dest).parts
+                    if (
+                        len(dest_parts) == 3
+                        and dest_parts[0] == ".."
+                        and dest_parts[1] == "assets"
+                        and dest_parts[2] not in ("", ".", "..")
+                    ):
+                        continue
+                    if not dest.endswith(".md"):
+                        continue
+                    mentions_checked += 1
+                    norm_dest = dest[2:] if dest.startswith("./") else dest
+                    norm_parts = Path(norm_dest).parts
+                    if (
+                        len(norm_parts) == 1
+                        and norm_parts[0] not in ("", ".", "..")
+                        and "/" not in norm_dest
+                        and "\\" not in norm_dest
+                    ):
+                        target = f"references/{norm_parts[0]}"
+                    else:
+                        violations.append(f"{rel_ref} has non-flat/wrong-directory Markdown link {dest!r}")
+                        continue
+                    if (target, skill_dir.name) not in skill_links:
+                        violations.append(
+                            f"{rel_ref} links {dest!r} ({target}) which is not linked directly from SKILL.md"
+                        )
+                    elif not _target_exists(target, skill_dir.name):
+                        violations.append(f"{rel_ref} links {dest!r} ({target}) which does not exist")
+
+                # Check prose / backtick `references/...md` mentions outside Markdown link spans.
+                for esc in sorted(set(_ESCAPING_REF_MENTION_RE.findall(ref_without_md_links))):
+                    mentions_checked += 1
+                    violations.append(f"{rel_ref} mentions escaping reference path {esc!r}")
+
+                for target, owner in sorted(set(_REFERENCE_MENTION_RE.findall(ref_without_md_links))):
+                    mentions_checked += 1
+                    resolved_owner = owner or skill_dir.name
+                    parts = Path(target).parts
+                    if len(parts) != 2 or parts[0] != "references" or parts[1] in ("", ".", ".."):
+                        violations.append(f"{rel_ref} mentions non-flat reference path {target!r}")
+                        continue
+                    if (target, resolved_owner) not in skill_links:
+                        violations.append(
+                            f"{rel_ref} mentions {target} (owner {resolved_owner}) which is not linked directly from SKILL.md"
+                        )
+                    elif not _target_exists(target, resolved_owner):
+                        violations.append(
+                            f"{rel_ref} mentions {target} (owner {resolved_owner}) which does not exist"
+                        )
+    return mentions_checked, violations
 
 
 class SkillReferenceTocLintTest(unittest.TestCase):
@@ -1348,3 +1684,114 @@ class SkillReferenceTocLintTest(unittest.TestCase):
             ref.parent.mkdir(parents=True)
             ref.write_text("# Guide\n", encoding="utf-8")
             self.assertEqual(canonical_reference_files(Path(td)), [ref])
+
+    def test_reference_to_reference_mentions_are_directly_linked_from_skill_md(self) -> None:
+        """agent-harness#1650: sibling reference-to-reference mentions are permitted only
+        when the target reference is already linked directly from the owning SKILL.md
+        (one level deep — no hidden two-hop reference chains)."""
+        if not _has_full_skills_src(REPO):
+            self.skipTest("full skills-src checkout not present")
+        mentions_checked, violations = reference_mention_findings(SKILLS_SRC, repo_root=REPO)
+        self.assertGreater(mentions_checked, 0, "expected at least one sibling reference mention")
+        self.assertEqual(violations, [], "\n".join(violations))
+
+    def test_reference_to_reference_one_level_deep_controls(self) -> None:
+        """agent-harness#1650: positive and negative controls for reference_mention_findings."""
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "skills-src"
+            skill = src / "claude" / "claude-sample"
+            refs = skill / "references"
+            sibling = src / "claude" / "claude-sibling"
+            (sibling / "references").mkdir(parents=True)
+            (sibling / "SKILL.md").write_text("# Sibling\nRead `references/shared.md`.\n", encoding="utf-8")
+            (sibling / "references" / "shared.md").write_text("# Shared\n", encoding="utf-8")
+            refs.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "# Sample\n"
+                "Read `references/b.md` [A](references/a.md) [Shared](references/shared.md) "
+                "from the installed `claude-sibling` directory.\n",
+                encoding="utf-8",
+            )
+            (refs / "a.md").write_text(
+                "# A\nSee `references/b.md`, [B](b.md#top), [up](../SKILL.md#sec), and "
+                "`references/shared.md` from the installed `claude-sibling` directory.\n",
+                encoding="utf-8",
+            )
+            (refs / "b.md").write_text("# B\n", encoding="utf-8")
+            checked, violations = reference_mention_findings(src, repo_root=Path(td))
+            self.assertGreaterEqual(checked, 3)
+            self.assertEqual(violations, [])
+
+            # Relative two-hop [Hidden](hidden.md) and escaping ../other/references/b.md both fail.
+            (refs / "a.md").write_text(
+                "# A\nSee [Hidden](hidden.md) and [Other](../other/references/b.md) and `references/sub/nested.md`.\n",
+                encoding="utf-8",
+            )
+            checked, violations = reference_mention_findings(src, repo_root=Path(td))
+            self.assertGreaterEqual(checked, 3)
+            self.assertTrue(any("hidden.md" in v for v in violations), violations)
+            self.assertTrue(any("../other/references/b.md" in v for v in violations), violations)
+            self.assertTrue(any("references/sub/nested.md" in v for v in violations), violations)
+
+            # Unindexed file and unmentioned nested file under references/ both fail.
+            (refs / "a.md").write_text("# A\n", encoding="utf-8")
+            (refs / "orphan.md").write_text("# Orphan\n", encoding="utf-8")
+            (refs / "sub").mkdir()
+            (refs / "sub" / "unmentioned.md").write_text("# Deep\n", encoding="utf-8")
+            _, violations = reference_mention_findings(src, repo_root=Path(td))
+            self.assertTrue(any("orphan.md" in v and "unindexed" in v for v in violations), violations)
+            self.assertTrue(any("sub/unmentioned.md" in v and "nested" in v for v in violations), violations)
+            (refs / "orphan.md").unlink()
+            (refs / "sub" / "unmentioned.md").unlink()
+            (refs / "sub").rmdir()
+
+            # HTML comments, top-level fences, blockquoted fences, and list-item fences in SKILL.md
+            # cannot satisfy the direct-link index; a fence opener inside an HTML comment must not
+            # hide real links that follow.
+            (skill / "SKILL.md").write_text(
+                "# Sample\n"
+                "<!--\n```sh\n-->\n"
+                "Read [A](./references/a.md).\n"
+                "<!-- references/b.md -->\n"
+                "```sh\ncat references/b.md\n```\n"
+                "> ```sh\n> cat references/b.md\n> ```\n"
+                "- ```sh\n  cat references/b.md\n  ```\n",
+                encoding="utf-8",
+            )
+            _, violations = reference_mention_findings(src, repo_root=Path(td))
+            self.assertEqual(len(violations), 1, violations)
+            self.assertTrue("b.md" in violations[0] and "unindexed" in violations[0], violations)
+
+            # Link labels in SKILL.md (inline, nested brackets, or reference-style) cannot index
+            # an unlinked target; inside references/a.md, [B](references/b.md) resolves to
+            # references/references/b.md and fails.
+            for sneaky_skill in (
+                "# Sample\nRead [references/b.md](references/a.md).\n",
+                "# Sample\nRead [**[references/b.md]**](references/a.md).\n",
+                "# Sample\nRead [references/b.md][a].\n\n[a]: references/a.md\n",
+            ):
+                with self.subTest(sneaky_skill=sneaky_skill):
+                    (skill / "SKILL.md").write_text(sneaky_skill, encoding="utf-8")
+                    (refs / "a.md").write_text("# A\nSee [B](b.md).\n", encoding="utf-8")
+                    _, violations = reference_mention_findings(src, repo_root=Path(td))
+                    self.assertTrue(any("b.md" in v and "unindexed" in v for v in violations), violations)
+                    self.assertTrue(any("links 'b.md'" in v and "not linked directly" in v for v in violations), violations)
+
+            (skill / "SKILL.md").write_text("# Sample\nRead [A](references/a.md) and [B](references/b.md).\n", encoding="utf-8")
+            (refs / "a.md").write_text("# A\nSee [B](references/b.md).\n", encoding="utf-8")
+            _, violations = reference_mention_findings(src, repo_root=Path(td))
+            self.assertTrue(any("references/b.md" in v and "wrong-directory" in v for v in violations), violations)
+
+            # Explicit installed-owner mention fails when the owner/target does not exist.
+            (skill / "SKILL.md").write_text(
+                "# Sample\n"
+                "Read `references/a.md`, `references/b.md`, and "
+                "`references/ghost.md` from the installed `claude-missing` directory.\n",
+                encoding="utf-8",
+            )
+            (refs / "a.md").write_text(
+                "# A\nSee `references/ghost.md` from the installed `claude-missing` directory.\n",
+                encoding="utf-8",
+            )
+            _, violations = reference_mention_findings(src, repo_root=Path(td))
+            self.assertTrue(any("claude-missing" in v and "does not exist" in v for v in violations), violations)

@@ -17,6 +17,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `launch.json` and handoffs and is never compared across upgrades, so nothing breaks;
   operators diffing launch digests across an upgrade that crosses either hashing change
   should expect every skill-bearing bundle digest to change.
+- **Per-harness `references/` placement for `phase-roadmap-builder`
+  (agent-harness#1572; agent-harness#1650).** Since `v0.7.27` (agent-harness#1572),
+  `build_bundle` places `references/` files per harness based on which `SKILL.md` links
+  them, so `codex`, `gemini`, and `opencode` `phase-roadmap-builder` installs no longer
+  ship Claude's unlinked `references/roadmap-template.md` and
+  `references/parallelization-heuristics.md` (those files ship only under
+  `claude-phase-roadmap-builder/references/`). Also document the reconciled
+  one-level-deep rule for sibling reference cross-mentions in
+  `docs/phase-loop/skills-canonical-source.md` and enforce it in
+  `test_skill_reference_toc_lint_1688.py` (pre-existing roadmap-builder TOCs were already
+  added in agent-harness#1662 and mechanically enforced under agent-harness#1688).
 
 ### Added
 
