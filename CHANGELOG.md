@@ -20,6 +20,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- Exercise the canonical repository manifest validation
+  (`test_legible_roadmap_contract.py::test_repository_manifest_exactly_covers_execution_scope`)
+  against the checked-out repository in `.github/workflows/test.yml` (with an isolated
+  JUnit report and positive/negative controls in `test_ci_canonical_manifest_1730.py`,
+  while preserving the standalone-from-wheel clean-room run) (agent-harness#1730).
 - Run the 12 repo-local LEGIBLE assumption-probe live arms (`repo_constant`,
   `roadmap_predicate`, `ast_call_predicate`, and `manifest_behavior`) directly from the
   source checkout by explicit node ID in `.github/workflows/test.yml` (excluding
