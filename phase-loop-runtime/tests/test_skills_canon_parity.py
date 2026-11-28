@@ -411,12 +411,57 @@ class SkillsCanonParityTest(unittest.TestCase):
                 "test bug: the injected literal must not match a variant stem",
             )
 
+    @staticmethod
+    def _linked_file_ships_directly(packaged: Path, skill_name: str, rel: str, owner: str) -> tuple[bool, str]:
+        """agent-harness#1646: accept only regular files resolving directly under `<owner>/{references,assets}/`."""
+        resolved_owner = owner or skill_name
+        owner_parts = Path(resolved_owner).parts
+        if (
+            len(owner_parts) != 1
+            or resolved_owner in ("", ".", "..")
+            or "/" in resolved_owner
+            or "\\" in resolved_owner
+        ):
+            return False, f"{skill_name} link {rel!r} names invalid owner directory {resolved_owner!r}"
+        parts = Path(rel).parts
+        if len(parts) != 2 or parts[0] not in ("references", "assets") or parts[1] in ("", ".", ".."):
+            return (
+                False,
+                f"{skill_name} link {rel!r} does not resolve directly under {resolved_owner}/references/ or assets/",
+            )
+        subdir, filename = parts
+        packaged_real = packaged.resolve()
+        owner_path = packaged / resolved_owner
+        if owner_path.is_symlink() or not owner_path.is_dir():
+            return False, f"{skill_name} owner directory skills_bundle/{resolved_owner} is missing or a symlink"
+        if owner_path.resolve().parent != packaged_real:
+            return False, f"{skill_name} owner directory {resolved_owner!r} escapes {packaged_real}"
+        category_path = owner_path / subdir
+        if category_path.is_symlink() or not category_path.is_dir():
+            return False, f"{skill_name} category directory skills_bundle/{resolved_owner}/{subdir} is missing or a symlink"
+        expected_dir = packaged_real / resolved_owner / subdir
+        if category_path.resolve() != expected_dir:
+            return False, f"{skill_name} category directory {category_path} escapes {expected_dir}"
+        candidate = category_path / filename
+        if candidate.is_symlink():
+            return False, f"{skill_name} link {rel!r} in skills_bundle/{resolved_owner} is a symlink"
+        if not candidate.is_file():
+            return False, f"{skill_name} links {rel} but skills_bundle/{resolved_owner} does not ship it"
+        resolved = candidate.resolve()
+        if resolved.parent != expected_dir:
+            return (
+                False,
+                f"{skill_name} link {rel!r} resolves to {resolved}, outside direct {expected_dir}",
+            )
+        return True, ""
+
     def test_every_linked_reference_and_asset_ships_with_its_harness(self):
-        """agent-harness#1358: a SKILL.md that links `references/<file>` or
-        `assets/<file>` must find that file in its own packaged skill dir, for every
-        harness. Progressive disclosure is only safe if the linked file travels.
-        A link followed by "from the installed `<skill>` directory" resolves in that
-        sibling skill instead (execute-phase reads execute-detailed's pr-writing.md)."""
+        """agent-harness#1358 / agent-harness#1646: a SKILL.md that links `references/<file>`
+        or `assets/<file>` must resolve directly under its packaged skill dir's `references/`
+        or `assets/`, for every harness. Progressive disclosure is only safe if the linked
+        file travels directly under that directory without traversal or symlink escape.
+        A link followed by "from the installed `<skill>` directory" resolves directly under
+        that sibling skill's directory instead (execute-phase reads execute-detailed's pr-writing.md)."""
         self._require_sources()
         import re
 
@@ -429,13 +474,58 @@ class SkillsCanonParityTest(unittest.TestCase):
             for skill_md in sorted(root.glob("*/SKILL.md")):
                 for rel, owner in sorted(set(link.findall(skill_md.read_text(encoding="utf-8")))):
                     checked += 1
-                    owner = owner or skill_md.parent.name
                     with self.subTest(skill=skill_md.parent.name, link=rel):
-                        self.assertTrue(
-                            (packaged / owner / rel).is_file(),
-                            f"{skill_md.parent.name} links {rel} but skills_bundle/{owner} does not ship it",
+                        ok, reason = self._linked_file_ships_directly(
+                            packaged, skill_md.parent.name, rel, owner
                         )
+                        self.assertTrue(ok, reason)
         self.assertGreater(checked, 0, "no references/ or assets/ links found; the link regex is broken")
+
+    def test_linked_reference_ship_check_rejects_traversal_nesting_and_symlinks(self):
+        """agent-harness#1646: negative controls for the direct-under-references/ link check."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            packaged = root / "skills_bundle"
+            outside = root / "outside"
+            (outside / "references").mkdir(parents=True)
+            (outside / "references" / "escaped.md").write_text("# escaped\n", encoding="utf-8")
+
+            active = packaged / "claude-plan-phase"
+            sibling = packaged / "claude-other-skill"
+            sym_cat_skill = packaged / "claude-symlink-refs"
+            (active / "references" / "nested").mkdir(parents=True)
+            (sibling / "references").mkdir(parents=True)
+            (sym_cat_skill / "assets").mkdir(parents=True)
+            (active / "SKILL.md").write_text("# active\n", encoding="utf-8")
+            (active / "references" / "ok.md").write_text("# ok\n", encoding="utf-8")
+            (active / "references" / "nested" / "deep.md").write_text("# deep\n", encoding="utf-8")
+            (sibling / "references" / "other.md").write_text("# other\n", encoding="utf-8")
+            (active / "references" / "symlink-escape.md").symlink_to(active / "SKILL.md")
+            # Symlinked category directory (`references/` -> `assets/`) and symlinked owner dir.
+            (sym_cat_skill / "assets" / "trick.md").write_text("# trick\n", encoding="utf-8")
+            (sym_cat_skill / "references").symlink_to(sym_cat_skill / "assets", target_is_directory=True)
+            (packaged / "claude-symlink-owner").symlink_to(outside, target_is_directory=True)
+
+            ok, reason = self._linked_file_ships_directly(
+                packaged, "claude-plan-phase", "references/ok.md", ""
+            )
+            self.assertTrue(ok, reason)
+
+            for bad_skill, bad_rel, bad_owner in (
+                ("claude-plan-phase", "references/../SKILL.md", ""),
+                ("claude-plan-phase", "references/../../claude-other-skill/references/other.md", ""),
+                ("claude-plan-phase", "references/nested/deep.md", ""),
+                ("claude-plan-phase", "references/symlink-escape.md", ""),
+                ("claude-plan-phase", "references/missing.md", ""),
+                ("claude-symlink-refs", "references/trick.md", ""),
+                ("claude-symlink-owner", "references/escaped.md", ""),
+                ("claude-plan-phase", "references/escaped.md", "../outside"),
+            ):
+                with self.subTest(skill=bad_skill, rel=bad_rel, owner=bad_owner):
+                    ok, _ = self._linked_file_ships_directly(
+                        packaged, bad_skill, bad_rel, bad_owner
+                    )
+                    self.assertFalse(ok, f"expected ({bad_skill!r}, {bad_rel!r}, {bad_owner!r}) to be rejected")
 
     def test_harness_only_references_do_not_leak_into_other_harnesses(self):
         """A reference only Claude's SKILL.md links ships in the claude overlay, not

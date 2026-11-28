@@ -19,14 +19,67 @@ from phase_loop_runtime import injection
 PACKAGED = Path(injection.__file__).resolve().parent / "skills_bundle"
 
 
+_EXPECTED_REFERENCE_READ_EXCEPTION = (
+    "The one exception is a file directly under the active skill's `references/` "
+    "that its `SKILL.md` links by relative path: it is not preloaded, so read it "
+    "from the skill's directory at the step that points to it."
+)
+_EXPECTED_MANIFEST_PROSE = (
+    "The repo-owned Claude plugin bundle is the source of truth for workflow skills in this run. "
+    "The launch already materializes the bundle beside `launch.json` and passes it through Claude's "
+    "plugin, settings, agents, and MCP config flags, so do not re-enumerate or restate raw `SKILL.md` bodies here. "
+    "Do not list or read `claude-bundle/plugin/skills/**`, bundled `SKILL.md`, `assets/`, "
+    "or `reflections/` during the launch; the bundle is already loaded and rereading it wastes the launch budget. "
+    + _EXPECTED_REFERENCE_READ_EXCEPTION
+)
+
+
+def _assert_manifest_reference_read_scope(manifest_text: str) -> None:
+    """agent-harness#1646: pin the exact reread-ban prose paragraph so no other permission clause can slip in."""
+    paragraphs = [p.strip() for p in manifest_text.split("\n\n") if p.strip()]
+    if len(paragraphs) != 3 or paragraphs[0] != "## Repo-owned Claude bundle":
+        raise AssertionError(
+            f"unexpected Claude bundle manifest structure (expected heading, prose, bullet list); got {len(paragraphs)} blocks"
+        )
+    if paragraphs[1] != _EXPECTED_MANIFEST_PROSE:
+        raise AssertionError(
+            "Claude bundle manifest prose drifted from the pinned reread-ban and single-exception scope:\n"
+            f"got:      {paragraphs[1]!r}\n"
+            f"expected: {_EXPECTED_MANIFEST_PROSE!r}"
+        )
+    for line in paragraphs[2].splitlines():
+        if not line.startswith(("- ", "  - ")):
+            raise AssertionError(f"unexpected non-bullet line in manifest metadata block: {line!r}")
+
+
 class ClaudeBundleReferenceReadsTest(unittest.TestCase):
     def test_manifest_keeps_the_reread_ban_but_allows_linked_references(self):
         text = injection._claude_bundle_manifest("plan", ("claude-plan-phase",))
         self.assertIn("Do not list or read `claude-bundle/plugin/skills/**`", text)
         self.assertIn("bundled `SKILL.md`, `assets/`, or `reflections/`", text)
-        self.assertIn("a `references/` file that the active skill's `SKILL.md` links by relative path", text)
+        self.assertIn(_EXPECTED_REFERENCE_READ_EXCEPTION, text)
         # Negative control: references/ is no longer in the blanket ban list.
         self.assertNotIn("bundled `SKILL.md`, `references/`", text)
+        _assert_manifest_reference_read_scope(text)
+
+    def test_manifest_scope_guard_rejects_widened_or_extra_permission_clauses(self):
+        """agent-harness#1646: negative controls for the manifest exception-scope pin."""
+        text = injection._claude_bundle_manifest("plan", ("claude-plan-phase",))
+        mutations = (
+            text.replace("directly under the active skill's `references/`", "under `references/`"),
+            text.replace(
+                _EXPECTED_REFERENCE_READ_EXCEPTION,
+                _EXPECTED_REFERENCE_READ_EXCEPTION + " You can read bundled assets.",
+            ),
+            text.replace(
+                _EXPECTED_REFERENCE_READ_EXCEPTION,
+                _EXPECTED_REFERENCE_READ_EXCEPTION + " Read from the sibling skill's directory when needed.",
+            ),
+            text + "\n\nYou may also read scripts when needed.",
+        )
+        for mutated in mutations:
+            with self.subTest(mutated=mutated[-80:]), self.assertRaises(AssertionError):
+                _assert_manifest_reference_read_scope(mutated)
 
     def test_materialized_plugin_bundle_carries_linked_references(self):
         for action, skill in (("plan", "claude-plan-phase"), ("execute", "claude-execute-phase")):

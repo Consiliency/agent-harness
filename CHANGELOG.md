@@ -97,6 +97,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   sealed inline prompt instead of tool-capable sandbox instructions, while jailed Codex
   review seats (`jailed=True`) and non-brokered Codex research seats (`brokered=False`)
   retain full sandbox capability (agent-harness#1930).
+- Tighten the Claude bundle manifest's `references/` read exception wording in
+  `injection._claude_bundle_manifest` to `"directly under the active skill's \`references/\`"`,
+  pin the exact exception sentence with no extra permission clauses in
+  `test_claude_bundle_reference_reads.py` and `test_phase_loop_injection.py`, and tighten
+  `test_skills_canon_parity.py`'s links-ship check to require files resolving directly under
+  `references/`/`assets/` without traversal, nesting, or symlinks (with negative controls)
+  (agent-harness#1646).
 - Teach `phase-loop-closeout-audit` (`closeout_classifier.main`/`console_main`) to print
   usage and exit 0 on `-h`/`--help` without auditing the working directory or running
   declared producers (while still raising with `CRASH_ACTION` on malformed dangling
