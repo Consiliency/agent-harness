@@ -152,12 +152,20 @@ def test_malformed_or_truncated_stdout_never_opens_auth_gate_on_first_or_retry_a
         '{"loggedIn": true, "extra": Infinity}',
         '{"loggedIn": false, "loggedIn": true}',
         '{"loggedIn": true, "nested": {"k": 1, "k": 2}}',
+        '\x0b{"loggedIn": true}',
+        '\xa0{"loggedIn": true}',
+        '{"loggedIn": true}\x0c',
+        '\ufeff{"loggedIn": true}',
+        "[" * 5000 + "]" * 5000,
+        '{"a":' * 2000 + "1" + "}" * 2000,
+        '{"loggedIn": true, "pad": "' + ("x" * 70000) + '"}',
     ],
 )
 def test_nonstandard_constants_and_duplicate_keys_never_open_auth_gate(
     tmp_path, monkeypatch, payload,
 ):
-    """Round 2 P1 regression: reject NaN/Infinity constants and duplicate JSON keys on
+    """Round 2 & 3 P1/P2 regression: reject NaN/Infinity constants, duplicate JSON keys,
+    non-JSON whitespace, excessive nesting (`RecursionError`), and oversized stdout on
     both the first attempt and a retry attempt, never emitting `recovered_on_retry`."""
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))

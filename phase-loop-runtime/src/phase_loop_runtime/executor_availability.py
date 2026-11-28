@@ -158,21 +158,21 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
 def _claude_status_fields(stdout: str) -> tuple[bool | None, str | None]:
     """Closed boolean ``loggedIn`` and allowlisted ``authMethod`` from ``claude auth status``.
 
-    Requires a strict RFC 8259 JSON object (rejecting ``NaN``/``Infinity`` constants and
-    duplicate object keys) with a strict boolean ``loggedIn`` field; malformed, ambiguous,
-    or truncated JSON never opens the gate, and email, orgId, orgName, tokens, and raw
-    stdout are never returned (agent-harness#1585).
+    Requires a strict RFC 8259 JSON object (enforcing JSON whitespace, rejecting
+    ``NaN``/``Infinity`` constants, duplicate object keys, and excessive nesting) with a
+    strict boolean ``loggedIn`` field; malformed, ambiguous, or truncated JSON never opens
+    the gate, and email, orgId, orgName, tokens, and raw stdout are never returned
+    (agent-harness#1585).
     """
-    text = (stdout or "").strip()
-    if not text:
+    if not isinstance(stdout, str) or not stdout or len(stdout) > 65536:
         return None, None
     try:
         payload = json.loads(
-            text,
+            stdout,
             parse_constant=_reject_json_constant,
             object_pairs_hook=_reject_duplicate_json_keys,
         )
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return None, None
     if not isinstance(payload, dict):
         return None, None
