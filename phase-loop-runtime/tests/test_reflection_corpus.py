@@ -1976,9 +1976,88 @@ def test_aggregator_prompt_cites_deferred_ids_and_accurate_quality_filter(prompt
     text = prompt.read_text(encoding="utf-8")
     assert "supporting reflection manifest ids" in text
     assert "only themes were deferred" in text
+    assert "Any concern below these thresholds" in text
     assert "while `What didn't` keeps ledger-labelled observations" in text
     assert "repeated single-repo boilerplate lines stripped per bare skill" in text
+    assert "structured reflections with no usable friction or proposal" in text
+    assert "capped per harness-skill/repo/branch" in text
     assert "`<json>`" in text
+    rejected_section = text.split("\n## Rejected themes\n", 1)[1].split("\n## Speculative", 1)[0]
+    rejected_line = next(line for line in rejected_section.splitlines() if "failed a rejecting gate" in line)
+    assert "Themes deferred by `convergence` or `existing-skill-first` go under `## Speculative / low-confidence notes`" in rejected_line
+
+
+def test_ledger_only_near_duplicate_of_empty_reflection_is_not_archived(tmp_path):
+    # agent-harness#1655: a same-run reflection adding a ledger-only Improvements line must
+    # not be collapsed into an earlier empty-Improvements copy and archived as duplicate_of.
+    root_a = tmp_path / "a-root"
+    root_b = tmp_path / "b-root"
+    shared_worked = "\n".join(f"- Shared worked observation {i}." for i in range(4))
+    empty_path = put(root_a, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=shared_worked, didnt="", improvements="",
+    ))
+    ledger_path = put(root_b, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=shared_worked, didnt="", improvements="- Hosted CI: passed.",
+    ))
+
+    corpus, boilerplate = rc.collect([root_a, root_b], min_reflections=1)
+    by_path = {r.path: r for r in corpus.scanned}
+    consumed = set(rc.manifest(corpus, boilerplate)["reflections_consumed"])
+
+    assert by_path[empty_path].excluded == "no_friction_or_proposal"
+    assert by_path[ledger_path].improvements_class == "ledger_only"
+    assert by_path[ledger_path].excluded == "improvements_ledger_only"
+    assert str(empty_path) in consumed
+    assert str(ledger_path) not in consumed
+
+
+def test_indented_fenced_ledger_block_is_not_admitted_as_proposal(tmp_path):
+    # agent-harness#1655: a 4-space-indented code fence wrapping only ledger lines must not
+    # leave an unclosed fence opener behind as an agnostic proposal.
+    root = tmp_path / "skills"
+    indented_block = "    ```text\n    - Hosted CI: passed.\n    ```"
+    path = put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=indented_block,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "ledger_only"
+    assert corpus.scanned[0].excluded == "improvements_ledger_only"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+    assert path.exists()
+
+
+def test_archive_exclude_preserves_consumed_duplicate_of_copies(tmp_path, capsys):
+    # agent-harness#1656: excluding a cited kept reflection (e.g. deferred-only or failed)
+    # must also keep its consumed duplicate_of twin(s) in place.
+    root_a = tmp_path / "a-root"
+    root_b = tmp_path / "b-root"
+    body = reflection(didnt="Recurring friction that was deferred.")
+    kept = put(root_a, "codex-plan-phase", "repo", "b1", "run1", body)
+    dup = put(root_b, "codex-plan-phase", "repo", "b1", "run1", body)
+    other = put(root_a, "codex-plan-phase", "repo", "b2", "run2", reflection(didnt="Applied friction."))
+
+    corpus, boilerplate = rc.collect([root_a, root_b], min_reflections=2)
+    by_path = {r.path: r for r in corpus.scanned}
+    assert by_path[kept].excluded is None
+    assert (by_path[dup].excluded or "").startswith("duplicate_of:")
+
+    out = rc.write_corpus(corpus, boilerplate, tmp_path / "out")
+    rc_exit = rc.main([
+        "archive",
+        "--manifest", str(out["manifest"]),
+        "--root", str(root_a),
+        "--root", str(root_b),
+        "--exclude", str(kept),
+    ])
+    summary = json.loads(capsys.readouterr().out)
+
+    assert rc_exit == 0
+    assert summary == {"dry_run": False, "archived": 1, "left_in_place": 2}
+    assert kept.exists() and dup.exists()
+    assert not other.exists() and (other.parent / "archive" / other.name).exists()
 
 
 def test_legacy_flat_copies_across_two_roots_are_not_deduplicated(tmp_path):
@@ -2028,4 +2107,4 @@ def test_mark_duplicates_docstring_documents_cross_root_dedup():
     # agent-harness#1658
     doc = rc._mark_duplicates.__doc__ or ""
     assert "cross-root" in doc
-    assert "repo_hash" in doc and "branch_slug" in doc
+    assert "(skill, repo_hash, branch_slug, run_id)" in doc

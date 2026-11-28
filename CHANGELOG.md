@@ -121,15 +121,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   sibling proposals still reach the aggregator while pure repo-specific sections without
   friction remain excluded and unarchived (agent-harness#1654).
 - Assign ledger-only `Improvements to SKILL.md` reflections without friction a
-  non-archivable `improvements_ledger_only` exclusion reason in `reflection_corpus`
-  (agent-harness#1655); instruct all planners, `aggregator_prompt.md`, and all
-  `*-skill-editor` skills to cite supporting reflection IDs on deferred
+  non-archivable `improvements_ledger_only` exclusion reason in `reflection_corpus` and
+  avoid collapsing reflections with uncovered `Improvements` content into empty
+  near-duplicates (agent-harness#1655); instruct all planners, `aggregator_prompt.md`,
+  and all `*-skill-editor` skills to cite supporting reflection IDs on deferred
   `## Speculative / low-confidence notes` and pass `--exclude` so reflections whose only
-  themes were deferred (by the convergence gate or rule 1) are not archived
-  (agent-harness#1656); and pin the two-root legacy-identity dedup guard and run token's
-  branch component in `test_reflection_corpus.py`, note cross-root dedup on
-  `_mark_duplicates`, clarify `aggregator_prompt.md`'s quality-filter summary, and fix the
-  `agent-harness#1588` CHANGELOG rejected-themes routing bullet (agent-harness#1658).
+  themes were deferred (by rule 1, `convergence`, or `existing-skill-first`) — along with
+  their consumed `duplicate_of` copies, preserved automatically by `archive --exclude` —
+  are not archived (agent-harness#1656); and pin the two-root legacy-identity dedup guard
+  and run token's branch component in `test_reflection_corpus.py`, note cross-root dedup on
+  `_mark_duplicates`, clarify `aggregator_prompt.md`'s quality-filter summary and gate
+  routing, and fix the `agent-harness#1588` CHANGELOG rejected-themes routing bullet
+  (agent-harness#1658).
 - Add `"codex"` to `panel_invoker._SANDBOX_INCAPABLE_BROKERED_LEGS` so the retained
   sealed non-jailed brokered Codex route (`_brokered_codex_command`, sealed in
   agent-harness#1916) no longer reports `seat_filesystem_unconfined` in launch modes,

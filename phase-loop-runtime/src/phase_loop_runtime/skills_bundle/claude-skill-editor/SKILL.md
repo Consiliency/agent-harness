@@ -126,7 +126,7 @@ Per the plan's archival directive:
      --exclude <path-cited-by-a-failed-or-deferred-only-reflection> ...
    ```
    Run it with `--dry-run` first and check the count. If it refuses, it has moved nothing: drop any `--exclude` for a path the manifest did not consume (that reflection already stays in place), fix any other cause it names, and rerun.
-3. Excluded paths stay in place so the next cycle can reconsider them and accumulate independent support.
+3. Excluded paths (and any consumed `duplicate_of` copies of those reflections, which `archive --exclude` preserves automatically) stay in place so the next cycle can reconsider them and accumulate independent support.
 
 The manifest decides what is consumed: the admitted reflections of ready skills, reflections excluded with no friction and no proposal (`no_friction_or_proposal`), and duplicates (`duplicate_of`) whose kept twin is also consumed. Repo-specific proposal lines are dropped without discarding generic sibling proposals or usable friction. All other reflections stay in place, including capped or oversized ones and those of skills still below the threshold, so their friction can count in a later pass. An admitted reflection of a ready skill whose themes were neither failed nor solely deferred is still archived; it has been considered.
 

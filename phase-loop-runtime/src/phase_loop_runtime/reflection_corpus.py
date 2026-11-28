@@ -28,7 +28,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from .credential_redaction import redact_text
 from .rule_enforcement import Rule, load_registry
@@ -616,6 +616,11 @@ def _unit_is_ledger(unit: Sequence[str]) -> bool:
     return False
 
 
+def _fence_close_any_indent(line: str) -> bool:
+    stripped = line.strip()
+    return len(stripped) >= 3 and len(set(stripped)) == 1 and stripped[0] in {"`", "~"}
+
+
 def _strip_nested_ledger_lines(unit: Sequence[str]) -> tuple[list[str], list[str]]:
     """Remove ledger sub-lines (and their wrapped/multi-paragraph continuations) inside a unit.
 
@@ -653,6 +658,8 @@ def _strip_nested_ledger_lines(unit: Sequence[str]) -> tuple[list[str], list[str
                         continue
                 elif _fence_open(cur, min_indent=0, max_indent=3) is not None:
                     break
+                if _fence_close_any_indent(cur) and cur_indent <= base_indent:
+                    break
                 if content_indent is not None:
                     if cur_indent < content_indent and (_HEADING_RE.match(cur) or _THEMATIC_BREAK_RE.match(cur)):
                         break
@@ -679,12 +686,13 @@ def _unit_is_empty_fence(unit: Sequence[str]) -> bool:
     non_blank = [line for line in unit if line.strip()]
     if not non_blank:
         return False
-    opener = _fence_open(non_blank[0], min_indent=0, max_indent=3)
+    lead = _indent_width(non_blank[0])
+    opener = _fence_open(non_blank[0], min_indent=lead, max_indent=lead)
     if opener is None:
         return False
     char, length = opener
     body = non_blank[1:]
-    if body and _fence_close(body[-1], char, length, min_indent=0, max_indent=3):
+    if body and _fence_close(body[-1], char, length, min_indent=0, max_indent=lead + 3):
         body = body[:-1]
     return not body
 
@@ -754,11 +762,16 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
                 fence_min = 0
                 bound = None
             opener = _fence_open(line, min_indent=fence_min, max_indent=fence_min + 3)
+            if opener is None and cur_indent >= fence_min + 4:
+                opener = _fence_open(line, min_indent=cur_indent, max_indent=cur_indent)
+                if opener is not None:
+                    fence_min = cur_indent
+                    bound = cur_indent
             if opener is not None:
                 block, next_idx = _consume_fence(unit, idx, opener, min_indent=bound)
                 char, length = opener
                 body = [b for b in block[1:] if b.strip()]
-                if body and _fence_close(body[-1], char, length, min_indent=fence_min, max_indent=fence_min + 3):
+                if body and _fence_close(body[-1], char, length, min_indent=0 if bound else fence_min, max_indent=fence_min + 3):
                     body = body[:-1]
                 if body:
                     return False
@@ -819,6 +832,30 @@ def _content_lines(reflection: Reflection) -> set[str]:
     return {norm for norm in map(_norm_line, lines) if norm}
 
 
+def _improvements_add_uncovered_evidence(
+    reflection: Reflection, kept_imp_lines: set[str]
+) -> bool:
+    """True when ``reflection`` adds structured Improvements lines absent from ``kept``.
+
+    Prevents a reflection carrying ledger-only, repo-specific, or new generic
+    ``Improvements`` content from being collapsed into an earlier empty-Improvements
+    copy as a near-duplicate and archived (agent-harness#1655).
+    """
+    if not reflection.structured:
+        return False
+    for raw_line in reflection.sections.get("improvements", "").splitlines():
+        norm = _norm_line(raw_line)
+        if not norm or norm in kept_imp_lines:
+            continue
+        if (
+            _line_is_ledger(raw_line)
+            or classify_improvements(raw_line) == "repo_specific"
+            or not _line_is_non_proposal_marker(raw_line)
+        ):
+            return True
+    return False
+
+
 def _mark_duplicates(reflections: list[Reflection]) -> None:
     """Collapse exact and near copies of the same skill/repo/branch/run.
 
@@ -828,24 +865,38 @@ def _mark_duplicates(reflections: list[Reflection]) -> None:
     collapsed across runs: identical reports from independent runs are
     recurring evidence, not duplicates.
 
-    Because the grouping key is ``(bare_skill, repo_hash, branch_slug, run_id)``
-    without the scan root, deduplication is effectively cross-root across different
-    harness roots. Legacy flat reflections that lack ``repo_hash`` or ``branch_slug``
-    are skipped so unidentifiable legacy copies are never falsely collapsed.
+    Because the grouping key is ``(skill, repo_hash, branch_slug, run_id)``
+    (harness-prefixed skill, without the scan root), deduplication is effectively
+    cross-root across different roots for the same harness skill. Legacy flat
+    reflections that lack ``repo_hash`` or ``branch_slug`` are skipped so
+    unidentifiable legacy copies are never falsely collapsed.
     """
-    kept_by_group: dict[tuple[str, str, str, str], list[tuple[str, set[str]]]] = defaultdict(list)
+    kept_by_group: dict[tuple[str, str, str, str], list[tuple[str, set[str], set[str]]]] = defaultdict(list)
     for reflection in reflections:
         if reflection.excluded or not reflection.repo_hash or not reflection.branch_slug:
             continue
         group = (*reflection.group, reflection.run_id)
         lines = _content_lines(reflection)
-        for kept_id, kept_lines in kept_by_group[group]:
-            if lines and len(lines & kept_lines) / len(lines) >= NEAR_DUPLICATE_OVERLAP:
+        imp_lines = (
+            {
+                norm
+                for norm in map(_norm_line, reflection.sections.get("improvements", "").splitlines())
+                if norm
+            }
+            if reflection.structured
+            else set()
+        )
+        for kept_id, kept_lines, kept_imp_lines in kept_by_group[group]:
+            if (
+                lines
+                and len(lines & kept_lines) / len(lines) >= NEAR_DUPLICATE_OVERLAP
+                and not _improvements_add_uncovered_evidence(reflection, kept_imp_lines)
+            ):
                 reflection.excluded = f"duplicate_of:{kept_id}"
                 break
         if reflection.excluded:
             continue
-        kept_by_group[group].append((reflection.id, lines))
+        kept_by_group[group].append((reflection.id, lines, imp_lines))
 
 
 def apply_quality_filter(
@@ -1297,6 +1348,41 @@ def archive(
     return moves
 
 
+def _expand_excluded_duplicates(data: Mapping[str, object], excludes: set[Path]) -> set[Path]:
+    """Keep consumed ``duplicate_of:<id>`` copies in place when their kept twin is excluded."""
+    entries = data.get("reflections")
+    if not isinstance(entries, list) or not excludes:
+        return set(excludes)
+    expanded = set(excludes)
+    id_to_path: dict[str, Path] = {}
+    dup_edges: list[tuple[str, str, Path]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        rid = entry.get("id")
+        raw_path = entry.get("path")
+        if not isinstance(raw_path, str):
+            continue
+        resolved = Path(raw_path).resolve()
+        if isinstance(rid, str) and rid:
+            id_to_path[rid] = resolved
+        raw_excluded = entry.get("excluded")
+        target = _duplicate_target_id(raw_excluded if isinstance(raw_excluded, str) else None)
+        if target is not None:
+            dup_edges.append((rid if isinstance(rid, str) else "", target, resolved))
+    excluded_ids = {rid for rid, path in id_to_path.items() if path in expanded}
+    changed = True
+    while changed:
+        changed = False
+        for rid, target, path in dup_edges:
+            if target in excluded_ids and path not in expanded:
+                expanded.add(path)
+                if rid:
+                    excluded_ids.add(rid)
+                changed = True
+    return expanded
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m phase_loop_runtime.reflection_corpus")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1312,7 +1398,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--root", action="append", type=Path, default=[],
         help="Extra skill root the consumed paths may live under (repeatable). Every harness root and PHASE_LOOP_SKILL_BUNDLE are always allowed.",
     )
-    archive_cmd.add_argument("--exclude", type=Path, action="append", default=[], help="Leave this consumed path in place (its recommendation failed).")
+    archive_cmd.add_argument(
+        "--exclude", type=Path, action="append", default=[],
+        help="Leave this consumed path (and its consumed duplicate_of copies) in place.",
+    )
     archive_cmd.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -1336,7 +1425,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if unmatched:
         print(json.dumps({"error": "--exclude matches no consumed reflection", "paths": sorted(map(str, unmatched))}), file=sys.stderr)
         return 1
-    paths = [path for path in consumed_paths if path.resolve() not in excludes]
+    effective_excludes = _expand_excluded_duplicates(data, excludes)
+    paths = [path for path in consumed_paths if path.resolve() not in effective_excludes]
     try:
         moves = archive(paths, roots=args.root, dry_run=args.dry_run)
     except (ValueError, FileExistsError) as exc:
