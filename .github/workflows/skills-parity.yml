@@ -11,6 +11,7 @@ on:
     paths:
       - 'skills-src/**'
       - 'phase-loop-skills/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/skills_bundle/**'
       - 'phase-loop-runtime/src/phase_loop_runtime/build_bundle.py'
       - 'phase-loop-runtime/scripts/regenerate_skills_bundle.py'
       - 'phase-loop-runtime/tests/test_skills_canon_parity.py'
@@ -22,6 +23,7 @@ on:
     paths:
       - 'skills-src/**'
       - 'phase-loop-skills/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/skills_bundle/**'
       - 'phase-loop-runtime/src/phase_loop_runtime/build_bundle.py'
       - 'phase-loop-runtime/scripts/regenerate_skills_bundle.py'
       - 'phase-loop-runtime/tests/test_skills_canon_parity.py'
