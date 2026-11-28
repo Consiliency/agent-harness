@@ -1262,8 +1262,65 @@ def _scan_command_substitution(text: str, start: int) -> int:
     return -1
 
 
+_SHELL_BINS: frozenset = frozenset({"sh", "bash", "zsh", "dash"})
+_UNSHARE_VALUE_OPTS: frozenset = frozenset(
+    {"--propagation", "--map-user", "--map-group", "--root", "--wd", "--setuid", "--setgid", "-R", "-w", "-S", "-G"}
+)
+
+
+def _find_shell_c_script(
+    seg: Sequence[Tuple[str, int, bool, List[int]]]
+) -> Optional[Tuple[str, List[int]]]:
+    """If ``seg`` invokes ``sh/bash/zsh/dash ... -c <script>``, return ``(script, char_lines)``."""
+    stripped_seg = [(tok, ln, q) for tok, ln, q, _lines in seg]
+    idx = _skip_shell_wrappers(stripped_seg)
+    if idx is None or idx >= len(seg):
+        return None
+    tok, _ln, quoted, _lines = seg[idx]
+    if quoted:
+        return None
+    base = tok.rsplit("/", 1)[-1]
+    if base not in _SHELL_BINS:
+        return None
+    p = idx + 1
+    n = len(seg)
+    saw_c = False
+    while p < n:
+        opt, _oln, oq, _olines = seg[p]
+        if oq:
+            break
+        if opt == "--":
+            p += 1
+            break
+        if opt in ("-o", "+o"):
+            p += 2
+            continue
+        if opt.startswith("--"):
+            p += 1
+            continue
+        if len(opt) >= 2 and opt[0] in ("-", "+") and opt[1:].isalpha():
+            if opt[0] == "-" and "c" in opt[1:]:
+                saw_c = True
+                p += 1
+                # If `-o` is combined with `-c` (e.g. `-co pipefail`), skip the `-o` value.
+                if "o" in opt[1:] and p < n:
+                    p += 1
+                continue
+            p += 1
+            continue
+        break
+    if saw_c and p < n:
+        script_tok, _sln, _sq, script_lines = seg[p]
+        return script_tok, script_lines
+    return None
+
+
 def _tokenize_shell_text(
-    text: str, char_lines: Sequence[int], *, newline_ends_command: bool = True
+    text: str,
+    char_lines: Sequence[int],
+    *,
+    newline_ends_command: bool = True,
+    _depth: int = 0,
 ) -> List[List[Tuple[str, int, bool]]]:
     """Tokenize shell command text into operator-bounded segments.
 
@@ -1273,12 +1330,15 @@ def _tokenize_shell_text(
     - Unquoted ``#`` at token start comments out only through the next ``\\n``
       (ignoring any trailing ``\\`` inside the comment).
     - Single- and double-quoted strings may span lines when closed in the block,
-      preventing quoted payloads from masquerading as shell commands.
+      preventing quoted payloads from masquerading as shell commands, while
+      literal script arguments passed to ``sh/bash/zsh/dash -c`` are recursively
+      tokenized with exact source line numbers.
     """
     segments: List[List[Tuple[str, int, bool]]] = []
     nested_segments: List[List[Tuple[str, int, bool]]] = []
-    cur_seg: List[Tuple[str, int, bool]] = []
+    cur_seg: List[Tuple[str, int, bool, List[int]]] = []
     buf: List[str] = []
+    buf_lines: List[int] = []
     buf_line = 0
     buf_quoted = False
     in_quote: Optional[str] = None
@@ -1286,14 +1346,27 @@ def _tokenize_shell_text(
     def flush_tok() -> None:
         nonlocal buf_quoted
         if buf:
-            cur_seg.append(("".join(buf), buf_line, buf_quoted))
+            cur_seg.append(("".join(buf), buf_line, buf_quoted, list(buf_lines)))
             buf.clear()
+            buf_lines.clear()
             buf_quoted = False
 
     def flush_seg() -> None:
         flush_tok()
         if cur_seg:
-            segments.append(list(cur_seg))
+            segments.append([(t, ln, q) for t, ln, q, _ls in cur_seg])
+            if _depth < 4:
+                shell_c = _find_shell_c_script(cur_seg)
+                if shell_c is not None:
+                    script_text, script_lines = shell_c
+                    nested_segments.extend(
+                        _tokenize_shell_text(
+                            script_text,
+                            script_lines,
+                            newline_ends_command=True,
+                            _depth=_depth + 1,
+                        )
+                    )
             cur_seg.clear()
         if nested_segments:
             segments.extend(nested_segments)
@@ -1306,12 +1379,15 @@ def _tokenize_shell_text(
         lineno = char_lines[i]
         if in_quote is not None:
             if ch == "\\" and in_quote == '"' and i + 1 < n:
-                if text[i + 1] == "\n":
+                nxt = text[i + 1]
+                if nxt == "\n":
                     i += 2  # POSIX line continuation inside double quotes
                     continue
-                buf.append(text[i + 1])
-                i += 2
-                continue
+                if nxt in '$`"\\':
+                    buf.append(nxt)
+                    buf_lines.append(char_lines[i + 1])
+                    i += 2
+                    continue
             if ch == in_quote:
                 in_quote = None
                 i += 1
@@ -1320,16 +1396,20 @@ def _tokenize_shell_text(
                 close_idx = _scan_command_substitution(text, i + 2)
                 if close_idx != -1:
                     buf.append(text[i : close_idx + 1])
-                    nested_segments.extend(
-                        _tokenize_shell_text(
-                            text[i + 2 : close_idx],
-                            char_lines[i + 2 : close_idx],
-                            newline_ends_command=True,
+                    buf_lines.extend(char_lines[i : close_idx + 1])
+                    if _depth < 4:
+                        nested_segments.extend(
+                            _tokenize_shell_text(
+                                text[i + 2 : close_idx],
+                                char_lines[i + 2 : close_idx],
+                                newline_ends_command=True,
+                                _depth=_depth + 1,
+                            )
                         )
-                    )
                     i = close_idx + 1
                     continue
             buf.append(ch)
+            buf_lines.append(lineno)
             i += 1
             continue
         if ch == "#" and not buf:
@@ -1351,6 +1431,7 @@ def _tokenize_shell_text(
             if not buf:
                 buf_line = lineno
             buf.append(ch)
+            buf_lines.append(lineno)
             i += 1
             continue
         if ch == "\\" and i + 1 < n:
@@ -1360,6 +1441,7 @@ def _tokenize_shell_text(
             if not buf:
                 buf_line = lineno
             buf.append(text[i + 1])
+            buf_lines.append(char_lines[i + 1])
             i += 2
             continue
         if ch == "\n":
@@ -1379,13 +1461,16 @@ def _tokenize_shell_text(
                 if not buf:
                     buf_line = lineno
                 buf.append(text[i : close_idx + 1])
-                nested_segments.extend(
-                    _tokenize_shell_text(
-                        text[i + 2 : close_idx],
-                        char_lines[i + 2 : close_idx],
-                        newline_ends_command=True,
+                buf_lines.extend(char_lines[i : close_idx + 1])
+                if _depth < 4:
+                    nested_segments.extend(
+                        _tokenize_shell_text(
+                            text[i + 2 : close_idx],
+                            char_lines[i + 2 : close_idx],
+                            newline_ends_command=True,
+                            _depth=_depth + 1,
+                        )
                     )
-                )
                 i = close_idx + 1
                 continue
             flush_seg()
@@ -1401,9 +1486,10 @@ def _tokenize_shell_text(
         if not buf:
             buf_line = lineno
         buf.append(ch)
+        buf_lines.append(lineno)
         i += 1
     flush_seg()
-    return segments + nested_segments
+    return segments
 
 
 def _tokenize_shell_segments(
@@ -1643,6 +1729,16 @@ def _skip_shell_wrappers(seg: Sequence[Tuple[str, int, bool]]) -> Optional[int]:
                 if seg[idx][0] in ("-v", "-V"):
                     return None
                 idx += 1
+            continue
+        if tok == "unshare":
+            idx += 1
+            while idx < n and not seg[idx][2] and seg[idx][0].startswith("-"):
+                opt = seg[idx][0]
+                idx += 1
+                if opt == "--":
+                    break
+                if opt in _UNSHARE_VALUE_OPTS and idx < n:
+                    idx += 1
             continue
         if tok in _CLI_WRAPPER_BINS:
             idx += 1

@@ -1637,6 +1637,13 @@ class TestArmCliFlags(unittest.TestCase):
                         "printf '\n"
                         "phase-loop doctor --ignored-inside-single-quotes\n"
                         "'\n"
+                        "unshare -Urm --propagation private bash -c \"\n"
+                        "  cd phase-loop-runtime && PYTHONPATH=\\$PWD/src python3 -m phase_loop_runtime.cli \\\n"
+                        "    fabpub-rotate-partition --worktree <w> --attestation <a> \\\n"
+                        "    --authority-root '$AUTH' --cutover-id <c> --jsno\"\n"
+                        "PIP_CONFIG_FILE=/dev/null /bin/sh -eu -c '\n"
+                        "  phase-loop doctor --typo-inside-sh-c\n"
+                        "'\n"
                         "```\n"
                     ),
                 },
@@ -1644,7 +1651,11 @@ class TestArmCliFlags(unittest.TestCase):
             found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
             self.assertEqual(
                 [(f.line, f.arm, f.code, f.token) for f in found],
-                [(3, "cli_flags", "unknown_cli_flag", "doctor --typo-after-comment")],
+                [
+                    (3, "cli_flags", "unknown_cli_flag", "doctor --typo-after-comment"),
+                    (10, "cli_flags", "unknown_cli_flag", "fabpub-rotate-partition --jsno"),
+                    (12, "cli_flags", "unknown_cli_flag", "doctor --typo-inside-sh-c"),
+                ],
             )
 
     def test_argparse_remainder_producer_flags_are_allowed(self):
