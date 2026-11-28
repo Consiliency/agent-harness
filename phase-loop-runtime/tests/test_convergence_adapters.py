@@ -331,6 +331,61 @@ def test_worker_environment_scrub(monkeypatch, name):
     assert set(capture_base.worker_child_environment(frozenset())) <= {"TMPDIR", "CLAUDE_CODE_TMPDIR", capture_base.sandbox_policy.CHILD_SCRATCH_MARKER}
 
 
+@pytest.mark.parametrize("ram_backed", [False, True])
+def test_worker_child_environment_blocks_inherited_tmpdirs(tmp_path, monkeypatch, ram_backed):
+    # Consiliency/agent-harness#1960 item 4: inherited TMPDIR/CLAUDE_CODE_TMPDIR must not
+    # leak through unless explicitly allowlisted or set by child_scratch_env.
+    from phase_loop_runtime import sandbox_policy
+
+    scratch = tmp_path / "child-scratch"
+    scratch.mkdir(mode=0o700)
+    monkeypatch.setenv("TMPDIR", "/inherited/tmpdir")
+    monkeypatch.setenv("CLAUDE_CODE_TMPDIR", "/inherited/claude-tmpdir")
+    monkeypatch.setattr(sandbox_policy, "is_ram_backed", lambda _path: ram_backed)
+    monkeypatch.setattr(sandbox_policy, "_child_tmp_dir", lambda: sandbox_policy.ScratchLocation(scratch, False))
+
+    env = capture_base.worker_child_environment(frozenset())
+    assert env[sandbox_policy.CHILD_SCRATCH_MARKER] == sandbox_policy.CHILD_SCRATCH_RELOCATE
+    if ram_backed:
+        assert env["TMPDIR"] == str(scratch)
+        assert env["CLAUDE_CODE_TMPDIR"] == str(scratch)
+    else:
+        assert "TMPDIR" not in env
+        assert "CLAUDE_CODE_TMPDIR" not in env
+
+
+def test_descriptor_exec_binding_verifies_identity_after_prespawn(tmp_path):
+    # Consiliency/agent-harness#1960 item 2: ELF descriptor binding compares held fd stat
+    # against a fresh no-follow stat after before_spawn and refuses on mismatch.
+    import shutil
+
+    real_elf = Path(sys.executable).resolve()
+    if real_elf.read_bytes()[:4] != b"\x7fELF":
+        pytest.skip("interpreter is not a direct ELF binary")
+    exe = tmp_path / "python-elf"
+    shutil.copy2(real_elf, exe)
+    exe.chmod(0o700)
+
+    request = capture_base.CaptureRequest(
+        "fixture-elf", (str(exe), "-I", "-c", "import os; os.write(1, b'ok')"),
+        tmp_path, 5.0, b"", 64, capture_base.worker_child_environment(frozenset()),
+    )
+    unchanged = capture_base.run_bounded_capture(request, before_spawn=lambda: None, cancel=threading.Event())
+    assert isinstance(unchanged, capture_base.BoundedCapture)
+    assert unchanged.termination == "completed" and unchanged.exec_binding == "descriptor"
+
+    replacement = tmp_path / "python-elf-replacement"
+    shutil.copy2(real_elf, replacement)
+    replacement.chmod(0o700)
+
+    def swap_during_recheck():
+        os.replace(replacement, exe)
+        return None
+
+    refused = capture_base.run_bounded_capture(request, before_spawn=swap_during_recheck, cancel=threading.Event())
+    assert refused == capture_base.SpawnRefused("executable_changed")
+
+
 def test_worker_group_cleanup_and_escaped_pipe(tmp_path):
     import signal
     import time
@@ -373,7 +428,7 @@ CAPTURE_CONTROLS = {
     "cancel-kill": ('elif cancel.is_set():', 'elif False and cancel.is_set():'),
     "group-reclaim": ('os.killpg(process.pid, signal.SIGKILL)', 'None'),
     "stdin-channel": ('request.stdin[offset:offset + 65536]', 'b""'),
-    "allowlist": ('and key in (allow | {"TMPDIR", "CLAUDE_CODE_TMPDIR", sandbox_policy.CHILD_SCRATCH_MARKER})', ''),
+    "allowlist": ('and key in allow', ''),
     "before-spawn": ('if refusal is not None:', 'if False and refusal is not None:'),
 }
 for _name in sorted(capture_base.WORKER_ENV_DROP):
@@ -423,7 +478,7 @@ def _capture_control_witness(module, control, tmp_path, monkeypatch):
     if control.startswith(("drop-", "prefix-")) or control == "allowlist":
         name = (control[5:] if control.startswith("drop-") else
                 control[7:] + "0" if control.startswith("prefix-") else "WORKER_FIXTURE_UNLISTED")
-        monkeypatch.setattr(module, "_child_environment", lambda: {name: "fixture-value"})
+        monkeypatch.setattr(module, "_worker_scrubbed_environment", lambda: {name: "fixture-value"})
         environment = module.worker_child_environment(frozenset() if control == "allowlist" else frozenset({name}))
         source = 'import os; os.write(1, b"present" if ' + repr(name) + ' in os.environ else b"absent")'
     count = []

@@ -29,6 +29,7 @@ reported as success.
 """
 from __future__ import annotations
 from contextlib import ExitStack
+import contextvars
 
 import hashlib
 import json
@@ -38,6 +39,7 @@ from typing import Callable, Mapping
 import os
 import selectors
 import signal
+import stat
 import subprocess
 import time
 from dataclasses import dataclass
@@ -324,13 +326,66 @@ class BoundedCapture:
     duration_ns: int | None
     observed_start_utc: str | None
     observed_end_utc: str | None
+    exec_binding: str = "path_recheck"
+
+
+def _worker_scrubbed_environment() -> dict[str, str]:
+    return strip_mutation_credentials(scrub_subscription_env(os.environ))
 
 
 def worker_child_environment(allow: frozenset[str]) -> dict[str, str]:
-    environment = _child_environment()
-    return {key: value for key, value in environment.items()
+    scrubbed = _worker_scrubbed_environment()
+    kept = {key: value for key, value in scrubbed.items()
             if key not in WORKER_ENV_DROP and not key.startswith(WORKER_ENV_DROP_PREFIXES)
-            and key in (allow | {"TMPDIR", "CLAUDE_CODE_TMPDIR", sandbox_policy.CHILD_SCRATCH_MARKER})}
+            and key in allow}
+    return sandbox_policy.child_scratch_env(kept, sandbox_policy.CHILD_SCRATCH_RELOCATE)
+
+
+def _nofollow_stat(path: str | os.PathLike[str]) -> os.stat_result | None:
+    """Fresh no-follow stat for ``path`` refusing symlinks along its components."""
+    target = Path(path)
+    if not target.is_absolute() or len(target.parts) < 2:
+        return None
+    current = Path("/")
+    try:
+        for part in target.parts[1:-1]:
+            current = current / part
+            if not stat.S_ISDIR(os.lstat(current).st_mode):
+                return None
+        leaf = os.lstat(current / target.parts[-1])
+    except OSError:
+        return None
+    return leaf if stat.S_ISREG(leaf.st_mode) else None
+
+
+_ACTIVE_DESCRIPTOR: contextvars.ContextVar[list[object] | None] = contextvars.ContextVar(
+    "_ACTIVE_DESCRIPTOR", default=None,
+)
+
+
+def _descriptor_matches_path(image: int, path: str | os.PathLike[str]) -> bool:
+    try:
+        held = os.fstat(image)
+    except OSError:
+        return False
+    fresh = _nofollow_stat(path)
+    return (fresh is not None
+            and (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns)
+            == (fresh.st_dev, fresh.st_ino, fresh.st_size, fresh.st_mtime_ns))
+
+
+def verify_active_descriptor_image(path: str | os.PathLike[str]) -> bool:
+    """Verify any held ELF descriptor for the active ``run_bounded_capture`` call
+    against a fresh no-follow stat of ``path`` before the caller records ``running``."""
+    active = _ACTIVE_DESCRIPTOR.get()
+    if active is None:
+        return True
+    image = active[0]
+    assert isinstance(image, int)
+    if not _descriptor_matches_path(image, path):
+        return False
+    active[1] = True
+    return True
 
 
 def _descriptor_image(path):
@@ -377,6 +432,8 @@ def run_bounded_capture(request: CaptureRequest, *,
         except BaseException:
             spawn_capability.close()
             return SpawnRefused("launch_input_unbound")
+    active_descriptor: list[object] | None = [image, False] if (spawn_capability is None and image is not None) else None
+    descriptor_token = _ACTIVE_DESCRIPTOR.set(active_descriptor) if active_descriptor is not None else None
     try:
         refusal = before_spawn() if spawn_capability is None else None
     except BaseException:
@@ -385,12 +442,20 @@ def run_bounded_capture(request: CaptureRequest, *,
         elif image is not None:
             os.close(image)
         return SpawnRefused("before_spawn_failed")
+    finally:
+        if descriptor_token is not None:
+            _ACTIVE_DESCRIPTOR.reset(descriptor_token)
     if refusal is not None:
         if spawn_capability is not None:
             spawn_capability.close()
         elif image is not None:
             os.close(image)
         return refusal
+    if active_descriptor is not None and not active_descriptor[1]:
+        if not _descriptor_matches_path(image, request.argv[0]):
+            os.close(image)
+            return SpawnRefused("executable_changed")
+    exec_binding = "descriptor" if image is not None else "path_recheck"
     start = time.monotonic_ns()
     deadline = time.monotonic() + request.timeout_seconds
     started = datetime.now(timezone.utc).isoformat()
@@ -429,7 +494,7 @@ def run_bounded_capture(request: CaptureRequest, *,
         return BoundedCapture(request.attempt_id, "failed_to_start", "harness", None,
                               None, empty, empty, True, b"", False, False, 1,
                               time.monotonic_ns() - start, started,
-                              datetime.now(timezone.utc).isoformat())
+                              datetime.now(timezone.utc).isoformat(), exec_binding)
     finally:
         if spawn_capability is not None:
             spawn_capability.close()
@@ -449,7 +514,7 @@ def run_bounded_capture(request: CaptureRequest, *,
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            process.wait(timeout=1)
+            process.wait()
             reaped = True
 
     try:
@@ -517,4 +582,4 @@ def run_bounded_capture(request: CaptureRequest, *,
                             for name in ("stdout", "stderr")),
                           complete, None if overflow else bytes(proposal), overflow,
                           delivered, 1, time.monotonic_ns() - start, started,
-                          datetime.now(timezone.utc).isoformat())
+                          datetime.now(timezone.utc).isoformat(), exec_binding)

@@ -487,3 +487,16 @@ def test_oversized_policy_refused_before_producer(root, monkeypatch, capsys):
     assert not (root / 'new').exists()
     with pytest.raises(ValueError, match='supported numeric range'):
         r.prune(root, days=10**400)
+
+
+def test_is_sealed_present_accessor_checks_state_and_identity(root):
+    # Consiliency/agent-harness#1960 item 5: public accessor for evidence_resolver.
+    assert not r.is_sealed_present(root, "missing")
+    path = root / "active-run"
+    path.mkdir(mode=0o700)
+    r.mark(root, "active-run", "active", owner_pid=os.getpid())
+    assert not r.is_sealed_present(root, "active-run")
+    r.mark(root, "active-run", "sealed")
+    assert r.is_sealed_present(root, "active-run")
+    (path / r.TOKEN).write_bytes(b"0" * 64)
+    assert not r.is_sealed_present(root, "active-run")

@@ -196,6 +196,23 @@ def _matches(fd: int, record: dict) -> bool:
         os.close(token_fd)
 
 
+def is_sealed_present(root: Path, run: str) -> bool:
+    """Return True when ``run`` is recorded as ``sealed`` under ``root`` and its
+    on-disk directory identity and token still match the registry record."""
+    _name(run)
+    with _locked(root, create=False) as (root_fd, registry_fd):
+        if registry_fd is None:
+            return False
+        record = _read(registry_fd, run)
+        if record["state"] != "sealed":
+            return False
+        fd = _directory(run, dir_fd=root_fd)
+        try:
+            return _matches(fd, record)
+        finally:
+            os.close(fd)
+
+
 def _mount_id(fd: int) -> str | None:
     if not sys.platform.startswith("linux"):
         return None

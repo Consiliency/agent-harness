@@ -84,6 +84,7 @@
   {"count": 1, "function": "execute_lane_waves", "module": "lane_wave_executor", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_executable_digest", "module": "convergence/adapters/patch_return", "primitive": "io.open", "role": "host-io"},
   {"count": 2, "function": "_descriptor_image", "module": "convergence/adapters/base", "primitive": "io.open", "role": "host-io"},
+  {"count": 2, "function": "_nofollow_stat", "module": "convergence/adapters/base", "primitive": "io.lstat", "role": "host-io"},
   {"count": 1, "function": "run_bounded_capture", "module": "convergence/adapters/base", "primitive": "launch_owned", "role": "owned"},
   {"count": 2, "function": "_directory_fd", "module": "convergence/adapters/patch_return", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_write", "module": "convergence/adapters/patch_return", "primitive": "io.open", "role": "host-io"},

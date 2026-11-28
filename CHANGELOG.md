@@ -91,6 +91,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   standalone `verify_launch_context` binds every issued `LaunchContext` mark directly to
   the live namespace holder and proxy pair instead of relying solely on outer board-leg
   and `launch_owned` checks (agent-harness#2035).
+- Address deferred v12 WORKER follow-ups in `convergence/adapters/patch_return.py`,
+  `convergence/adapters/base.py`, and `output_retention.py`: track unified-diff hunk
+  line counts in `_paths` so removed `-- ` lines inside hunks are not misparsed as file
+  headers; reject C-quoted extended-header paths (`rename`/`copy` starting with `"`);
+  verify the held ELF image descriptor's `(st_dev, st_ino, st_size, st_mtime_ns)`
+  against a fresh no-follow stat after `before_spawn` and report the actual
+  `exec_binding`; limit `worker_child_environment` so inherited `TMPDIR`/`CLAUDE_CODE_TMPDIR`
+  are not passed through unless explicitly allowlisted or set by `child_scratch_env`;
+  expose `output_retention.is_sealed_present` for `evidence_resolver`; revert
+  `run_bounded_capture.reclaim`'s `process.wait(timeout=1)` to `process.wait()`; and add
+  W1/W4/W10/W12 behavioural coverage (agent-harness#1960).
 - Retain the seat egress proxy's exit status and a bounded, sanitized stderr tail on
   startup failures (`seat_egress_proxy._start_proxy`, draining and discarding stderr in
   steady state so the pipe never blocks or grows unbounded) so intermittent proxy start

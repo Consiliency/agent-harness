@@ -15,6 +15,7 @@ try:
     import pwd
 except ImportError:  # native Windows has no password database; uses fail closed there
     pwd = None  # type: ignore[assignment]
+import re
 import signal
 import stat
 import threading
@@ -30,7 +31,7 @@ from ... import run_status as journal
 from ... import run_status_projection as projection
 from ...supervised_launch import Refused, consume_admission, classify_workspace, trusted_bytes
 from .base import (PROPOSAL_CAP_MAX, CaptureRequest, SpawnRefused,
-                   run_bounded_capture, worker_child_environment, _descriptor_image)
+                   run_bounded_capture, verify_active_descriptor_image, worker_child_environment)
 
 CANCEL_WAIT_SECONDS = 10
 PRODUCTION_LAUNCHER_COMMANDS = (tuple(seat_uid.trusted_module_argv(
@@ -175,15 +176,8 @@ def evidence_resolver(state_root: Path) -> projection.EvidenceResolver:
                 return "unknown"
             if (state_root / "evidence-ledger" / (run + ".retired")).exists():
                 return "retention_dropped"
-            root = state_root / "evidence"
-            with retention._locked(root, create=False) as (root_fd, registry_fd):
-                record = retention._read(registry_fd, run)
-                fd = retention._directory(run, dir_fd=root_fd)
-                try:
-                    if record["state"] == "sealed" and retention._matches(fd, record):
-                        return "present"
-                finally:
-                    os.close(fd)
+            if retention.is_sealed_present(state_root / "evidence", run):
+                return "present"
         except (OSError, ValueError):
             pass
         return "unknown"
@@ -293,8 +287,12 @@ def _audit(inputs, settings):
     return sorted(snapshots), baselines
 
 
+_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: |$)")
+
+
 def _paths(proposal):
     paths, found = [], False
+    old_rem = new_rem = 0
     def check(text, header=False):
         if text == "/dev/null" and not header:
             return
@@ -306,20 +304,59 @@ def _paths(proposal):
             raise ValueError("proposal_path")
         if header and text not in paths:
             paths.append(text)
-    for line in proposal.decode("utf-8").splitlines():
-        if line.startswith("diff --git "):
-            a, b = line[len("diff --git "):].split(" ")
+    text = proposal.decode("utf-8")
+    has_trailing_lf = text.endswith("\n")
+    raw_lines = text.split("\n")
+    if has_trailing_lf:
+        raw_lines.pop()
+    last_index = len(raw_lines) - 1
+    for index, line in enumerate(raw_lines):
+        if old_rem or new_rem:
+            if index == last_index and not has_trailing_lf:
+                raise ValueError("proposal_hunk")
+            if line.startswith("\\"):
+                continue
+            if line.startswith("-"):
+                if old_rem == 0:
+                    raise ValueError("proposal_hunk")
+                old_rem -= 1
+            elif line.startswith("+"):
+                if new_rem == 0:
+                    raise ValueError("proposal_hunk")
+                new_rem -= 1
+            elif line.startswith(" "):
+                if old_rem == 0 or new_rem == 0:
+                    raise ValueError("proposal_hunk")
+                old_rem -= 1
+                new_rem -= 1
+            else:
+                raise ValueError("proposal_hunk")
+            continue
+        header_line = line[:-1] if line.endswith("\r") else line
+        if header_line.startswith("diff --git "):
+            a, b = header_line[len("diff --git "):].split(" ")
             if not a.startswith("a/") or not b.startswith("b/"):
                 raise ValueError("proposal_header")
             check(a, True)
             check(b, True)
             found = True
-        elif line.startswith(("--- ", "+++ ")):
-            check(line[4:])
-        elif line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
-            check("a/" + line.split(" ", 2)[2], True)
-    if not found:
-        raise ValueError("proposal_header_missing")
+        elif header_line.startswith(("--- ", "+++ ")):
+            check(header_line[4:])
+        elif header_line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+            raw_path = header_line.split(" ", 2)[2]
+            if raw_path.startswith('"'):
+                raise ValueError("proposal_path")
+            check("a/" + raw_path, True)
+        elif header_line.startswith("@@ "):
+            if index == last_index and not has_trailing_lf:
+                raise ValueError("proposal_hunk")
+            match = _HUNK_HEADER.match(header_line)
+            if match is None:
+                raise ValueError("proposal_hunk")
+            old_rem = int(match.group(2)) if match.group(2) is not None else 1
+            new_rem = int(match.group(4)) if match.group(4) is not None else 1
+    if not found or old_rem or new_rem:
+        raise ValueError("proposal_header_missing" if not found else "proposal_hunk")
     return paths
 
 
@@ -472,6 +509,8 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                         return SpawnRefused(reason)
                 except (OSError, ValueError):
                     return SpawnRefused(reason)
+            if not verify_active_descriptor_image(inputs.argv[0]):
+                return SpawnRefused("executable_changed")
             writer.call("state", "running", worker_invocations=1)
             return SpawnRefused("journal_unavailable") if writer.failed else None
 
@@ -486,17 +525,12 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
                     return True
                 return False
         if prepared.attempt_binding is not None:
-            exec_binding = "descriptor"
             environment = dict(prepared._capture.spec.non_secret_environment)
             captured = run_bounded_capture(CaptureRequest(identity.attempt_id, inputs.argv,
                 Path(inputs.workspace), inputs.timeout,
                 inputs.instruction if prepared._capture.spec.stdin == "input" else b"", settings.proposal_cap,
                 environment), before_spawn=before_spawn, cancel=CancelObserver(), spawn_capability=inputs.spawn_capability)
         else:
-            image = _descriptor_image(inputs.argv[0])
-            exec_binding = "descriptor" if image is not None else "path_recheck"
-            if image is not None:
-                os.close(image)
             try:
                 environment = worker_child_environment(settings.environment_allow)
             except sandbox_policy.SandboxSpaceError:
@@ -508,6 +542,7 @@ def run_patch_return(prepared, *, config_bytes: bytes, state_root: Path,
             if writer.failed:
                 return refused("journal_unavailable", False)
             return healthy_refusal(captured.reason)
+        exec_binding = "descriptor" if prepared.attempt_binding is not None else captured.exec_binding
         termination = journal.Termination(captured.termination, captured.signal, captured.terminated_by)
         audit_error, unexplained, writes = False, 0, 0
         after = []
