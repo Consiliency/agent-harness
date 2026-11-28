@@ -539,6 +539,8 @@ class SkillsCanonParityTest(unittest.TestCase):
 
             for snippet, expected_rel in (
                 ("[doc](../references/../SKILL.md)", "../references/../SKILL.md"),
+                ("[doc](.././references/../SKILL.md)", ".././references/../SKILL.md"),
+                ("[doc](./../references/../SKILL.md)", "./../references/../SKILL.md"),
                 ("[doc](../references/ok.md)", "../references/ok.md"),
                 ("Read `references/./ok.md`.", "references/./ok.md"),
                 ("Read `references//ok.md`.", "references//ok.md"),
@@ -626,6 +628,7 @@ class SkillsCanonParityTest(unittest.TestCase):
                         "cross-skill.md",
                         "cross-anchor.md",
                         "cross-title.md",
+                        "cross-angle.md",
                         "prefixed.md",
                         "suffixed.md",
                         "parent-dir.md",
@@ -635,31 +638,35 @@ class SkillsCanonParityTest(unittest.TestCase):
                         "self-owned.md",
                         "notes.txt",
                         "UPPER.MD",
+                        "LICENSE",
                     ):
                         (refs / name).write_text(f"{name}\n", encoding="utf-8")
                     body += (
                         "Read `references/cross-skill.md`, `references/cross-anchor.md`, "
-                        "`references/cross-title.md`, `references/prefixed.md`, "
-                        "`references/suffixed.md`, `references/parent-dir.md`, "
-                        "`references/dot-seg.md`, `references/double-slash.md`, "
-                        "`references/dot-rel.md`, `references/self-owned.md`, "
-                        "`references/notes.txt`, and `references/UPPER.MD`.\n"
+                        "`references/cross-title.md`, `references/cross-angle.md`, "
+                        "`references/prefixed.md`, `references/suffixed.md`, "
+                        "`references/parent-dir.md`, `references/dot-seg.md`, "
+                        "`references/double-slash.md`, `references/dot-rel.md`, "
+                        "`references/self-owned.md`, `references/notes.txt`, "
+                        "`references/UPPER.MD`, and `references/LICENSE`.\n"
                     )
                 elif harness == "gemini":
                     body += (
                         "Read `references/cross-skill.md` from the installed `gemini-execute-detailed` directory.\n"
-                        "Read `references/cross-anchor.md#top` from the installed `gemini-execute-detailed` directory.\n"
+                        "Read `references/cross-anchor.md#top%20sec` from the installed `gemini-execute-detailed` directory.\n"
                         "Read [titled](references/cross-title.md \"Guide\") from the installed `gemini-execute-detailed` directory.\n"
                         "Read [titled2](references/cross-title.md#sec 'Guide') from the installed `gemini-execute-detailed` directory.\n"
                         "Read [titled3](references/cross-title.md (Guide)) from the installed `gemini-execute-detailed` directory.\n"
+                        "Read [angle](<references/cross-angle.md>) from the installed `gemini-execute-detailed` directory.\n"
+                        "Read [angle2](<references/cross-angle.md#foo%20bar> \"T\") from the installed `gemini-execute-detailed` directory.\n"
                         "Ignore `my-references/prefixed.md` and `other/references/parent-dir.md` "
-                        "and `../references/parent-dir.md`.\n"
+                        "and `../references/parent-dir.md` and `.././references/parent-dir.md`.\n"
                         "Ignore `references/suffixed.md.bak` and `references/suffixed.mdx` "
-                        "and `references/suffixed.md/extra`.\n"
+                        "and `references/suffixed.md+draft` and `references/suffixed.md/extra`.\n"
                         "Ignore non-canonical `references/./dot-seg.md` and `references//double-slash.md`.\n"
                         "Read [dot relative](./references/dot-rel.md#top).\n"
                         "Read [self](references/self-owned.md#sec \"Own\") from the installed `gemini-plan-phase` directory.\n"
-                        "Read `references/notes.txt` and `references/UPPER.MD`.\n"
+                        "Read `references/notes.txt`, `references/UPPER.MD`, and [license](references/LICENSE).\n"
                     )
                 (skill / "SKILL.md").write_text(body, encoding="utf-8")
 
@@ -667,27 +674,34 @@ class SkillsCanonParityTest(unittest.TestCase):
             self.assertEqual(
                 iter_skill_aux_links(gemini_text),
                 [
+                    (".././references/parent-dir.md", ""),
                     ("../references/parent-dir.md", ""),
                     ("references/./dot-seg.md", ""),
                     ("references//double-slash.md", ""),
+                    ("references/LICENSE", ""),
                     ("references/UPPER.MD", ""),
                     ("references/cross-anchor.md", "gemini-execute-detailed"),
+                    ("references/cross-angle.md", "gemini-execute-detailed"),
                     ("references/cross-skill.md", "gemini-execute-detailed"),
                     ("references/cross-title.md", "gemini-execute-detailed"),
                     ("references/dot-rel.md", ""),
                     ("references/notes.txt", ""),
                     ("references/self-owned.md", "gemini-plan-phase"),
+                    ("references/suffixed.md+draft", ""),
                     ("references/suffixed.md.bak", ""),
+                    ("references/suffixed.md/extra", ""),
                     ("references/suffixed.mdx", ""),
                 ],
             )
             self.assertEqual(
                 linked_own_aux_paths(gemini_text, skill_name="gemini-plan-phase"),
                 {
+                    "references/LICENSE",
                     "references/UPPER.MD",
                     "references/dot-rel.md",
                     "references/notes.txt",
                     "references/self-owned.md",
+                    "references/suffixed.md+draft",
                     "references/suffixed.md.bak",
                     "references/suffixed.mdx",
                 },
@@ -700,6 +714,7 @@ class SkillsCanonParityTest(unittest.TestCase):
                 "cross-skill.md",
                 "cross-anchor.md",
                 "cross-title.md",
+                "cross-angle.md",
                 "prefixed.md",
                 "suffixed.md",
                 "parent-dir.md",
@@ -709,7 +724,7 @@ class SkillsCanonParityTest(unittest.TestCase):
                 with self.subTest(harness_only=harness_only):
                     self.assertFalse((skill_out / "references" / harness_only).exists())
                     self.assertTrue((skill_out / "_overrides" / "claude" / "references" / harness_only).is_file())
-            for shared in ("dot-rel.md", "self-owned.md", "notes.txt", "UPPER.MD"):
+            for shared in ("dot-rel.md", "self-owned.md", "notes.txt", "UPPER.MD", "LICENSE"):
                 with self.subTest(shared=shared):
                     self.assertTrue((skill_out / "references" / shared).is_file())
                     self.assertFalse((skill_out / "_overrides" / "claude" / "references" / shared).exists())

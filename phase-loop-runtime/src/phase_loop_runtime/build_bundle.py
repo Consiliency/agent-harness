@@ -28,21 +28,29 @@ HARNESS_AUX_SUBDIRS: tuple[str, ...] = ("references",)
 # Shared link grammar for `references/` and `assets/` links in a SKILL.md
 # (agent-harness#1649). Used by both `build_bundle` (references placement) and
 # `test_skills_canon_parity` (installed-bundle verification) so placement and
-# parity checks always agree. Leading `../` traversal is captured so parity
-# rejects escaping links while `canonical_direct_aux_path` keeps them ineligible
-# for shared placement.
+# parity checks always agree. Leading `./` / `../` segments are captured so
+# parity rejects escaping or mixed-dot links (`.././references/../SKILL.md`)
+# while `canonical_direct_aux_path` keeps them ineligible for shared placement.
 SKILL_AUX_LINK_RE = re.compile(
-    r"(?<![\w./-])(?:\./)?((?:\.\./)*(?:references|assets)/[\w./-]+\.[A-Za-z0-9]+)"
-    r"(?![\w/-]|\.[A-Za-z0-9])"
-    r"(?:#[\w./-]+)?"
-    r"(?:`|(?:\s+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^()\n]*\)))?\))?"
+    r"(?<![\w./+@~%-])((?:\.\.?/)*(?:references|assets)/[\w./+@~%-]*[\w+@~%-])"
+    r"(?![\w/+@~%*<-]|\.[A-Za-z0-9_+@~%-])"
+    r"(?:#[^\s`'\"<>()\[\]]+)?"
+    r"(?:`|>?(?:\s+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^()\n]*\)))?\))?"
     r"(?:\s+from the installed `([\w-]+)` directory)?"
 )
 
 
 def iter_skill_aux_links(text: str) -> list[tuple[str, str]]:
     """Return sorted unique `(rel_path, owner)` pairs for `references/` and `assets/` links."""
-    return sorted(set(SKILL_AUX_LINK_RE.findall(text)))
+    links: set[tuple[str, str]] = set()
+    for rel, owner in SKILL_AUX_LINK_RE.findall(text):
+        # Strip a single benign leading `./` (`./references/a.md` -> `references/a.md`)
+        # while keeping escaping or mixed-dot prefixes (`.././references/...`,
+        # `./../references/...`, `././references/...`) intact for parity rejection.
+        if rel.startswith(("./references/", "./assets/")):
+            rel = rel[2:]
+        links.add((rel, owner))
+    return sorted(links)
 
 
 def canonical_direct_aux_path(rel: str) -> str | None:
