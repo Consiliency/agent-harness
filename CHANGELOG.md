@@ -35,6 +35,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Capture the real launch-boundary keyword arguments in `test_seat_argv_bound_paths_1441.py`
+  (`_captured_launches` / `fake_liveness`) so Grok mount qualification directly asserts no
+  `writable_tree` / `writable_trees` grant is requested (with a mutation falsifier), make the
+  `no-tree` `path-with-spaces` cases actually pass spaced `review_dir`/`out_dir` paths to
+  production, and close subprocess pipes on timeout in `test_seat_argv_bound_paths_1441.py`
+  and `test_seat_host_path_links.py` (agent-harness#1746).
 - Translate `seat_resource_caps.CapsUnavailable` refusals (including every `_seat_scope`
   validation and teardown failure path) to the typed `seat_resource_caps_unavailable`
   review-leg detail, seat notice, and `leg_exec.v1` refusal code in
