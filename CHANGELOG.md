@@ -49,6 +49,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   generic unknown failure, or leaking private cause text into review text (scoped to
   review-leg results; qualification window launches are tracked separately in
   agent-harness#2231) (agent-harness#1908).
+- Re-arm and verify `PR_SET_PDEATHSIG(SIGKILL)` inside `seat_keyring_exec.execute()` after
+  the `NO_NEW_PRIVS` check and before installing the seccomp filter so owned review
+  providers retain parent-death `SIGKILL` across AppArmor transitions such as Ubuntu 25.04+
+  `bwrap-userns-restrict` (agent-harness#1921).
 - Fix the `/proc/self/fd` / `/proc/$PPID/fd` descriptor-enumeration race in
   `test_phase_loop_baml_v1_runtime.py::test_executor_launch_path_after_1140_with_a_live_worker_and_a_stalled_spawn`
   by capturing executor and supervisor descriptors separately (ignoring only `ENOENT` on

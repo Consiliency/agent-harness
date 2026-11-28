@@ -89,18 +89,61 @@ def test_final_link_sets_and_verifies_no_new_privileges_before_filter(monkeypatc
     from phase_loop_runtime import seat_keyring_exec as link
 
     calls = []
+    armed_sig = 0
 
     class Libc:
         def prctl(self, operation, *args):
+            nonlocal armed_sig
             calls.append(operation)
-            return 1 if operation == 39 else 0
+            if operation == 39:
+                return 1
+            if operation == link.PR_SET_PDEATHSIG:
+                armed_sig = args[0]
+                return 0
+            if operation == link.PR_GET_PDEATHSIG:
+                ctypes.cast(args[0], ctypes.POINTER(ctypes.c_int))[0] = armed_sig
+                return 0
+            return 0
 
     monkeypatch.setattr(link, "_join_session", lambda libc, nr: calls.append("join"))
     monkeypatch.setattr(link, "_install_filter", lambda libc, nr, fd: calls.append("filter"))
     monkeypatch.setattr(link.os, "close", lambda fd: calls.append("close"))
     monkeypatch.setattr(link.os, "execv", lambda path, argv: calls.append("exec"))
     link.execute(Libc(), 250, 317, 10, ["/bin/true"])
-    assert calls == ["join", 38, 39, "filter", "close", "exec"]
+    assert calls == ["join", 38, 39, link.PR_SET_PDEATHSIG, link.PR_GET_PDEATHSIG, "filter", "close", "exec"]
+    assert armed_sig == link._SIGKILL
+
+
+def test_final_link_does_not_exec_when_pdeathsig_fails_or_is_unverified(monkeypatch):
+    from phase_loop_runtime import seat_keyring_exec as link
+
+    monkeypatch.setattr(link, "_join_session", lambda libc, nr: None)
+    monkeypatch.setattr(link, "_install_filter", lambda *args: pytest.fail("filter installed"))
+    monkeypatch.setattr(link.os, "execv", lambda *args: pytest.fail("provider ran"))
+
+    class SetFailsLibc:
+        def prctl(self, operation, *args):
+            if operation == 39:
+                return 1
+            if operation == link.PR_SET_PDEATHSIG:
+                ctypes.set_errno(errno.EPERM)
+                return -1
+            return 0
+
+    with pytest.raises(OSError):
+        link.execute(SetFailsLibc(), 250, 317, 10, ["/bin/true"])
+
+    class UnverifiedLibc:
+        def prctl(self, operation, *args):
+            if operation == 39:
+                return 1
+            if operation == link.PR_GET_PDEATHSIG:
+                ctypes.cast(args[0], ctypes.POINTER(ctypes.c_int))[0] = 0
+                return 0
+            return 0
+
+    with pytest.raises(OSError):
+        link.execute(UnverifiedLibc(), 250, 317, 10, ["/bin/true"])
 
 
 def test_final_link_does_not_exec_when_no_new_privileges_is_unverified(monkeypatch):
@@ -341,3 +384,35 @@ def test_real_final_link_runs_from_replaced_parent_session(tmp_path):
         pytest.skip("kernel keyrings unavailable in this test environment")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"deny": True}
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux seat-owner contract")
+def test_real_final_link_arms_pdeathsig_sigkill_in_provider():
+    """seat_keyring_exec.execute() arms PR_SET_PDEATHSIG(SIGKILL) before execv so the
+    exec'd provider observes SIGKILL even when an outer AppArmor transition cleared it
+    (agent-harness#1921)."""
+    from phase_loop_runtime import seat_keyring_exec as link
+    from phase_loop_runtime.seat_seccomp import sealed_keyring_filter
+
+    if not hasattr(os, "memfd_create"):
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            pytest.fail("required seat-owner lane lacks memfd support")
+        pytest.skip("interpreter lacks memfd support")
+    probe = (
+        "import ctypes, json; "
+        "libc = ctypes.CDLL(None, use_errno=True); "
+        "sig = ctypes.c_int(-1); "
+        "rc = libc.prctl(2, ctypes.byref(sig), 0, 0, 0); "
+        "print(json.dumps({'rc': rc, 'sig': sig.value}))"
+    )
+    descriptor = sealed_keyring_filter()
+    try:
+        done = subprocess.run(
+            [sys.executable, "-I", "-S", str(Path(link.__file__)), str(descriptor),
+             sys.executable, "-I", "-S", "-c", probe],
+            pass_fds=(descriptor,), capture_output=True, text=True, timeout=10,
+        )
+    finally:
+        os.close(descriptor)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == {"rc": 0, "sig": link._SIGKILL}

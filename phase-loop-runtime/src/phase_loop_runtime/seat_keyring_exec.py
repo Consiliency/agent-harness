@@ -10,8 +10,9 @@ owned route runs it as a bound file under ``python3 -I -S``:
 * the jailed seat (agent-harness#1132): ``python -m phase_loop_runtime.seat_keyring_exec
   -- <argv...>``, the first element of the jail's launch prefix;
 * the owned seat launch: ``python3 -I -S <this file> <seccomp-fd> <argv...>``, the final
-  link inside the owner: it joins the keyring, sets no-new-privs, installs the sealed
-  filter read from ``<seccomp-fd>`` and execs the argv.
+  link inside the owner: it joins the keyring, sets no-new-privs, re-arms the parent-death
+  signal (``PR_SET_PDEATHSIG`` -> ``SIGKILL``), installs the sealed filter read from
+  ``<seccomp-fd>`` and execs the argv.
 
 No keyutils binary is needed: the calls are made through ``syscall(2)``.
 """
@@ -30,6 +31,9 @@ import sys
 
 KEYCTL_JOIN_SESSION_KEYRING = 1
 _KEYCTL_NR = {"x86_64": 250, "aarch64": 219}
+PR_SET_PDEATHSIG = 1
+PR_GET_PDEATHSIG = 2
+_SIGKILL = 9
 
 
 class _Filter(ctypes.Structure):
@@ -95,6 +99,15 @@ def execute(libc, keyctl_number, seccomp_number, descriptor, command):
     _join_session(libc, keyctl_number)
     _checked(libc.prctl(38, 1, 0, 0, 0))
     if libc.prctl(39, 0, 0, 0, 0) != 1:
+        raise OSError(errno.EPERM, "seat_keyring_unavailable")
+    # Re-arm parent-death SIGKILL after NO_NEW_PRIVS and before seccomp: AppArmor
+    # transitions (e.g. Ubuntu 25.04+ bwrap-userns-restrict) clear any earlier
+    # pdeathsig across exec, whereas setting it here survives os.execv into the
+    # provider (agent-harness#1921).
+    _checked(libc.prctl(PR_SET_PDEATHSIG, _SIGKILL, 0, 0, 0))
+    armed = ctypes.c_int(0)
+    _checked(libc.prctl(PR_GET_PDEATHSIG, ctypes.byref(armed), 0, 0, 0))
+    if armed.value != _SIGKILL:
         raise OSError(errno.EPERM, "seat_keyring_unavailable")
     _install_filter(libc, seccomp_number, descriptor)
     os.close(descriptor)
