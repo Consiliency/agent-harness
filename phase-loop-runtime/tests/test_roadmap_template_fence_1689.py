@@ -19,7 +19,13 @@ BUNDLE_TEMPLATE = (
     RUNTIME / "src" / "phase_loop_runtime" / "skills_bundle" / "claude-phase-roadmap-builder" / "references" / "roadmap-template.md"
 )
 
-_OPEN_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\n]*)$")
+_COMMONMARK_EOL_RE = re.compile(r"\r\n|\r|\n")
+_OPEN_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _commonmark_lines(text: str) -> list[str]:
+    """Split text strictly on CommonMark 0.31.2 line endings (CRLF, LF, CR)."""
+    return _COMMONMARK_EOL_RE.split(text)
 
 
 def _extract_top_level_fenced_blocks(text: str) -> list[tuple[str, str, int, int, str]]:
@@ -34,7 +40,7 @@ def _extract_top_level_fenced_blocks(text: str) -> list[tuple[str, str, int, int
     open_line = 0
     body_lines: list[str] = []
 
-    for lineno, line in enumerate(text.splitlines(), 1):
+    for lineno, line in enumerate(_commonmark_lines(text), 1):
         match = _OPEN_FENCE_RE.match(line)
         if open_fence is None:
             if match:
@@ -96,7 +102,7 @@ def test_roadmap_template_outer_markdown_fence_encloses_inner_code_blocks() -> N
     assert "```bash" in body
     assert "## Notes on filling in the template" not in body
 
-    trailing = "\n".join(text.splitlines()[end_line:])
+    trailing = "\n".join(_commonmark_lines(text)[end_line:])
     assert "## Notes on filling in the template" in trailing
 
 
@@ -139,12 +145,15 @@ def test_fence_parser_catches_premature_closure_regression() -> None:
     with pytest.raises(AssertionError, match="unclosed markdown fence"):
         _extract_top_level_fenced_blocks(broken_unclosed)
 
-    # CommonMark 0.31.2 permits only ASCII spaces/tabs after a closing fence; trailing U+00A0 leaves it unclosed.
-    broken_nbsp = "\n".join([
-        "````markdown",
-        "# Title",
-        "````\u00a0",
-        "## Notes on filling in the template",
-    ])
-    with pytest.raises(AssertionError, match="unclosed markdown fence"):
-        _extract_top_level_fenced_blocks(broken_nbsp)
+    # CommonMark 0.31.2 permits only ASCII spaces/tabs after a closing fence and only
+    # CRLF/LF/CR as line endings; trailing U+00A0, vertical tab (\v), or form feed (\f)
+    # leaves the fence unclosed.
+    for trailing_char in ("\u00a0", "\v", "\f"):
+        broken_trailing = "\n".join([
+            "````markdown",
+            "# Title",
+            f"````{trailing_char}",
+            "## Notes on filling in the template",
+        ])
+        with pytest.raises(AssertionError, match="unclosed markdown fence"):
+            _extract_top_level_fenced_blocks(broken_trailing)
