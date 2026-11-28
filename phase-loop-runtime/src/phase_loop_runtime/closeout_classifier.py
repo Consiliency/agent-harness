@@ -428,6 +428,45 @@ def main(argv: list[str]) -> int:
         raise
 
 
+_HELP_TEXT = """\
+usage: phase-loop-closeout-audit [-h] [--repo PATH] [--record-outputs] [--phase ALIAS]
+
+Audit git-ignored outputs in a worktree for closeout classification.
+
+options:
+  -h, --help        Show this help message and exit 0 without running the audit.
+  --repo PATH       Repository root to audit (default: current working directory).
+  --record-outputs  Run declared producers in .phase-loop-generated-outputs.json
+                    under observation before auditing.
+  --phase ALIAS     Phase alias bound to recorded generated-outputs evidence.
+
+exit codes:
+  0  No unknown ignored outputs (ignored dirt does not block closeout).
+  1  Unknown ignored outputs present (blocks closeout).
+  2  Audit probe or declared-producer recording failed (blocks closeout).
+"""
+
+
+def _wants_help(argv: list[str]) -> bool:
+    wants = False
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            break
+        if arg in ("-h", "--help"):
+            wants = True
+            i += 1
+            continue
+        if arg in ("--repo", "--phase"):
+            if i + 1 >= len(argv):
+                raise ValueError(f"{arg} requires a value")
+            i += 2
+            continue
+        i += 1
+    return wants
+
+
 def _main(argv: list[str]) -> int:
     """``python -m phase_loop_runtime.closeout_classifier --repo .``
 
@@ -450,6 +489,9 @@ def _main(argv: list[str]) -> int:
     producer command.
     """
 
+    if _wants_help(argv):
+        print(_HELP_TEXT, end="")
+        return 0
     repo = Path(argv[argv.index("--repo") + 1]) if "--repo" in argv else Path.cwd()
     # The phase the evidence must belong to: ONLY this explicit argument (the runner's
     # prompts write it literally). Never the environment or `.phase-loop/state.json`.

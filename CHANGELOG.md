@@ -73,6 +73,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   sealed inline prompt instead of tool-capable sandbox instructions, while jailed Codex
   review seats (`jailed=True`) and non-brokered Codex research seats (`brokered=False`)
   retain full sandbox capability (agent-harness#1930).
+- Teach `phase-loop-closeout-audit` (`closeout_classifier.main`/`console_main`) to print
+  usage and exit 0 on `-h`/`--help` without auditing the working directory or running
+  declared producers (while still raising with `CRASH_ACTION` on malformed dangling
+  options), update `runner._governed_not_live_warning` to list the current subscription
+  panel (`codex+gemini+claude+grok`, noting Claude defaults to print), and use
+  transport-neutral wording (`the Claude leg`) in `governed_review`'s empty-pool
+  remediation message (agent-harness#1613).
 - Scope `reflection_corpus.apply_quality_filter` boilerplate counting and single-repo
   uniqueness per bare skill (`bare_skill`) instead of across all skills in a repo, so a
   lone ref-, path-, or URL-carrying `What worked` line in one skill is no longer stripped

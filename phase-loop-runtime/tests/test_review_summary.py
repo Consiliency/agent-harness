@@ -151,7 +151,9 @@ class GovernedNotLiveWarningTest(unittest.TestCase):
         self.assertIn("FAIL-CLOSED", msg)
         self.assertIn("HOLDS the merge", msg)
         self.assertIn("git diff --cached", msg)               # reviews the staged index
-        self.assertIn("Claude TUI", msg)
+        self.assertIn("codex+gemini+claude+grok", msg)
+        self.assertIn("Claude defaults to print", msg)
+        self.assertNotIn("Claude TUI", msg)
         self.assertNotIn("claude leg deferred", msg)
         self.assertNotIn("advisory autonomous-warn", msg)     # the old false claim is gone
         self.assertNotIn("degrade to an advisory pass", msg)

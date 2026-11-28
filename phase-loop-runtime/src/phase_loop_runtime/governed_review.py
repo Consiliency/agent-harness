@@ -431,7 +431,7 @@ def governed_planning_gate(
                 f"governed mode requires a reviewer disjoint from author vendor(s) "
                 f"{sorted(authors)} but none is available ({degraded_reason}); "
                 f"holding (non-human). Authenticate or install at least one available "
-                f"non-author panel leg; the Claude TUI leg can satisfy this when its "
+                f"non-author panel leg; the Claude leg can satisfy this when its "
                 f"local Claude Code subscription route is available."
             ),
         )
