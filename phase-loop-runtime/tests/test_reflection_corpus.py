@@ -1563,3 +1563,89 @@ def test_post_ledger_non_proposal_remnants_after_repo_specific_drop_stay_unarchi
     assert corpus.scanned[0].improvements_class == "repo_specific"
     assert corpus.scanned[0].excluded == "improvements_repo_specific"
     assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_unclosed_fence_inside_list_item_stops_at_dedent_and_keeps_sibling_and_sections(tmp_path):
+    root = tmp_path / "skills"
+    # Case 1: unclosed fence inside a repo-specific bullet must not swallow the sibling bullet.
+    improvements = (
+        "- ```sh\n"
+        "  cat /home/example/private-repo/notes.md\n"
+        "- Require bounded retries on network calls."
+    )
+    put(root, "codex-plan-phase", "repo", "branch1", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+    # Case 2: unclosed fence inside a bullet in What worked must not hide What didn't or Improvements.
+    worked_unclosed = (
+        "- ```sh\n"
+        "  echo unclosed example\n"
+    )
+    put(root, "codex-plan-phase", "repo", "branch2", "run1", reflection(
+        worked=worked_unclosed,
+        didnt="FRICTION-VISIBLE after unclosed list fence.",
+        improvements="- Require bounded retries on network calls.",
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 2
+    assert bundle.count("Require bounded retries on network calls.") == 2
+    assert "FRICTION-VISIBLE after unclosed list fence." in bundle
+    assert "private-repo" not in bundle
+
+
+def test_repeated_nested_wrapped_ledger_and_second_paragraph_do_not_leak_for_archival(tmp_path):
+    root = tmp_path / "skills"
+    # Repeated indented wrapped ledger label under `- None.` plus a rejected proposal.
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="",
+            didnt="",
+            improvements=(
+                "- Fix agent-harness#1371.\n"
+                "- None.\n"
+                "  Hosted CI: all required checks passed for the whole release pipeline\n"
+                "  on the main branch."
+            ),
+        ))
+    # Nested ledger bullet with a second paragraph after a blank line.
+    put(root, "codex-plan-phase", "repo", "branch3", "run", reflection(
+        worked="",
+        didnt="",
+        improvements=(
+            "- Fix agent-harness#1371.\n"
+            "- None.\n"
+            "  - Hosted CI: passed.\n\n"
+            "    on the main branch."
+        ),
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert {r.excluded for r in corpus.scanned} == {"improvements_repo_specific"}
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("separator", ["  ### Example", "  ---"])
+def test_indented_heading_or_thematic_break_inside_bullet_keeps_single_proposal_unit(
+    tmp_path, separator
+):
+    root = tmp_path / "skills"
+    improvements = (
+        "- Patch the local wrapper:\n"
+        f"{separator}\n"
+        "  See agent-harness#1371."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
