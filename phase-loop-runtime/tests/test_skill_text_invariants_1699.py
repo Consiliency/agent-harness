@@ -2,13 +2,13 @@
 
 1. Pin the ``claude-execute-phase`` merge-target safety gate in ``SKILL.md``
    inside ``## Workflow`` at its pre-dispatch position (and its back-pointer in
-   ``references/interactive-steps.md``) so mutations that weaken, hide, or
-   relocate the gate cannot survive.
+   ``references/interactive-steps.md``) so mutations that weaken, hide, indent
+   as code, or relocate the gate cannot survive.
 2. Assert that every shipped ``references/**/*.md`` file is linked by relative
-   path from its owning ``SKILL.md`` outside CommonMark fenced code blocks
-   (including fences inside list items and blockquotes) and HTML comments.
-   Under the adapter bundle manifest read exception, an unlinked reference
-   cannot be read.
+   path from its owning ``SKILL.md`` as visible CommonMark prose (excluding
+   fenced code blocks at any container nesting depth, indented code blocks,
+   HTML comments, images, and escaped brackets). Under the adapter bundle
+   manifest read exception, an unlinked reference cannot be read.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 from phase_loop_runtime import injection
@@ -26,23 +27,39 @@ PHASE_LOOP_SKILLS = REPO_ROOT / "phase-loop-skills"
 PACKAGED_SKILLS = Path(injection.__file__).resolve().parent / "skills_bundle"
 
 _LINE_SPLIT_RE = re.compile(r"\r\n|\r|\n")
-_BLOCKQUOTE_RE = re.compile(r"^ {0,3}> ?(.*)$")
-_LIST_ITEM_RE = re.compile(r"^( *)(?:[-*+]|(?:\d{1,9})[.)])([ \t]+)(.*)$")
-_OPEN_FENCE_RE = re.compile(r"^( *)(`{3,}|~{3,})([^\r\n]*)$")
-_CLOSE_FENCE_RE = re.compile(r"^( *)(`{3,}|~{3,})[ \t]*$")
+_BLOCKQUOTE_RE = re.compile(r"^ {0,3}>(.*)$")
+_LIST_ITEM_RE = re.compile(r"^([-*+]|(?:\d{1,9})[.)])([ \t]+|$)(.*)$")
+_OPEN_FENCE_RE = re.compile(r"^(`{3,}|~{3,})([^\r\n]*)$")
+_CLOSE_FENCE_RE = re.compile(r"^(`{3,}|~{3,})[ \t]*$")
 _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
+_THEMATIC_BREAK_RE = re.compile(r"^ {0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
 _TRAILING_HASHES_RE = re.compile(r"(?:^|[ \t]+)#+$")
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _LINK_DEF_RE = re.compile(
     r"^ {0,3}\[([^\]]+)\]:[ \t]*(?:<([^>\r\n]+)>|([^\s<>]+))(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$",
     re.MULTILINE,
 )
-_INLINE_LINK_RE = re.compile(
-    r"(?<!\!)\[[^\]]+\]\([ \t]*(?:<([^>\r\n]+)>|([^\s()<>]+))(?:[ \t]+(?:\"[^\"]*\"|'[^']*'))?[ \t]*\)"
+_INLINE_DEST_RE = re.compile(
+    r"^[ \t]*(?:<([^>\r\n]+)>|([^\s()<>]+))(?:[ \t]+(?:\"[^\"]*\"|'[^']*'))?[ \t]*\)"
 )
-_REF_LINK_FULL_RE = re.compile(r"(?<!\!)\[[^\]]+\]\[([^\]]+)\]")
-_REF_LINK_COLLAPSED_RE = re.compile(r"(?<!\!)\[([^\]]+)\]\[\]")
-_REF_LINK_SHORTCUT_RE = re.compile(r"(?<!\!)\[([^\]]+)\](?![\[\(:])")
+_ASCII_PUNCT = set(r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""")
+
+
+@dataclass
+class _Container:
+    kind: str  # "blockquote" | "list"
+    indent: int  # required content columns for "list"; 0 for "blockquote"
+
+
+@dataclass
+class _FenceState:
+    char: str
+    length: int
+    owner_depth: int
+
+
+@dataclass
+class _CommentState:
+    owner_depth: int
 
 
 def _split_lines(text: str) -> list[str]:
@@ -54,8 +71,9 @@ def _split_lines(text: str) -> list[str]:
     return lines
 
 
-def _expand_leading_indent(line: str) -> tuple[int, str]:
-    col = 0
+def _leading_indent_cols(line: str, start_col: int = 0) -> tuple[int, int]:
+    """Return ``(indent_cols, char_index)`` of leading spaces/tabs from ``start_col``."""
+    col = start_col
     idx = 0
     while idx < len(line):
         ch = line[idx]
@@ -67,105 +85,283 @@ def _expand_leading_indent(line: str) -> tuple[int, str]:
             idx += 1
         else:
             break
-    return col, line[idx:]
+    return col - start_col, idx
 
 
-def _strip_blockquotes(line: str) -> tuple[int, str]:
-    depth = 0
-    cur = line
-    while True:
-        match = _BLOCKQUOTE_RE.match(cur)
-        if match is None:
-            break
-        depth += 1
-        cur = match.group(1)
-    return depth, cur
+def _consume_cols(line: str, cols: int, start_col: int = 0) -> tuple[bool, str, int]:
+    """Consume exactly ``cols`` columns of leading whitespace (expanding tabs)."""
+    consumed = 0
+    idx = 0
+    cur_col = start_col
+    while consumed < cols and idx < len(line):
+        ch = line[idx]
+        if ch == " ":
+            consumed += 1
+            cur_col += 1
+            idx += 1
+        elif ch == "\t":
+            tab_w = 4 - (cur_col % 4)
+            if consumed + tab_w > cols:
+                # Partial tab expansion: emit leftover spaces.
+                leftover = (consumed + tab_w) - cols
+                return True, (" " * leftover) + line[idx + 1 :], start_col + cols
+            consumed += tab_w
+            cur_col += tab_w
+            idx += 1
+        else:
+            return False, line, start_col
+    if consumed < cols:
+        return False, line, start_col
+    return True, line[idx:], start_col + cols
 
 
-def _strip_fenced_code_blocks(text: str) -> str:
-    """Blank CommonMark fenced code blocks at top level, in blockquotes, and in list items."""
-    out: list[str] = []
-    fence_char: str | None = None
-    fence_len = 0
-    fence_bq_depth = 0
-    fence_max_close_indent = 3
-    # Stack of active list-item content columns at each blockquote depth.
-    list_indents: list[int] = []
-    prev_bq_depth = 0
-
-    for line in _split_lines(text):
-        bq_depth, inner = _strip_blockquotes(line)
-        if fence_char is not None:
-            if bq_depth < fence_bq_depth:
-                # Lazy/closed blockquote terminates the inner fence before this line.
-                fence_char = None
-                fence_len = 0
-                list_indents = []
-            else:
-                # Strip any extra blockquote markers if still inside same/deeper quote.
-                close_col, close_rest = _expand_leading_indent(inner)
-                close_match = _CLOSE_FENCE_RE.match(close_rest)
-                if (
-                    bq_depth == fence_bq_depth
-                    and close_col <= fence_max_close_indent
-                    and close_match is not None
-                    and close_match.group(2)[0] == fence_char
-                    and len(close_match.group(2)) >= fence_len
-                ):
-                    fence_char = None
-                    fence_len = 0
-                out.append("")
-                continue
-
-        if bq_depth != prev_bq_depth:
-            list_indents = []
-            prev_bq_depth = bq_depth
-
-        if not inner.strip():
-            out.append(line)
-            continue
-
-        col, rest = _expand_leading_indent(inner)
-        while list_indents and col < list_indents[-1]:
-            list_indents.pop()
-
-        # Unwrap any list-item marker on this line to discover its content column.
-        check_col = col
-        check_rest = rest
-        base_col = list_indents[-1] if list_indents else 0
-        list_match = _LIST_ITEM_RE.match(inner)
-        if list_match is not None and col <= base_col + 3:
-            marker_end = len(list_match.group(1)) + len(list_match.group(0)) - len(list_match.group(3))
-            # Recompute column width accounting for spaces/tabs in marker + gap.
-            prefix = inner[:marker_end]
-            content_col = 0
-            for ch in prefix:
-                content_col += (4 - (content_col % 4)) if ch == "\t" else 1
-            list_indents.append(content_col)
-            base_col = content_col
-            sub_col, sub_rest = _expand_leading_indent(list_match.group(3))
-            check_col = content_col + sub_col
-            check_rest = sub_rest
-
-        open_match = _OPEN_FENCE_RE.match(check_rest)
-        if open_match is not None and check_col <= base_col + 3:
-            marker = open_match.group(2)
-            info = open_match.group(3)
-            if not (marker[0] == "`" and "`" in info):
-                fence_char = marker[0]
-                fence_len = len(marker)
-                fence_bq_depth = bq_depth
-                fence_max_close_indent = base_col + 3
-                out.append("")
-                continue
-
-        out.append(line)
-    return "\n".join(out)
+def _strip_one_blockquote(line: str, start_col: int) -> tuple[bool, str, int]:
+    indent, idx = _leading_indent_cols(line, start_col)
+    if indent > 3 or idx >= len(line) or line[idx] != ">":
+        return False, line, start_col
+    col_after_gt = start_col + indent + 1
+    rest = line[idx + 1 :]
+    if rest.startswith(" "):
+        return True, rest[1:], col_after_gt + 1
+    if rest.startswith("\t"):
+        tab_w = 4 - (col_after_gt % 4)
+        return True, (" " * (tab_w - 1)) + rest[1:], col_after_gt + 1
+    return True, rest, col_after_gt
 
 
 def _visible_prose(text: str) -> str:
-    """Return Markdown text with fenced code blocks and HTML comments removed."""
-    return _HTML_COMMENT_RE.sub("", _strip_fenced_code_blocks(text))
+    """Extract visible CommonMark prose lines, removing fences, indented code, and HTML comments.
+
+    Tracks nested blockquote and list containers so fences opened inside nested containers
+    (e.g. ``- > ~~~``) blank their body, unclosed container fences close when their owning
+    container closes (e.g. ``- ~~~`` followed by top-level text), indented code blocks
+    (>= 4 spaces outside a paragraph) are blanked, and HTML comments cannot open fences.
+    """
+    out: list[str] = []
+    containers: list[_Container] = []
+    fence: _FenceState | None = None
+    comment: _CommentState | None = None
+    in_paragraph = False
+
+    for raw_line in _split_lines(text):
+        rest = raw_line
+        col = 0
+        matched = 0
+        is_blank = False
+
+        # Step 1: Match existing open containers from outermost to innermost.
+        for container in containers:
+            if not rest.strip():
+                is_blank = True
+                break
+            if container.kind == "blockquote":
+                ok, next_rest, next_col = _strip_one_blockquote(rest, col)
+                if not ok:
+                    break
+                rest, col = next_rest, next_col
+                matched += 1
+            else:
+                ok, next_rest, next_col = _consume_cols(rest, container.indent, col)
+                if not ok:
+                    break
+                rest, col = next_rest, next_col
+                matched += 1
+
+        if is_blank or not rest.strip():
+            # Blank line closes any unclosed paragraph; stays inside open fence/comment.
+            in_paragraph = False
+            if fence is not None or comment is not None:
+                out.append("")
+            else:
+                out.append("")
+            continue
+
+        # Close containers that did not match this non-blank line.
+        if matched < len(containers):
+            containers = containers[:matched]
+            if fence is not None and fence.owner_depth > matched:
+                fence = None
+            if comment is not None and comment.owner_depth > matched:
+                comment = None
+            in_paragraph = False
+
+        # Step 2: If still inside a multi-line HTML comment, consume until `-->`.
+        if comment is not None:
+            end_idx = rest.find("-->")
+            if end_idx == -1:
+                out.append("")
+                continue
+            comment = None
+            after = rest[end_idx + 3 :]
+            if not after.strip():
+                in_paragraph = False
+                out.append("")
+                continue
+            rest = after
+            in_paragraph = False
+
+        # Step 3: If still inside a fenced code block, check for closing fence at owner depth.
+        if fence is not None:
+            indent, idx = _leading_indent_cols(rest, col)
+            close_match = _CLOSE_FENCE_RE.match(rest[idx:]) if indent <= 3 else None
+            if (
+                close_match is not None
+                and close_match.group(1)[0] == fence.char
+                and len(close_match.group(1)) >= fence.length
+            ):
+                fence = None
+            out.append("")
+            continue
+
+        # Step 4: Open any new nested containers on this line (blockquote / list item).
+        opened_container = False
+        while True:
+            indent, idx = _leading_indent_cols(rest, col)
+            if indent > 3:
+                break
+            body = rest[idx:]
+            if body.startswith(">"):
+                ok, next_rest, next_col = _strip_one_blockquote(rest, col)
+                if ok:
+                    containers.append(_Container("blockquote", 0))
+                    rest, col = next_rest, next_col
+                    opened_container = True
+                    in_paragraph = False
+                    continue
+            list_match = _LIST_ITEM_RE.match(body)
+            if list_match is not None:
+                marker = list_match.group(1)
+                gap = list_match.group(2)
+                after_item = list_match.group(3)
+                # Empty list item or non-empty list item content column.
+                marker_cols = len(marker)
+                gap_cols, _ = _leading_indent_cols(gap, col + indent + marker_cols)
+                if not after_item.strip():
+                    content_indent = indent + marker_cols + 1
+                    containers.append(_Container("list", content_indent))
+                    rest = ""
+                    col += content_indent
+                    opened_container = True
+                    in_paragraph = False
+                    break
+                # CommonMark §5.2: if >= 5 spaces follow marker, content starts at marker+1 (rest is indented code).
+                if gap_cols >= 5:
+                    content_indent = indent + marker_cols + 1
+                    _, rest, col = _consume_cols(rest, content_indent, col)
+                else:
+                    content_indent = indent + marker_cols + max(gap_cols, 1)
+                    rest = after_item
+                    col += content_indent
+                containers.append(_Container("list", content_indent))
+                opened_container = True
+                in_paragraph = False
+                continue
+            break
+
+        if not rest.strip():
+            in_paragraph = False
+            out.append("")
+            continue
+
+        # Step 5: Indented code block (>= 4 columns outside a paragraph).
+        indent, idx = _leading_indent_cols(rest, col)
+        if indent >= 4 and not in_paragraph:
+            out.append("")
+            continue
+
+        # Step 6: HTML comment handling before fence detection so `<!-- ``` -->` cannot open a fence.
+        stripped_line = _strip_line_html_comments(rest, owner_depth=len(containers))
+        if isinstance(stripped_line, tuple):
+            visible_part, comment = stripped_line
+            if not visible_part.strip():
+                in_paragraph = False
+                out.append("")
+                continue
+            rest = visible_part
+        else:
+            rest = stripped_line
+            if not rest.strip():
+                in_paragraph = False
+                out.append("")
+                continue
+
+        # Step 7: Fenced code block opener (<= 3 columns after containers).
+        indent, idx = _leading_indent_cols(rest, col)
+        if indent <= 3:
+            open_match = _OPEN_FENCE_RE.match(rest[idx:])
+            if open_match is not None:
+                marker = open_match.group(1)
+                info = open_match.group(2)
+                if not (marker[0] == "`" and "`" in info):
+                    fence = _FenceState(marker[0], len(marker), owner_depth=len(containers))
+                    in_paragraph = False
+                    out.append("")
+                    continue
+
+        # Step 8: ATX heading or thematic break ends paragraph state; normal text continues/starts it.
+        if _ATX_HEADING_RE.match(rest) or _THEMATIC_BREAK_RE.match(rest):
+            in_paragraph = False
+        else:
+            in_paragraph = True if (not opened_container or bool(rest.strip())) else False
+        out.append(rest)
+
+    return "\n".join(out)
+
+
+def _strip_line_html_comments(
+    line: str, *, owner_depth: int
+) -> str | tuple[str, _CommentState]:
+    """Strip inline ``<!-- ... -->`` comments on ``line`` (ignoring ones inside inline code spans).
+
+    If an unclosed ``<!--`` opens on ``line``, returns ``(prefix_before_comment, _CommentState)``.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        if line[i] == "\\" and i + 1 < n and line[i + 1] in _ASCII_PUNCT:
+            out.append(line[i : i + 2])
+            i += 2
+            continue
+        if line[i] == "`":
+            j = i
+            while j < n and line[j] == "`":
+                j += 1
+            tick_len = j - i
+            close_idx = _find_matching_backticks(line, j, tick_len)
+            if close_idx != -1:
+                out.append(line[i : close_idx + tick_len])
+                i = close_idx + tick_len
+                continue
+            out.append(line[i:j])
+            i = j
+            continue
+        if line.startswith("<!--", i):
+            end_idx = line.find("-->", i + 4)
+            if end_idx == -1:
+                return "".join(out), _CommentState(owner_depth=owner_depth)
+            i = end_idx + 3
+            continue
+        out.append(line[i])
+        i += 1
+    return "".join(out)
+
+
+def _find_matching_backticks(text: str, start: int, tick_len: int) -> int:
+    """Return index of matching backtick run of exact length ``tick_len``, or ``-1``."""
+    k = start
+    n = len(text)
+    while k < n:
+        if text[k] == "`":
+            m = k
+            while m < n and text[m] == "`":
+                m += 1
+            if m - k == tick_len:
+                return k
+            k = m
+        else:
+            k += 1
+    return -1
 
 
 def _iter_atx_headings(text: str) -> list[tuple[int, int, str]]:
@@ -181,9 +377,8 @@ def _iter_atx_headings(text: str) -> list[tuple[int, int, str]]:
     return headings
 
 
-def _extract_markdown_section(text: str, *, level: int, title: str) -> str | None:
-    """Extract the visible body of a Markdown ATX section (outside fences & HTML comments)."""
-    visible = _visible_prose(text)
+def _extract_section_from_visible(visible: str, *, level: int, title: str) -> str | None:
+    """Extract the body of an ATX section from already-filtered visible prose."""
     lines = _split_lines(visible)
     collecting = False
     collected: list[str] = []
@@ -263,21 +458,31 @@ def merge_target_safety_gate_findings(
 ) -> list[str]:
     """Return missing/mutated/misplaced invariants for the claude-execute-phase safety gate."""
     findings: list[str] = []
+    visible_skill = _visible_prose(skill_md_text)
 
-    workflow_body = _extract_markdown_section(skill_md_text, level=2, title=_WORKFLOW_HEADING)
+    workflow_body = _extract_section_from_visible(visible_skill, level=2, title=_WORKFLOW_HEADING)
     if workflow_body is None:
         findings.append(f"{label}/SKILL.md: missing `## {_WORKFLOW_HEADING}` section")
     else:
-        subheadings = [(line_no, title) for line_no, lvl, title in _iter_atx_headings(workflow_body) if lvl == 3]
+        subheadings = [
+            (line_no, title)
+            for line_no, lvl, title in _iter_atx_headings(workflow_body)
+            if lvl == 3
+        ]
         by_title = {title: line_no for line_no, title in subheadings}
-        gate_body = _extract_markdown_section(workflow_body, level=3, title=_SAFETY_GATE_HEADING)
+        gate_body = _extract_section_from_visible(
+            workflow_body, level=3, title=_SAFETY_GATE_HEADING
+        )
         if gate_body is None:
             findings.append(
                 f"{label}/SKILL.md: missing `### {_SAFETY_GATE_HEADING}` inside `## {_WORKFLOW_HEADING}`"
             )
         else:
             gate_pos = by_title[_SAFETY_GATE_HEADING]
-            if _INTERACTIVE_STEPS_HEADING not in by_title or gate_pos < by_title[_INTERACTIVE_STEPS_HEADING]:
+            if (
+                _INTERACTIVE_STEPS_HEADING not in by_title
+                or gate_pos < by_title[_INTERACTIVE_STEPS_HEADING]
+            ):
                 findings.append(
                     f"{label}/SKILL.md: `### {_SAFETY_GATE_HEADING}` must follow `### {_INTERACTIVE_STEPS_HEADING}` in Workflow"
                 )
@@ -292,7 +497,7 @@ def merge_target_safety_gate_findings(
                         f"{label}/SKILL.md: Step 2 merge-target safety gate missing {clause_name} ({phrase!r})"
                     )
 
-    pub_body = _extract_markdown_section(skill_md_text, level=2, title="Publication mode")
+    pub_body = _extract_section_from_visible(visible_skill, level=2, title="Publication mode")
     if pub_body is None:
         findings.append(f"{label}/SKILL.md: missing `## Publication mode` section")
     else:
@@ -304,8 +509,9 @@ def merge_target_safety_gate_findings(
                 )
 
     if interactive_steps_text is not None:
-        preflight_body = _extract_markdown_section(
-            interactive_steps_text, level=2, title="Step 2 — Preflight"
+        visible_steps = _visible_prose(interactive_steps_text)
+        preflight_body = _extract_section_from_visible(
+            visible_steps, level=2, title="Step 2 — Preflight"
         )
         if preflight_body is None:
             findings.append(
@@ -331,71 +537,144 @@ def _normalize_relative_target(raw_target: str) -> str:
     return target
 
 
-def _extract_code_spans_and_mask(prose: str) -> tuple[set[str], str]:
-    """Scan CommonMark inline code spans per paragraph, returning exact ref paths and masked text."""
-    code_refs: set[str] = set()
-    masked_paragraphs: list[str] = []
-    for paragraph in re.split(r"(\n[ \t]*\n)", prose):
-        if re.fullmatch(r"\n[ \t]*\n", paragraph):
-            masked_paragraphs.append(paragraph)
+def _find_bracket_close(text: str, open_idx: int) -> int:
+    """Find the closing ``]`` matching ``[`` at ``open_idx`` (respecting escapes & code spans)."""
+    n = len(text)
+    depth = 1
+    i = open_idx + 1
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n and text[i + 1] in _ASCII_PUNCT:
+            i += 2
             continue
-        out: list[str] = []
-        i = 0
-        n = len(paragraph)
-        while i < n:
-            if paragraph[i] == "`":
-                j = i
-                while j < n and paragraph[j] == "`":
-                    j += 1
-                tick_len = j - i
-                k = j
-                found_end = -1
-                close_end = -1
-                while k < n:
-                    if paragraph[k] == "`":
-                        m = k
-                        while m < n and paragraph[m] == "`":
-                            m += 1
-                        if m - k == tick_len:
-                            found_end = k
-                            close_end = m
-                            break
-                        k = m
-                    else:
-                        k += 1
-                if found_end != -1:
-                    inner = paragraph[j:found_end]
-                    if (
-                        len(inner) >= 2
-                        and inner.startswith(" ")
-                        and inner.endswith(" ")
-                        and inner.strip()
-                    ):
-                        inner = inner[1:-1]
-                    candidate = inner[2:] if inner.startswith("./") else inner
-                    if candidate.startswith("references/") and not any(
-                        ch.isspace() for ch in candidate
-                    ):
-                        code_refs.add(candidate)
-                    out.append(" " * (close_end - i))
-                    i = close_end
-                    continue
-                out.append(paragraph[i:j])
-                i = j
+        if ch == "`":
+            j = i
+            while j < n and text[j] == "`":
+                j += 1
+            tick_len = j - i
+            close_bt = _find_matching_backticks(text, j, tick_len)
+            if close_bt != -1:
+                i = close_bt + tick_len
                 continue
-            out.append(paragraph[i])
+            i = j
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _scan_paragraph_inline_links(
+    paragraph: str, definitions: dict[str, str], linked: set[str]
+) -> None:
+    """Single-pass CommonMark inline scanner for links, images (ignored), escapes, and code spans."""
+    i = 0
+    n = len(paragraph)
+    while i < n:
+        ch = paragraph[i]
+        # 1. Backslash escape skips escaped ASCII punctuation (e.g. `\[Guide](...)`).
+        if ch == "\\" and i + 1 < n and paragraph[i + 1] in _ASCII_PUNCT:
+            i += 2
+            continue
+
+        # 2. Inline code span: exact `references/...` counts; literal link examples do not.
+        if ch == "`":
+            j = i
+            while j < n and paragraph[j] == "`":
+                j += 1
+            tick_len = j - i
+            close_bt = _find_matching_backticks(paragraph, j, tick_len)
+            if close_bt != -1:
+                inner = paragraph[j:close_bt]
+                if (
+                    len(inner) >= 2
+                    and inner.startswith(" ")
+                    and inner.endswith(" ")
+                    and inner.strip()
+                ):
+                    inner = inner[1:-1]
+                candidate = inner[2:] if inner.startswith("./") else inner
+                if candidate.startswith("references/") and not any(
+                    c.isspace() for c in candidate
+                ):
+                    linked.add(candidate)
+                i = close_bt + tick_len
+                continue
+            i = j
+            continue
+
+        # 3. Image node (`![alt](...)`, `![alt][label]`, `![label][]`, `![label]`): consume & ignore!
+        if ch == "!" and i + 1 < n and paragraph[i + 1] == "[":
+            close_br = _find_bracket_close(paragraph, i + 1)
+            if close_br != -1:
+                after = close_br + 1
+                if after < n and paragraph[after] == "(":
+                    m_dest = _INLINE_DEST_RE.match(paragraph[after + 1 :])
+                    if m_dest is not None:
+                        i = after + 1 + m_dest.end()
+                        continue
+                if after < n and paragraph[after] == "[":
+                    close_ref = _find_bracket_close(paragraph, after)
+                    if close_ref != -1:
+                        label_text = paragraph[after + 1 : close_ref]
+                        key = _normalize_ref_label(label_text or paragraph[i + 2 : close_br])
+                        if key in definitions:
+                            i = close_ref + 1
+                            continue
+                shortcut_key = _normalize_ref_label(paragraph[i + 2 : close_br])
+                if shortcut_key in definitions:
+                    i = close_br + 1
+                    continue
             i += 1
-        masked_paragraphs.append("".join(out))
-    return code_refs, "".join(masked_paragraphs)
+            continue
+
+        # 4. Link node (`[text](dest)`, `[text][label]`, `[label][]`, `[label]`).
+        if ch == "[":
+            close_br = _find_bracket_close(paragraph, i)
+            if close_br != -1:
+                link_text = paragraph[i + 1 : close_br]
+                after = close_br + 1
+                # Inline link: [text](dest) or [text](<dest>)
+                if after < n and paragraph[after] == "(":
+                    m_dest = _INLINE_DEST_RE.match(paragraph[after + 1 :])
+                    if m_dest is not None:
+                        dest = m_dest.group(1) if m_dest.group(1) is not None else m_dest.group(2)
+                        if dest:
+                            linked.add(_normalize_relative_target(dest))
+                        i = after + 1 + m_dest.end()
+                        continue
+                # Full or collapsed reference link: [text][label] or [label][]
+                if after < n and paragraph[after] == "[":
+                    close_ref = _find_bracket_close(paragraph, after)
+                    if close_ref != -1:
+                        label_text = paragraph[after + 1 : close_ref]
+                        key = _normalize_ref_label(label_text or link_text)
+                        target = definitions.get(key)
+                        if target:
+                            linked.add(target)
+                            i = close_ref + 1
+                            continue
+                # Shortcut reference link: [label] (not followed by `[`)
+                elif not (after < n and paragraph[after] == "["):
+                    key = _normalize_ref_label(link_text)
+                    target = definitions.get(key)
+                    if target:
+                        linked.add(target)
+                        i = close_br + 1
+                        continue
+            i += 1
+            continue
+
+        i += 1
 
 
 def _extract_linked_relative_paths(skill_md_text: str) -> set[str]:
-    """Collect relative reference paths linked via Markdown links or exact inline code spans."""
-    prose = _visible_prose(skill_md_text)
-    linked, no_code = _extract_code_spans_and_mask(prose)
-
-    # Collect link reference definitions and strip them before scanning link usages so a
-    # bare definition line cannot count as a usage of itself.
+    """Collect relative reference paths linked via CommonMark links or exact inline code spans."""
+    visible = _visible_prose(skill_md_text)
     definitions: dict[str, str] = {}
 
     def _consume_link_def(match: re.Match[str]) -> str:
@@ -405,29 +684,16 @@ def _extract_linked_relative_paths(skill_md_text: str) -> set[str]:
             definitions[label] = _normalize_relative_target(dest)
         return ""
 
-    body = _LINK_DEF_RE.sub(_consume_link_def, no_code)
-
-    # 1. Inline Markdown links: [text](dest) or [text](<dest>) (images excluded).
-    for match in _INLINE_LINK_RE.finditer(body):
-        dest = match.group(1) if match.group(1) is not None else match.group(2)
-        if dest:
-            linked.add(_normalize_relative_target(dest))
-
-    # 2. Used reference links: [text][label], [label][], and shortcut [label].
-    used_labels: set[str] = set()
-    for pattern in (_REF_LINK_FULL_RE, _REF_LINK_COLLAPSED_RE, _REF_LINK_SHORTCUT_RE):
-        for match in pattern.finditer(body):
-            used_labels.add(_normalize_ref_label(match.group(1)))
-    for label in used_labels:
-        target = definitions.get(label)
-        if target:
-            linked.add(target)
-
+    body = _LINK_DEF_RE.sub(_consume_link_def, visible)
+    linked: set[str] = set()
+    for paragraph in re.split(r"\n[ \t]*\n", body):
+        if paragraph.strip():
+            _scan_paragraph_inline_links(paragraph, definitions, linked)
     return linked
 
 
 def is_reference_linked_in_skill_md(skill_md_text: str, rel_ref_path: str) -> bool:
-    """True if ``rel_ref_path`` (e.g. ``references/foo.md``) is linked outside code fences."""
+    """True if ``rel_ref_path`` (e.g. ``references/foo.md``) is linked outside code/comments."""
     return rel_ref_path in _extract_linked_relative_paths(skill_md_text)
 
 
@@ -502,6 +768,7 @@ class ClaudeExecutePhaseMergeTargetGateTest(unittest.TestCase):
         gate_start = base_skill.index(f"### {_SAFETY_GATE_HEADING}")
         gate_end = base_skill.index(f"### {_STEP_95_HEADING}", gate_start)
         gate_block = base_skill[gate_start:gate_end]
+        gate_heading, gate_rest = gate_block.split("\n", 1)
 
         def _mutate_gate(old: str, new: str) -> str:
             self.assertIn(old, gate_block)
@@ -531,9 +798,19 @@ class ClaudeExecutePhaseMergeTargetGateTest(unittest.TestCase):
         )
         html_commented_gate = (
             base_skill[:gate_start]
-            + f"### {_SAFETY_GATE_HEADING}\n\n<!--\n"
-            + gate_block.split("\n", 1)[1]
+            + f"{gate_heading}\n\n<!--\n"
+            + gate_rest
             + "-->\n\n"
+            + base_skill[gate_end:]
+        )
+        indented_code_gate = (
+            base_skill[:gate_start]
+            + gate_heading
+            + "\n"
+            + "\n".join(
+                ("    " + ln if ln.strip() else ln) for ln in gate_rest.splitlines()
+            )
+            + "\n\n"
             + base_skill[gate_end:]
         )
 
@@ -559,6 +836,12 @@ class ClaudeExecutePhaseMergeTargetGateTest(unittest.TestCase):
             (
                 "gate body hidden in HTML comment",
                 html_commented_gate,
+                base_steps,
+                "Step 2 merge-target safety gate missing stops on main or protected branch",
+            ),
+            (
+                "gate body indented as 4-space code block",
+                indented_code_gate,
                 base_steps,
                 "Step 2 merge-target safety gate missing stops on main or protected branch",
             ),
@@ -692,7 +975,9 @@ class ShippedReferenceLinksTest(unittest.TestCase):
         self.assertGreaterEqual(total, 25, f"expected >= 25 bundle references, found {total}")
         self.assertEqual(findings, [], "\n".join(findings))
 
-    def test_reference_link_checker_accepts_valid_links_and_rejects_orphans_fences_and_malformed(self) -> None:
+    def test_reference_link_checker_accepts_valid_links_and_rejects_orphans_fences_and_malformed(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             skill = root / "demo-skill"
@@ -708,13 +993,19 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                 "ref-full.md",
                 "ref-collapsed.md",
                 "ref-shortcut.md",
+                "after-unclosed-list-fence.md",
+                "after-comment-fence.md",
                 "orphan.md",
                 "fenced-top.md",
                 "fenced-list.md",
                 "fenced-quote.md",
+                "fenced-nested-list-quote.md",
+                "indented-code.md",
                 "commented-only.md",
                 "prefix-only.md",
-                "image-only.md",
+                "image-inline.md",
+                "image-ref.md",
+                "escaped-inline.md",
                 "malformed-angle.md",
                 "code-link-example.md",
                 "unused-def.md",
@@ -730,10 +1021,14 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                 "- Also [dot](./references/dot-rel.md) and [deep](references/nested/deep.md).\n"
                 "- Reference links: [the full guide][full-guide], [ref-collapsed][], and [ref-shortcut].\n"
                 "- Wrong prefix: `other/references/prefix-only.md` and `references/prefix-only.md.bak`.\n"
-                "- Image is not a doc link: ![img](references/image-only.md).\n"
+                "- Inline image is not a doc link: ![img](references/image-inline.md).\n"
+                "- Reference image is not a doc link: ![preview][img-ref].\n"
+                "- Escaped inline link is not a link: \\[Guide](references/escaped-inline.md).\n"
                 "- Malformed angle link: [bad](<references/malformed-angle.md).\n"
                 "- Literal link inside code span is not a link: `[ex](references/code-link-example.md)`.\n"
                 "<!-- [hidden](references/commented-only.md) `references/commented-only.md` -->\n\n"
+                "    [indented-code](references/indented-code.md)\n"
+                "    `references/indented-code.md`\n\n"
                 "```markdown\n"
                 "[top-fence](references/fenced-top.md)\n"
                 "`references/fenced-top.md`\n"
@@ -749,24 +1044,39 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                 "> [quote-fence](references/fenced-quote.md)\n"
                 "> `references/fenced-quote.md`\n"
                 "> ~~~\n\n"
+                "- > ~~~markdown\n"
+                "  > [nested](references/fenced-nested-list-quote.md)\n"
+                "  > ~~~\n\n"
+                "- ~~~markdown\n"
+                "  [still-inside-list-fence](references/orphan.md)\n\n"
+                "Top-level prose after unclosed list fence: [ok](references/after-unclosed-list-fence.md).\n\n"
+                "<!--\n"
+                "```markdown\n"
+                "-->\n\n"
+                "Visible after comment with fence marker: [ok](references/after-comment-fence.md).\n\n"
                 "[full-guide]: references/ref-full.md\n"
                 "[ref-collapsed]: references/ref-collapsed.md#top\n"
                 "[ref-shortcut]: <references/ref-shortcut.md>\n"
+                "[img-ref]: references/image-ref.md\n"
                 "[unused-def]: references/unused-def.md\n",
                 encoding="utf-8",
             )
 
             count, findings = unlinked_reference_findings_for_skill(skill, label_root=root)
-            self.assertEqual(count, 19)
+            self.assertEqual(count, 25)
             self.assertEqual(
                 findings,
                 [
                     "demo-skill/SKILL.md: shipped `references/code-link-example.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/commented-only.md` is not linked from SKILL.md",
+                    "demo-skill/SKILL.md: shipped `references/escaped-inline.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/fenced-list.md` is not linked from SKILL.md",
+                    "demo-skill/SKILL.md: shipped `references/fenced-nested-list-quote.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/fenced-quote.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/fenced-top.md` is not linked from SKILL.md",
-                    "demo-skill/SKILL.md: shipped `references/image-only.md` is not linked from SKILL.md",
+                    "demo-skill/SKILL.md: shipped `references/image-inline.md` is not linked from SKILL.md",
+                    "demo-skill/SKILL.md: shipped `references/image-ref.md` is not linked from SKILL.md",
+                    "demo-skill/SKILL.md: shipped `references/indented-code.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/malformed-angle.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/orphan.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/prefix-only.md` is not linked from SKILL.md",
