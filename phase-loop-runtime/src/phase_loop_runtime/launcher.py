@@ -2255,6 +2255,23 @@ def launch_with_spec(
     if action == "review" and not dry_run and spec.claude_route in {"claude_channel", "claude_agent_view"}:
         from .sandbox_egress import SeatIdentityUnverified
         raise SeatIdentityUnverified("executor_review_route_unsupported")
+    if (
+        sys.platform == "darwin"
+        and lease_authority is not None
+        and not dry_run
+        and spec.executor == "claude"
+        and spec.claude_route in {"claude_channel", "claude_agent_view"}
+    ):
+        return _result_with_spec(
+            LaunchResult(
+                command=list(spec.command),
+                returncode=1,
+                available=False,
+                unavailable_reason="native_macos_leased_execution_requires_linux_worker",
+                output="Run leased worktree execution on a Linux worker. Ordinary local macOS routing remains available.",
+            ),
+            spec,
+        )
     if spec.executor == "claude" and spec.claude_route == "claude_channel" and not dry_run:
         if dependency is not None:
             dependency.validate_command(spec.command, provider=spec.executor)
@@ -4727,9 +4744,9 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         injection_mode=spec.delivery_mode,
         context_sha256=spec.injection_metadata.context_sha256,
         expected_skill_pack=spec.injection_metadata.expected_skill_pack,
-        available=spec.available,
+        available=spec.available and result.available,
         dry_run_only=spec.dry_run_only,
-        unavailable_reason=spec.reason,
+        unavailable_reason=result.unavailable_reason or spec.reason,
         live_proof_gate=spec.live_proof_gate,
         promotion_status=spec.promotion_status,
         promotion_requirements=spec.promotion_requirements,
