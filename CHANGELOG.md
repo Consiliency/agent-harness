@@ -93,7 +93,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   eliminating non-atomic `mv` fallbacks, preserving non-collision OS diagnostics, and
   documenting the `python3` prerequisite in `docs/TEAM-ONBOARDING.md`
   (agent-harness#1605).
-- Refresh stale implementer comments (`presets.py`, `panel_invoker.py`) from
+- Refresh stale implementer comments (`presets.py`, `fixtures.py`, `panel_invoker.py`) from
   `claude-sonnet-5` to `claude-sonnet-5-5`, rename
   `ShippedPolicyTest.test_execute_claude_becomes_sonnet_high` to
   `test_execute_claude_becomes_sonnet_5_5_medium` in `test_model_class_policy.py`, and

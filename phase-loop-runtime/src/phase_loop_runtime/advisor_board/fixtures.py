@@ -34,7 +34,7 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 #
 # The claude seat runs Opus 5.5 (``claude-opus-5-5``), the maintainer's review default
 # "for now" (2026-09-23; Fable ``claude-fable-5-1`` before that), not the implementer
-# model ``claude-sonnet-5``. It keeps the review-policy seat NAME ``fable``. This is
+# model ``claude-sonnet-5-5``. It keeps the review-policy seat NAME ``fable``. This is
 # byte-pinned to ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` by the golden proof.
 DEFAULT_SEATS: tuple[Seat, ...] = (
     Seat(model="gpt-6.2-astra", effort="high", harness="codex", lens="red-team",
