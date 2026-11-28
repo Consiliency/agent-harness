@@ -1,0 +1,12 @@
+{
+  "_note": "agent-harness#1710 permitted golden delta: extend the claude_channel `session_model_unbound` disclaimer in `claude_route_warnings` to disclaim recorded effort (`selected_effort`, `requested_effort`, `policy_effort`, `effective_effort`) alongside `selected_model`. `current` -> `pre_1710` restores the golden as it was before; nothing else moved.",
+  "changes": [
+    {
+      "case": "claude_channel_solo",
+      "current": "session_model_unbound: the claude-channel `send` transport binds neither `--model` nor `--effort`; the run inherits the operator's ambient claude session model and effort. `selected_model` and the recorded effort fields (`selected_effort`, `requested_effort`, `policy_effort`, `effective_effort`) record the INTENDED tier settings, NOT launch-bound ones (a send cannot rebind an existing session).",
+      "field": "claude_route_warnings",
+      "index": 0,
+      "pre_1710": "session_model_unbound: the claude-channel `send` transport does not bind `--model`; the run inherits the operator's ambient claude session model. `selected_model` records the INTENDED tier model, NOT a launch-bound one (a send cannot rebind an existing session)."
+    }
+  ]
+}

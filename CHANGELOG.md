@@ -61,6 +61,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Extend the Claude Channel `session_model_unbound` provenance disclaimer
+  (`launcher._CHANNEL_SESSION_MODEL_UNBOUND_WARNING`) to disclaim recorded effort
+  (`selected_effort`, `requested_effort`, `policy_effort`, `effective_effort`) alongside
+  `selected_model`, since `claude-channel send` binds neither `--model` nor `--effort`
+  (agent-harness#1710).
 - Add `"codex"` to `panel_invoker._SANDBOX_INCAPABLE_BROKERED_LEGS` so the retained
   sealed non-jailed brokered Codex route (`_brokered_codex_command`, sealed in
   agent-harness#1916) no longer reports `seat_filesystem_unconfined` in launch modes,

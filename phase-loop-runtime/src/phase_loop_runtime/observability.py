@@ -131,10 +131,11 @@ def run_artifacts(repo: Path, phase: str, action: str, index: int, command_or_sp
             "wrapped_cwd": command_or_spec.wrapped_cwd,
             "launch_timeout_seconds": command_or_spec.launch_timeout_seconds,
             "claude_execution_mode": command_or_spec.claude_execution_mode,
-            # CR round-8 finding: launch.json is the DURABLE artifact an auditor reads, and it
-            # records selected_model for a channel run. Persist the route context beside it so
-            # selected_model is not read as launch-bound — claude_route travels with it, and the
-            # session_model_unbound warning is written below when present (mirrors
+            # CR round-8 finding & agent-harness#1710: launch.json is the DURABLE artifact an
+            # auditor reads, and it records selected_model and selected_effort for a channel
+            # run. Persist the route context beside them so neither is read as launch-bound —
+            # claude_route travels with them, and the session_model_unbound warning (covering
+            # both model and effort) is written below when present (mirrors
             # LaunchResult.event_metadata).
             "claude_route": command_or_spec.claude_route,
             "claude_team_policy": (

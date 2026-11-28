@@ -54,6 +54,14 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
 
 def test_golden_delta_is_only_final_schema_exclusion():
     golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    # The fourteenth permitted delta (agent-harness#1710): the Claude Channel
+    # `session_model_unbound` disclaimer now disclaims recorded effort alongside model.
+    # Bind the current warning string, then restore the prior one.
+    pre_1710 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1710_channel_effort_disclaimer.json").read_text())
+    for change in pre_1710["changes"]:
+        case = golden[change["case"]]
+        assert case[change["field"]][change["index"]] == change["current"]
+        case[change["field"]][change["index"]] = change["pre_1710"]
     # The thirteenth permitted delta (agent-harness#2010): the OpenAI 6.2 defaults move
     # only model fields (codex execute argv + selected_model, the command executor's
     # selected_model). Bind the current values, then restore the prior ones.
