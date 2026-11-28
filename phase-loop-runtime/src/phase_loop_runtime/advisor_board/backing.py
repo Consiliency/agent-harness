@@ -851,20 +851,33 @@ class ParentUnixBroker:
             except OSError:
                 pass
 
+    def _prelaunch_admission_remaining(self) -> float:
+        try:
+            return self._admission_remaining()
+        except _BrokerCancelledError:
+            self.evidence["broker_failure_disposition"] = "operation_cancelled"
+            raise ValueError("broker operation cancelled or closed") from None
+
     def _accept_connection(self) -> socket.socket:
-        """Accept one client connection without blocking past deliberate shutdown."""
+        """Accept one client connection without blocking past deliberate shutdown or 10s."""
         self._sock.setblocking(False)
+        accept_deadline_ns = time.monotonic_ns() + 10_000_000_000
         while True:
             with self._conn_lock:
                 if self._stopping:
                     if self._shutdown_disposition in {"deadline_exceeded", "operation_cancelled"}:
                         raise _BrokerShutdownStop()
                     raise OSError("broker stopping during accept")
-                timeout = (self.authorization.expires_monotonic_ns - time.monotonic_ns()) / 1e9
-                if timeout <= 0:
+                now_ns = time.monotonic_ns()
+                admission_remaining = (self.authorization.expires_monotonic_ns - now_ns) / 1e9
+                if admission_remaining <= 0:
                     raise ValueError("broker authorization expired")
                 if self._cancel_event.is_set() or not _leg_operation_active(self.authorization):
                     raise _BrokerCancelledError("broker operation cancelled or closed")
+                accept_remaining = (accept_deadline_ns - now_ns) / 1e9
+                if accept_remaining <= 0:
+                    raise TimeoutError("timed out")
+                timeout = min(accept_remaining, admission_remaining)
                 try:
                     conn, _ = self._sock.accept()
                 except (BlockingIOError, InterruptedError):
@@ -1060,11 +1073,7 @@ class ParentUnixBroker:
         self._adapter = adapter
         if cancel_event is not None:
             self._cancel_event = cancel_event
-        try:
-            self._admission_remaining()
-        except _BrokerCancelledError:
-            self.evidence["broker_failure_disposition"] = "operation_cancelled"
-            raise ValueError("broker operation cancelled or closed") from None
+        self._prelaunch_admission_remaining()
         bwrap = Path("/usr/bin/bwrap")
         python = Path("/usr/bin/python3")
         if platform.system() != "Linux" or not bwrap.is_file() or not os.access(bwrap, os.X_OK) or not python.is_file():
@@ -1130,7 +1139,7 @@ class ParentUnixBroker:
         from .. import provider_tree_proof as _tree_proof
 
         try:
-            pin_timeout = min(_tree_proof.PIN_TIMEOUT_S, self._admission_remaining())
+            pin_timeout = min(_tree_proof.PIN_TIMEOUT_S, self._prelaunch_admission_remaining())
             witness = _tree_proof.BwrapLaunch()
             launch = [str(witness.info_fd) if item == "{info_fd}" else str(witness.block_fd)
                       if item == "{block_fd}" else item for item in argv]
@@ -1221,6 +1230,8 @@ class ParentUnixBroker:
                 if proof is not None:
                     failure.add_note(f"client_proof={proof.describe()}")
                 raise failure
+            if proc is None and error:
+                self.evidence.pop("broker_failure_disposition", None)
         self._quiescence_proven = True
         adapter_quiescent = adapter.is_quiescent()
         self.evidence.update({

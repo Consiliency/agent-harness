@@ -1665,3 +1665,90 @@ def test_broker_frame_io_supports_high_numbered_socket_descriptors():
     finally:
         high_sock.close()
         s2.close()
+
+
+# ---------------------------------------------------------------------------
+# 9. Round 3 review regression pins (second prelaunch check, 10s accept timeout)
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_between_prelaunch_admission_checks_sets_operation_cancelled_disposition(
+    tmp_path, monkeypatch,
+):
+    """Cancellation firing between the first and second pre-launch admission checks
+    must still record broker_failure_disposition='operation_cancelled' and raise plain ValueError."""
+    live_cancel = threading.Event()
+    broker = _run_mocked_broker_client(
+        tmp_path,
+        monkeypatch,
+        wait_result=advisor_backing._ClientWait(completed=False, timed_out=False, cancelled=True),
+        returncode=-15,
+        cancel_event=live_cancel,
+        deadline_s=5.0,
+    )
+    orig = broker._admission_remaining
+    calls = [0]
+
+    def cancel_after_first():
+        calls[0] += 1
+        if calls[0] == 1:
+            result = orig()
+            live_cancel.set()
+            return result
+        return orig()
+
+    monkeypatch.setattr(broker, "_admission_remaining", cancel_after_first)
+    adapter = advisor_backing._make_broker_inference_adapter(
+        lambda: ("OK", "done"), lambda: None, lambda: True,
+    )
+    try:
+        with pytest.raises(ValueError) as caught:
+            broker.run_credentialless_client(adapter, deadline_s=5.0, cancel_event=live_cancel)
+        assert type(caught.value) is ValueError
+        assert calls[0] == 2
+        assert broker.evidence["broker_failure_disposition"] == "operation_cancelled"
+    finally:
+        broker.close()
+
+
+def test_accept_connection_enforces_independent_10s_timeout_under_longer_authorization(monkeypatch):
+    """_accept_connection() must time out after 10s even when authorization expires minutes later."""
+    broker = _make_stub_broker()
+    clock = [1_000_000_000_000]
+    auth = advisor_backing.ReviewLegAuthorization(
+        operation="op-accept-timeout",
+        purpose="review",
+        input_sha256="0" * 64,
+        instructions_sha256="0" * 64,
+        canonical_repo_sha256="0" * 64,
+        broker_contract=advisor_backing.PARENT_UNIX_BROKER_V1,
+        harness="codex",
+        model="gpt-5.4",
+        issued_monotonic_ns=clock[0],
+        expires_monotonic_ns=clock[0] + 300_000_000_000,  # 5 minutes remaining
+        _seal=advisor_backing._AUTHORIZATION_SEAL,
+        monitoring_policy="bounded",
+    )
+    advisor_backing._remember_leg_claim(auth, None)
+    broker.authorization = auth
+
+    class SilentListener:
+        def setblocking(self, flag: bool) -> None:
+            assert flag is False
+
+        def accept(self):
+            raise BlockingIOError(errno.EAGAIN, "no client yet")
+
+    broker._sock = SilentListener()
+    polls = [0]
+
+    def advance_clock(sock, mask, timeout_s):
+        polls[0] += 1
+        clock[0] += 6_000_000_000  # advance 6s per poll -> exceeds 10s after 2 polls
+
+    monkeypatch.setattr(advisor_backing.time, "monotonic_ns", lambda: clock[0])
+    monkeypatch.setattr(advisor_backing, "_poll_socket", advance_clock)
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        broker._accept_connection()
+    assert polls[0] == 2
