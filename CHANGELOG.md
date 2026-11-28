@@ -61,6 +61,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `load_boards(..., env=...)` with a non-default preference across non-review presets
   (`brainstorm`, `general`) in `test_gemini_model_preference_1604.py`
   (agent-harness#1722).
+- Pin explicit effort-only overrides (`effort` without `model`) across all four implementer
+  executors (`gemini`, `codex`, `claude`, `grok`) on `resolve_profile_for_executor`, the
+  shipped execution-policy path, and rendered launch argv, and pin Claude `roadmap`, `plan`,
+  and `review` `max` effort on the executor-default path in
+  `test_implementer_roster_0727.py` (agent-harness#1714; agent-harness#1715).
 - Add a sanctioned `replan` lifecycle transition (`REPLAN_TRANSITION = "replan"`) to
   `phase_loop_runtime.plan_manifest.update_lifecycle` for phase entries from
   `imported`/`committed` (preserving `status = "committed"`, validating and merging new

@@ -47,11 +47,11 @@ def _shipped(executor, action, **kw):
     )
 
 
-def _argv(executor, selection):
+def _argv(executor, selection, *, action="execute"):
     spec = build_launch_spec(build_launch_request(
-        executor=executor, action="execute", repo=Path("/repo"), roadmap=ROADMAP, phase="RUNNER",
+        executor=executor, action=action, repo=Path("/repo"), roadmap=ROADMAP, phase="RUNNER",
         plan=PLAN, model_selection=selection,
-        prompt_bundle=build_prompt("execute", ROADMAP, phase="RUNNER", plan=PLAN, harness_target=executor),
+        prompt_bundle=build_prompt(action, ROADMAP, phase="RUNNER", plan=PLAN, harness_target=executor),
         json_output=False, bypass_approvals=False,
     ))
     return spec.command
@@ -109,6 +109,7 @@ def test_execute_launch_argv_carries_the_roster(executor, monkeypatch):
     ("gemini", "review", ("gemini-4-neon", "high")),
     ("codex", "plan", ("gpt-6.2-astra", "high")),
     ("codex", "review", ("gpt-6.2-astra", "high")),
+    ("claude", "roadmap", ("claude-opus-5", "max")),
     ("claude", "plan", ("claude-opus-5", "max")),
     ("claude", "review", ("claude-opus-5-5", "max")),
     ("grok", "plan", ("grok-4.7", "high")),
@@ -117,6 +118,20 @@ def test_execute_launch_argv_carries_the_roster(executor, monkeypatch):
 def test_planning_review_and_opencode_routes_are_unchanged(executor, action, expected):
     selection = profiles.resolve_profile_for_executor(action=action, executor=executor)
     assert (selection.model, selection.effort) == expected
+
+
+@pytest.mark.parametrize(("action", "expected_model"), [
+    ("roadmap", "claude-opus-5"),
+    ("plan", "claude-opus-5"),
+    ("review", "claude-opus-5-5"),
+])
+def test_claude_authoring_and_review_pin_max_on_executor_default_path(action, expected_model):
+    # agent-harness#1715 (follow-up 6 from agent-harness#1637): pin Claude's
+    # roadmap/plan/review `max` effort on the executor-default path.
+    selection = profiles.resolve_profile_for_executor(action=action, executor="claude")
+    assert (selection.model, selection.effort) == (expected_model, "max")
+    assert selection.source == "claude_default"
+    assert profiles.EXECUTOR_EFFORT_OVERRIDES["claude"][action] == "max"
 
 
 def test_shipped_policy_without_an_executor_keeps_its_effort():
@@ -137,6 +152,29 @@ def test_explicit_operator_settings_still_win(executor, model, effort, run, monk
     assert (policy.model, policy.effort) == (model, effort)
     selection = profiles.resolve_profile_for_executor(action="execute", executor=executor, model=model, effort=effort)
     assert _contains(_argv(executor, selection), run)
+
+
+@pytest.mark.parametrize(("executor", "effort", "run"), [
+    ("gemini", "medium", ["--model", "gemini-3.8-flash-medium"]),
+    ("codex", "high", ["--model", "gpt-6.2-sol", "-c", 'model_reasoning_effort="high"']),
+    ("claude", "high", ["--model", "claude-sonnet-5-5", "--effort", "high"]),
+    ("grok", "medium", ["-m", "grok-4.7", "--reasoning-effort", "medium"]),
+])
+@pytest.mark.parametrize("action", ["execute", "repair"])
+def test_explicit_effort_only_override_wins_on_executor_default_path(
+    executor, effort, run, action, monkeypatch
+):
+    # agent-harness#1714 (follow-up 5 from agent-harness#1637): explicit --effort
+    # without --model must skip the `model is not None` early return and still
+    # override `effort_default` on the executor-default path, shipped policy, and argv.
+    assert effort != ROSTER[executor][1]
+    monkeypatch.setenv("PHASE_LOOP_CLAUDE_ROUTE", "agent_view")
+    selection = profiles.resolve_profile_for_executor(action=action, executor=executor, effort=effort)
+    assert (selection.model, selection.effort) == (ROSTER[executor][0], effort)
+    assert selection.source == f"{executor}_default"
+    policy = _shipped(executor, action, effort=effort)
+    assert (policy.model, policy.effort) == (ROSTER[executor][0], effort)
+    assert _contains(_argv(executor, selection, action=action), run)
 
 
 class _Resolved(Exception):
