@@ -13,6 +13,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   source checkout by explicit node ID in `.github/workflows/test.yml` (excluding
   network/GitHub-auth probes and writing a separate JUnit XML outside the LEGIBLE 64-node
   attestation) (agent-harness#2024).
+- Add skill-text invariant tests (`test_skill_text_invariants_1699.py`, wired into
+  `.github/workflows/skills-parity.yml`) pinning the `claude-execute-phase` Step 2
+  merge-target safety gate (including its `## Publication mode` cross-references,
+  `references/interactive-steps.md` back-pointer, and mutation falsifiers) and verifying
+  that every shipped `references/**/*.md` file across `skills_bundle/`, `skills-src/`, and
+  `phase-loop-skills/` is linked by relative path from its owning `SKILL.md` outside
+  fenced code blocks (agent-harness#1699).
 - Add a CommonMark-aware mechanical TOC lint (`test_skill_reference_toc_lint_1688.py`, wired
   into `.github/workflows/skills-parity.yml`) verifying that every `skills-src/`
   `references/*.md` over 100 lines has a top-level `## Contents` section and that every
