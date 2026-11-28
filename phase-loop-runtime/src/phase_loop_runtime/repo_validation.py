@@ -2,10 +2,9 @@
 
 ``phase-loop repo-validate`` supports ``fast``, ``gate``, ``full``, ``fix``,
 ``affected``, and ``doctor``. Resolution prefers a Justfile contract: an
-``agent::<target>`` recipe in a declared agent module, or a flat
-``agent:<target>`` recipe in the root Justfile. Otherwise it looks for a
-``package.json`` script named ``agent:<target>``. It does not infer a contract
-from generic test commands. See ``docs/repo-validation-contract.md``.
+``agent::<target>`` recipe in a declared ``mod agent`` module. Otherwise it
+looks for a ``package.json`` script named ``agent:<target>``. It does not infer
+a contract from generic test commands. See ``docs/repo-validation-contract.md``.
 
 This is the behavioural twin of dotfiles' ``scripts/agent-validation``: for the
 same repo and target it must make the same dispatch decision and preserve the
@@ -164,10 +163,12 @@ def has_just_recipe(justfile: Path, recipe: str) -> bool:
 
 
 def just_contract_command(root: Path, target: str) -> str | None:
-    """Return the just invocation (``agent::<t>`` or ``agent:<t>``) or ``None``.
+    """Return the just invocation (``agent::<t>``) or ``None``.
 
-    Mirrors the bash ``just_contract_command``: prefer the ``mod agent`` module
-    recipe, then a flat ``agent:<target>`` recipe in the root Justfile.
+    Requires a root Justfile declaring ``mod agent`` (or ``mod? agent``) and an
+    agent module file declaring a ``<target>`` recipe. Flat ``agent:<target>``
+    recipes are not valid ``just`` syntax (colons cannot appear in recipe names)
+    and are not probed (agent-harness#1617).
     """
 
     justfile = find_justfile(root)
@@ -177,8 +178,6 @@ def just_contract_command(root: Path, target: str) -> str | None:
         module = find_agent_just_module(root)
         if module is not None and has_just_recipe(module, target):
             return f"agent::{target}"
-    if has_just_recipe(justfile, f"agent:{target}"):
-        return f"agent:{target}"
     return None
 
 

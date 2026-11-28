@@ -78,10 +78,15 @@ def test_discovers_mod_agent_optional_and_skips_comments(tmp_path: Path) -> None
     assert rv.just_contract_command(tmp_path, "gate") == "agent::gate"
 
 
-def test_discovers_flat_just_recipe(tmp_path: Path) -> None:
-    # No `mod agent`; a flat `agent:gate` recipe in the root Justfile.
+def test_ignores_unparseable_flat_just_recipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # agent-harness#1617: `just` rejects colons in recipe names, so a flat
+    # `agent:gate:` line in the root Justfile is never a parseable Just contract.
+    _isolate_path(monkeypatch, tmp_path / "bin")
     _write(tmp_path, "Justfile", "agent:gate:\n\techo flat-gate\n")
-    assert rv.just_contract_command(tmp_path, "gate") == "agent:gate"
+    assert rv.just_contract_command(tmp_path, "gate") is None
+    plan = rv.resolve(tmp_path, "gate")
+    assert plan.contract_kind is None
+    assert plan.exit_code == rv.EXIT_NO_CONTRACT == 20
 
 
 def test_discovers_package_script(tmp_path: Path) -> None:

@@ -123,6 +123,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   expose `output_retention.is_sealed_present` for `evidence_resolver`; revert
   `run_bounded_capture.reclaim`'s `process.wait(timeout=1)` to `process.wait()`; and add
   W1/W4/W10/W12 behavioural coverage (agent-harness#1960).
+- Remove the unreachable flat `agent:<target>` Justfile probe from
+  `repo_validation.just_contract_command` (`just` rejects colons in recipe names, so only
+  `mod agent` + `agent::<target>` is a valid Justfile contract), and update
+  `convergence/adapters/base.py`'s module docstring to reflect default RAM scratch fallback
+  and `PHASE_LOOP_SCRATCH_DECIDED` (agent-harness#1617).
 - Retain the seat egress proxy's exit status and a bounded, sanitized stderr tail on
   startup failures (`seat_egress_proxy._start_proxy`, draining and discarding stderr in
   steady state so the pipe never blocks or grows unbounded) so intermittent proxy start
