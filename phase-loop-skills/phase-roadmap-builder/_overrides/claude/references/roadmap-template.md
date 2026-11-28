@@ -21,7 +21,7 @@ The template's sections, in order:
 
 After the template: Notes on filling in the template.
 
-```markdown
+````markdown
 # <Project Name> — Phase Plan v<N>
 
 > How to use this document: save to `specs/phase-plans-v<N>.md`, then run `/claude-plan-phase <ALIAS>` to produce the lane-level plan for each phase (→ `plans/phase-plan-v<N>-<alias>.md`), then `/claude-execute-phase <plan-doc-path>` to build it.
@@ -203,7 +203,7 @@ These gates are the narrowest contracts that unblock downstream phases. `/claude
 # Performance check
 <command>
 ```
-```
+````
 
 ## Notes on filling in the template
 
