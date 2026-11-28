@@ -533,17 +533,30 @@ class RoadmapNotFoundError(RoadmapStatusError, FileNotFoundError):
 def _display_path(path: Path, repo: Optional[Path] = None) -> str:
     """Format a roadmap or registry path without leaking absolute host directories."""
     raw = Path(path)
-    if repo is not None:
-        try:
-            return Path(os.path.abspath(raw)).relative_to(Path(repo).resolve()).as_posix()
-        except (OSError, ValueError):
-            return raw.name or str(raw)
-    if not raw.is_absolute():
+    if repo is None and not raw.is_absolute():
         return raw.as_posix()
+    base = Path(repo) if repo is not None else Path.cwd()
+    raw_abs = Path(os.path.abspath(raw))
+    base_abs = Path(os.path.abspath(base))
+    candidates: list[tuple[Path, Path]] = [(raw_abs, base_abs)]
     try:
-        return Path(os.path.abspath(raw)).relative_to(Path.cwd().resolve()).as_posix()
-    except (OSError, ValueError):
-        return raw.name or str(raw)
+        base_resolved = base.resolve()
+    except OSError:
+        base_resolved = None
+    if base_resolved is not None:
+        candidates.append((raw_abs, base_resolved))
+        try:
+            raw_resolved = raw.resolve()
+        except OSError:
+            raw_resolved = None
+        if raw_resolved is not None:
+            candidates.append((raw_resolved, base_resolved))
+    for candidate_path, candidate_base in candidates:
+        try:
+            return candidate_path.relative_to(candidate_base).as_posix()
+        except ValueError:
+            continue
+    return raw.name or str(raw)
 
 
 @dataclass(frozen=True)
@@ -891,7 +904,8 @@ def _pinned_roadmap_sources(
                 content_out=registry_source,
             ) is None:
                 raise MalformedRegistryError(
-                    "roadmap-status registry is not a stable regular repository file"
+                    f"{registry_rel}: roadmap-status registry is not a stable regular repository file. "
+                    f"Fix: replace {registry_rel} with a regular UTF-8 JSON file."
                 )
             try:
                 registry_text = registry_source[registry_rel].decode("utf-8")
@@ -916,13 +930,21 @@ def _pinned_roadmap_sources(
                 root_fd=root_fd,
                 content_out=sources,
             ) is None:
+                missing_or_bad = [
+                    rel
+                    for rel in source_paths
+                    if _regular_repo_files_sha256(root, (rel,), root_fd=root_fd) is None
+                ]
+                bad_rel = ", ".join(missing_or_bad) if missing_or_bad else registry_rel
                 raise MalformedRegistryError(
-                    "roadmap-status sources are not one stable regular-file snapshot"
+                    f"{bad_rel}: roadmap-status sources are not one stable regular-file snapshot. "
+                    f"Fix: restore or make readable the regular file(s) ({bad_rel}) or update {registry_rel}."
                 )
         else:
             if not _repo_path_is_safely_absent(root_fd, registry_rel):
                 raise MalformedRegistryError(
-                    "roadmap-status registry is not safely absent"
+                    f"{registry_rel}: roadmap-status registry is not safely absent. "
+                    f"Fix: ensure {registry_rel} and its parent directories are real, readable repository paths."
                 )
             if capture_required_marker:
                 marker_present = os.path.lexists(marker_path)
@@ -933,7 +955,8 @@ def _pinned_roadmap_sources(
                     content_out=sources,
                 ) is None:
                     raise MalformedRegistryError(
-                        "required roadmap marker is not a stable regular repository file"
+                        f"{marker_rel}: required roadmap marker is not a stable regular repository file. "
+                        f"Fix: restore {marker_rel} as a readable regular repository file."
                     )
 
         try:
@@ -1019,8 +1042,22 @@ def _tracked_roadmap_paths(
             pass_fds=(root_fd,) if root_fd is not None else (),
         )
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise MalformedRegistryError(f"unable to list tracked roadmaps: {exc}") from exc
-    names = [chunk.decode("utf-8") for chunk in proc.stdout.split(b"\0") if chunk]
+        raise MalformedRegistryError(
+            "unable to list tracked roadmaps from Git index. "
+            "Fix: verify the Git repository and index are readable "
+            "(`git status` / `git ls-files -- specs/phase-plans-*.md`)."
+        ) from exc
+    names: List[str] = []
+    for chunk in proc.stdout.split(b"\0"):
+        if not chunk:
+            continue
+        try:
+            names.append(chunk.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise MalformedRegistryError(
+                "tracked roadmap filename under specs/ is not valid UTF-8. "
+                "Fix: rename the tracked roadmap path under specs/ to valid UTF-8."
+            ) from exc
     return sorted(names)
 
 
@@ -1252,7 +1289,7 @@ def declared_active_roadmap(repo: Path) -> Path:
     raise NonActiveSelectionError("cannot determine the sole active roadmap in specs/")
 
 
-def main(argv: List[str]) -> int:
+def main(argv: List[str], *, repo: Optional[Path] = None) -> int:
     if len(argv) < 2:
         prog = Path(argv[0]).name if argv else "validate_roadmap"
         print(f"usage: {prog} [--train] <roadmap-path>", file=sys.stderr)
@@ -1271,7 +1308,7 @@ def main(argv: List[str]) -> int:
         return 2
 
     path = Path(args[0])
-    display = _display_path(path)
+    display = _display_path(path, repo=repo)
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:

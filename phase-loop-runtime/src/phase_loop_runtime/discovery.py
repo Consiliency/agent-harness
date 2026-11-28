@@ -456,12 +456,20 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
         if not path.is_absolute():
             path = repo / path
         authorized = assert_roadmap_authorized(repo, path)
-        if not path.exists():
+        try:
+            os.stat(path)
+        except FileNotFoundError as exc:
             rel = roadmap_lint._display_path(path, repo)
             raise roadmap_lint.RoadmapNotFoundError(
                 f"roadmap not found: {rel}. "
                 "Fix: pass an existing roadmap path via --roadmap (for example specs/phase-plans-v*.md)."
-            )
+            ) from exc
+        except OSError as exc:
+            rel = roadmap_lint._display_path(path, repo)
+            raise roadmap_lint.MalformedBannerError(
+                f"{rel}: cannot read roadmap lifecycle banner. "
+                f"Fix: ensure {rel} is a readable UTF-8 roadmap markdown file."
+            ) from exc
         return _return_selectable_roadmap(repo, authorized, "explicit")
 
     authority_roadmap = active_authorized_roadmap(repo)

@@ -79,11 +79,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   hardening in agent-harness#2221) so any future `not_run` failure reports its exact rung
   and stage (agent-harness#1977).
 - Raise typed `RoadmapStatusError` subclasses (including `RoadmapNotFoundError`, a
-  `FileNotFoundError` subclass) with repo-relative paths and actionable fix lines across
-  remaining roadmap discovery, lint, and ownership read paths (`roadmap_lint.py`,
-  `discovery.py`, and `roadmap_ownership.py`) instead of leaking raw `UnicodeDecodeError`
-  tracebacks, `/proc/self/fd/...` descriptor paths, or absolute host paths
-  (agent-harness#1831).
+  `FileNotFoundError` subclass) with repo-relative paths and actionable `Fix:` lines across
+  roadmap discovery, lint, CLI `validate-roadmap`, and ownership read paths (`roadmap_lint.py`,
+  `discovery.py`, `cli.py`, and `roadmap_ownership.py`)—covering Git index failures,
+  non-UTF-8 tracked roadmap filenames, non-regular/deleted registry sources, unreadable
+  parent directories, and symlinked checkouts without leaking `/proc/self/fd/...` or
+  absolute host paths (agent-harness#1831).
 - Give `test_openshell_backend.py`'s `pipeline` fixture and
   `test_untrusted_or_lost_result_refused_no_replay` load-proof `ANSWER_BOUND_S` and
   placement deadline headroom (and assert `not decision.placement._launch_failed`) so

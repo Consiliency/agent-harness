@@ -1614,9 +1614,14 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
     if command == "validate-roadmap":
         from . import roadmap_lint
 
-        candidate = getattr(args, "roadmap_path", None) or args.roadmap
+        explicit_candidate = getattr(args, "roadmap_path", None) or args.roadmap
+        display_repo = resolve_repo(args.repo) if getattr(args, "repo", None) else None
+        candidate = explicit_candidate
+        if candidate and display_repo is not None and not Path(candidate).expanduser().is_absolute():
+            candidate = display_repo / Path(candidate).expanduser()
         if not candidate:
-            repo = resolve_repo(args.repo or ".")
+            repo = display_repo or resolve_repo(".")
+            display_repo = repo
             candidate = select_roadmap(repo, None)
         if not candidate:
             parser.error("validate-roadmap requires a roadmap path (positional, --roadmap, or auto-detectable)")
@@ -1661,7 +1666,7 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             if failed:
                 return 1
         argv_extra = ["--train"] if getattr(args, "train", False) else []
-        return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)])
+        return roadmap_lint.main(["validate-roadmap"] + argv_extra + [str(candidate)], repo=display_repo)
     if command == "attest":
         from . import legible_evidence
 

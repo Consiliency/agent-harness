@@ -174,3 +174,175 @@ def test_roadmap_ownership_resolve_roadmap_omits_absolute_repo_path_and_includes
     assert str(tmp_path) not in msg
     assert roadmap_lint.ROADMAP_STATUS_REGISTRY_REL in msg
     assert "Fix:" in msg
+
+
+def test_git_index_corruption_and_non_utf8_tracked_filename_fail_typed_without_fd_leaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 1. Valid registry + corrupt Git index: no /proc/self/fd or /dev/fd leak in CLI or ownership.
+    repo_bad_idx = _init_repo(tmp_path / "bad-idx")
+    v1 = repo_bad_idx / "specs" / "phase-plans-v1.md"
+    v1.parent.mkdir(parents=True, exist_ok=True)
+    v1.write_text("# R\n\n> **Status (2026-10-08): ACTIVE — test**\n\n## Phase A\n", encoding="utf-8")
+    reg = repo_bad_idx / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+    reg.write_text(
+        '{"schema":"roadmap_status_manifest.v1","selected_roadmap":"specs/phase-plans-v1.md",'
+        '"roadmaps":[{"path":"specs/phase-plans-v1.md","status":"active"}]}\n',
+        encoding="utf-8",
+    )
+    (repo_bad_idx / ".git" / "index").write_bytes(b"NOT_A_VALID_GIT_INDEX")
+
+    sentinel = Mock(side_effect=AssertionError("run_loop must not be reached"))
+    monkeypatch.setattr(cli, "run_loop", sentinel)
+    assert cli.main(["run", "--repo", str(repo_bad_idx)]) == 2
+    err = capsys.readouterr().err
+    assert "roadmap status refusal" in err
+    assert "/proc/self/fd" not in err
+    assert "/dev/fd" not in err
+    assert str(repo_bad_idx) not in err
+    assert "Git index" in err
+    assert "Fix:" in err
+    sentinel.assert_not_called()
+
+    with pytest.raises(roadmap_ownership.RoadmapUnreadable) as own_exc:
+        roadmap_ownership.resolve_roadmap(repo_bad_idx)
+    assert "/proc/self/fd" not in str(own_exc.value)
+    assert "/dev/fd" not in str(own_exc.value)
+    assert str(repo_bad_idx) not in str(own_exc.value)
+
+    # 2. Non-UTF-8 tracked roadmap filename: typed MalformedRegistryError (never raw UnicodeDecodeError).
+    repo_bad_name = _init_repo(tmp_path / "bad-name")
+    v2 = repo_bad_name / "specs" / "phase-plans-v1.md"
+    v2.parent.mkdir(parents=True, exist_ok=True)
+    v2.write_text("# R\n\n> **Status (2026-10-08): ACTIVE — test**\n\n## Phase A\n", encoding="utf-8")
+    reg2 = repo_bad_name / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+    reg2.write_text(
+        '{"schema":"roadmap_status_manifest.v1","selected_roadmap":"specs/phase-plans-v1.md",'
+        '"roadmaps":[{"path":"specs/phase-plans-v1.md","status":"active"}]}\n',
+        encoding="utf-8",
+    )
+    bad_path = os.fsencode(repo_bad_name / "specs") + b"/phase-plans-v\xff.md"
+    with open(bad_path, "wb") as fh:
+        fh.write(b"# bad\n")
+    subprocess.run(["git", "add", "-f", "--", bad_path], cwd=repo_bad_name, check=True, capture_output=True)
+
+    assert cli.main(["run", "--repo", str(repo_bad_name)]) == 2
+    err = capsys.readouterr().err
+    assert "roadmap status refusal" in err
+    assert "UTF-8" in err
+    assert "Fix:" in err
+    assert "Traceback" not in err
+
+
+def test_registry_directory_and_deleted_target_name_path_and_fix(tmp_path: Path) -> None:
+    # 1. Directory at specs/roadmap-status.json names the registry path and fix line.
+    repo_dir = _init_repo(tmp_path / "reg-dir")
+    (repo_dir / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL).mkdir(parents=True)
+    with pytest.raises(roadmap_lint.MalformedRegistryError) as dir_exc:
+        roadmap_lint.validate_roadmap_status_coherence(repo_dir, required=True)
+    msg = str(dir_exc.value)
+    assert roadmap_lint.ROADMAP_STATUS_REGISTRY_REL in msg
+    assert str(repo_dir) not in msg
+    assert "Fix:" in msg
+
+    # 2. Valid registry pointing to a deleted roadmap names the missing roadmap path and fix line.
+    repo_del = _init_repo(tmp_path / "reg-del")
+    reg = repo_del / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+    reg.parent.mkdir(parents=True, exist_ok=True)
+    reg.write_text(
+        '{"schema":"roadmap_status_manifest.v1","selected_roadmap":"specs/phase-plans-v1.md",'
+        '"roadmaps":[{"path":"specs/phase-plans-v1.md","status":"active"}]}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(roadmap_lint.MalformedRegistryError) as del_exc:
+        roadmap_lint.validate_roadmap_status_coherence(repo_del, required=True)
+    msg = str(del_exc.value)
+    assert "specs/phase-plans-v1.md" in msg
+    assert roadmap_lint.ROADMAP_STATUS_REGISTRY_REL in msg
+    assert str(repo_del) not in msg
+    assert "Fix:" in msg
+
+    # 3. Valid registry pointing to an unreadable roadmap file names that roadmap (not only the registry).
+    if os.getuid() != 0:
+        unreadable = repo_del / "specs" / "phase-plans-v1.md"
+        unreadable.write_text("# R\n\n> **Status (2026-10-08): ACTIVE — test**\n", encoding="utf-8")
+        unreadable.chmod(0o000)
+        try:
+            with pytest.raises(roadmap_lint.MalformedRegistryError) as perm_exc:
+                roadmap_lint.validate_roadmap_status_coherence(repo_del, required=True)
+            msg = str(perm_exc.value)
+            assert "specs/phase-plans-v1.md" in msg
+            assert roadmap_lint.ROADMAP_STATUS_REGISTRY_REL in msg
+            assert str(repo_del) not in msg
+            assert "Fix:" in msg
+        finally:
+            unreadable.chmod(0o644)
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root bypasses chmod 000 directory permissions")
+def test_explicit_roadmap_under_unreadable_parent_raises_readable_file_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _init_repo(tmp_path)
+    specs = repo / "specs"
+    specs.mkdir(parents=True, exist_ok=True)
+    target = specs / "phase-plans-v1.md"
+    target.write_text("# R\n\n> **Status (2026-10-08): ACTIVE — test**\n", encoding="utf-8")
+    specs.chmod(0o000)
+    try:
+        with pytest.raises(roadmap_lint.MalformedBannerError) as exc:
+            discovery.select_roadmap(repo, target)
+        msg = str(exc.value)
+        assert "specs/phase-plans-v1.md" in msg
+        assert "cannot read" in msg
+        assert "roadmap not found" not in msg
+        assert str(repo) not in msg
+        assert "Fix:" in msg
+
+        sentinel = Mock(side_effect=AssertionError("run_loop must not be reached"))
+        monkeypatch.setattr(cli, "run_loop", sentinel)
+        assert cli.main(["run", "--repo", str(repo), "--roadmap", str(target)]) == 2
+        err = capsys.readouterr().err
+        assert "specs/phase-plans-v1.md" in err
+        assert "cannot read" in err
+        assert str(repo) not in err
+        assert "Traceback" not in err
+        sentinel.assert_not_called()
+    finally:
+        specs.chmod(0o755)
+
+
+def test_symlinked_repo_and_cross_dir_validate_roadmap_preserve_repo_relative_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real_repo = _init_repo(tmp_path / "real")
+    link_repo = tmp_path / "linked-repo"
+    link_repo.symlink_to(real_repo, target_is_directory=True)
+
+    # Missing relative and absolute roadmaps under symlinked repo preserve specs/phase-plans-v1.md.
+    for explicit in ("specs/phase-plans-v1.md", str(link_repo / "specs" / "phase-plans-v1.md")):
+        with pytest.raises(roadmap_lint.RoadmapNotFoundError) as exc:
+            discovery.select_roadmap(link_repo, explicit)
+        msg = str(exc.value)
+        assert "specs/phase-plans-v1.md" in msg
+        assert str(real_repo) not in msg
+        assert str(link_repo) not in msg
+
+    # validate-roadmap --repo <repo> --roadmap <path> called from another cwd preserves repo-relative path.
+    other_cwd = tmp_path / "other-cwd"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    missing_abs = real_repo / "specs" / "phase-plans-v1.md"
+    assert cli.main(["validate-roadmap", "--repo", str(link_repo), "--roadmap", str(missing_abs)]) == 2
+    err = capsys.readouterr().err
+    assert "specs/phase-plans-v1.md" in err
+    assert str(real_repo) not in err
+    assert str(link_repo) not in err
+    assert "Fix:" in err
+
+    # Path genuinely outside the repository still falls back to basename only.
+    outside = tmp_path / "outside-roadmap.md"
+    assert cli.main(["validate-roadmap", "--repo", str(link_repo), "--roadmap", str(outside)]) == 2
+    err = capsys.readouterr().err
+    assert outside.name in err
+    assert str(tmp_path) not in err
