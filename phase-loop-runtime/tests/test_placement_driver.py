@@ -322,7 +322,7 @@ def test_backend_codes_are_validated_at_registration():
 def test_backend_codes_reject_core_notice_and_leg_detail_vocabulary_1501():
     """agent-harness#1501: register_backend refuses any code colliding with seat_jail.NOTICES,
     seat_route_contract.OD10_CLASSES, or panel_invoker's leg-detail vocabulary, without
-    sandbox_placement importing panel_invoker."""
+    leg_detail_vocabulary or register_backend importing panel_invoker."""
     import ast
     import os
     import subprocess
@@ -366,8 +366,12 @@ def test_backend_codes_reject_core_notice_and_leg_detail_vocabulary_1501():
     }
     assert identifier_codes <= leg_detail_vocabulary.RESERVED_DETAIL_VOCABULARY
 
-    # Verify sandbox_placement and leg_detail_vocabulary never import panel_invoker
-    # (both statically via AST and dynamically in a fresh interpreter).
+    # Verify leg_detail_vocabulary has zero static/dynamic reference to panel_invoker,
+    # sandbox_placement has no static import of panel_invoker, and importing
+    # sandbox_placement plus calling register_backend (accept and reject) never imports
+    # panel_invoker in a fresh interpreter. (openshell_route_state's contract-mandated
+    # lazy lookup of panel_invoker._NONLOCAL_EXECUTION_DRIVER once policy status leaves
+    # pending_qualification is tested in test_placement_link_only_providers.py.)
     for mod in (sp, leg_detail_vocabulary):
         tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -378,11 +382,39 @@ def test_backend_codes_reject_core_notice_and_leg_detail_vocabulary_1501():
                 assert "panel_invoker" not in (node.module or "")
                 for alias in node.names:
                     assert alias.name != "panel_invoker"
+            elif mod is leg_detail_vocabulary and isinstance(node, ast.Call):
+                func = node.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                assert name not in ("import_module", "__import__")
 
     probe = (
-        "import sys; "
-        "from phase_loop_runtime import sandbox_placement as sp; "
-        "assert 'phase_loop_runtime.panel_invoker' not in sys.modules"
+        "import sys\n"
+        "from phase_loop_runtime import sandbox_placement as sp\n"
+        "class _Stub:\n"
+        "    name = 'drxprobe'\n"
+        "    def capabilities(self): return frozenset()\n"
+        "    def declaration(self): return sp.Declaration()\n"
+        "    def available(self, r): return True\n"
+        "    def commit(self, p, r, b=None): return None\n"
+        "    def release(self, p, b=None): return None\n"
+        "    def endpoint(self, root): return None\n"
+        "    def admit(self, r, b): return None\n"
+        "    def execute(self, s, spec, b): return None\n"
+        "    def wait(self, s, w): return None\n"
+        "    def cancel(self, s, b): return None\n"
+        "    def renew(self, s, u, b): return None\n"
+        "    def list_owned(self, o, b): return ()\n"
+        "    def kill(self, l, b): return None\n"
+        "b = _Stub()\n"
+        "for code in ('seat_sandbox_unavailable_host', 'unavailable', 'timeout', 'research_audit_denied'):\n"
+        "    try:\n"
+        "        sp.register_backend('drxprobe', b, {code: 'fix'})\n"
+        "    except ValueError as exc:\n"
+        "        assert 'invalid backend placement code' in str(exc), str(exc)\n"
+        "    else:\n"
+        "        raise AssertionError(f'expected ValueError for {code}')\n"
+        "sp.register_backend('drxprobe', b, {'drxprobe_custom': 'fix'})\n"
+        "assert 'phase_loop_runtime.panel_invoker' not in sys.modules\n"
     )
     env = {**os.environ, "PYTHONPATH": str(Path(sp.__file__).resolve().parents[1])}
     subprocess.run([sys.executable, "-c", probe], env=env, check=True, timeout=30)

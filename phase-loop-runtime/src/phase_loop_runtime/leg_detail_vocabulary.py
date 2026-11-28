@@ -2,8 +2,8 @@
 
 This leaf module holds the runtime's closed leg-detail literals so both
 ``panel_invoker`` (detail validation) and ``sandbox_placement.register_backend``
-(collision rejection) read one vocabulary without ``sandbox_placement`` ever
-importing ``panel_invoker``.
+(collision rejection) read one vocabulary without ``leg_detail_vocabulary`` or
+``sandbox_placement.register_backend`` importing ``panel_invoker``.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     # agent-harness#1176: the provider's own journaled give-up, or a turn that ended unaccepted
     "claude_seat_output_budget_exhausted", "claude_seat_rate_limited", "claude_seat_provider_api_error",
     "claude_seat_usage_limited", "claude_seat_transcript_rejected",
-    # agent-harness#1433/#1434: the turn ended, and the route could not accept its output
+    # agent-harness#1433 / agent-harness#1434: the turn ended, and the route could not accept its output
     "claude_seat_delivery_refused",
     "claude_agent_session_id_missing", "brokered_claude_session_collision",
     "brokered_claude_transcript_cleanup_failed", "missing_claude_cli",
