@@ -321,15 +321,15 @@ def apply_quality_filter(
 
     Order matters. Duplicates collapse first so one copied reflection cannot make
     its own lines look like cross-run boilerplate. Repeated one-repo ledger lines
-    and repeated one-repo lines carrying a ref, path or URL are stripped from What
-    worked and Improvements before classification. Repo-specific proposals are
-    dropped section by section, and the per-branch cap keeps the newest usable
-    reflections.
+    and repeated one-repo lines carrying a ref, path or URL within the same skill
+    are stripped from What worked and Improvements before classification.
+    Repo-specific proposals are dropped section by section, and the per-branch
+    cap keeps the newest usable reflections.
     """
     _mark_duplicates(reflections)
 
-    line_counts: Counter[str] = Counter()
-    line_repos: dict[str, set[str]] = defaultdict(set)
+    line_counts: Counter[tuple[str, str]] = Counter()
+    line_repos: dict[tuple[str, str], set[str]] = defaultdict(set)
     for reflection in reflections:
         if not reflection.excluded:
             ledger_lines = {
@@ -341,21 +341,24 @@ def apply_quality_filter(
                 if len(line) >= BOILERPLATE_MIN_CHARS and (
                     line.lower().startswith(_LEDGER_PREFIXES) or classify_improvements(line) == "repo_specific"
                 ):
-                    line_counts[line] += 1
-                    line_repos[line].add(reflection.repo_hash)
-    boilerplate = {
-        line for line, count in line_counts.items() if count >= boilerplate_min and len(line_repos[line]) == 1
-    }
+                    skill_line = (reflection.bare_skill, line)
+                    line_counts[skill_line] += 1
+                    line_repos[skill_line].add(reflection.repo_hash)
+    boilerplate_by_skill: dict[str, set[str]] = defaultdict(set)
+    for (bare_skill, line), count in line_counts.items():
+        if count >= boilerplate_min and len(line_repos[(bare_skill, line)]) == 1:
+            boilerplate_by_skill[bare_skill].add(line)
 
     for reflection in reflections:
         if reflection.excluded:
             continue
+        skill_boilerplate = boilerplate_by_skill.get(reflection.bare_skill, ())
         stripped_repo_specific = False
         for key in CONTENT_KEYS:
             if key not in reflection.sections:
                 continue
             original = reflection.sections[key].splitlines()
-            kept = original if key == "didnt" else [line for line in original if _norm_line(line) not in boilerplate]
+            kept = original if key == "didnt" else [line for line in original if _norm_line(line) not in skill_boilerplate]
             if len(kept) != len(original):
                 reflection.notes.append(f"boilerplate_stripped:{key}:{len(original) - len(kept)}")
             if key == "improvements":
@@ -385,7 +388,7 @@ def apply_quality_filter(
         members.sort(key=lambda r: (r.timestamp, r.run_id), reverse=True)
         for reflection in members[per_branch_cap:]:
             reflection.excluded = f"per_branch_cap:{per_branch_cap}"
-    return sorted(boilerplate)
+    return sorted({line for lines in boilerplate_by_skill.values() for line in lines})
 
 
 def collect(

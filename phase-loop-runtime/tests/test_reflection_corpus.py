@@ -158,6 +158,125 @@ def test_boilerplate_is_stripped_before_the_repo_agnostic_gate(tmp_path):
     assert reasons["b8"] is None
 
 
+@pytest.mark.parametrize(("copied", "expected_redacted"), [
+    (
+        "Lifecycle reconciliation remains under some-repo#361; nothing is rewritten here.",
+        "Lifecycle reconciliation remains under <ref>; nothing is rewritten here.",
+    ),
+    (
+        "Verified staged evidence under /home/example/private-repo/notes.md cleanly.",
+        "Verified staged evidence under <path> cleanly.",
+    ),
+    (
+        "Reviewed release notes at https://example.com/private-runbook before shipping.",
+        "Reviewed release notes at <url> before shipping.",
+    ),
+])
+def test_ref_boilerplate_is_scoped_per_skill_preserving_other_skill_worked(tmp_path, copied, expected_redacted):
+    root = tmp_path / "skills"
+    for index in range(3):
+        put(root, "codex-plan-detailed", "h", f"b{index}", "r", reflection(
+            didnt=f"Distinct friction {index}.",
+            improvements=f"{copied}\nDistinct generic proposal {index}.",
+        ))
+    put(root, "codex-execute-phase", "h", "lone", "r", reflection(
+        worked=copied,
+        didnt="Execution friction kept so the lone reflection is admitted.",
+        improvements="None.",
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+    by_skill = corpus.admitted_by_skill()
+
+    assert boilerplate == [copied]
+    assert all("boilerplate_stripped:improvements:1" in r.notes for r in by_skill["plan-detailed"])
+    (exec_reflection,) = by_skill["execute-phase"]
+    assert not any(note.startswith("boilerplate_stripped:") for note in exec_reflection.notes)
+    assert exec_reflection.sections["worked"] == expected_redacted
+    bundle = rc.render_bundle(corpus)
+    assert expected_redacted in bundle
+
+
+def test_ref_boilerplate_split_across_skills_does_not_reach_threshold(tmp_path):
+    root = tmp_path / "skills"
+    copied = "Lifecycle reconciliation remains under some-repo#361; nothing is rewritten here."
+    for index in range(2):
+        put(root, "codex-plan-detailed", "h", f"b{index}", "r", reflection(
+            worked=copied,
+            didnt=f"Plan friction {index}.",
+            improvements="None.",
+        ))
+    put(root, "codex-execute-phase", "h", "b2", "r", reflection(
+        worked=copied,
+        didnt="Execute friction.",
+        improvements="None.",
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert boilerplate == []
+    assert all(not any(n.startswith("boilerplate_stripped:") for n in r.notes) for r in corpus.admitted)
+    assert all(
+        r.sections["worked"] == "Lifecycle reconciliation remains under <ref>; nothing is rewritten here."
+        for r in corpus.admitted
+    )
+
+
+def test_per_skill_boilerplate_repo_uniqueness_is_independent(tmp_path):
+    root = tmp_path / "skills"
+    copied = "Lifecycle reconciliation remains under some-repo#361; nothing is rewritten here."
+    for index in range(3):
+        put(root, "codex-plan-detailed", "repoA", f"b{index}", "r", reflection(
+            worked=copied,
+            didnt=f"Plan friction {index}.",
+            improvements="None.",
+        ))
+    for repo, branch in (("repoA", "b0"), ("repoA", "b1"), ("repoB", "b2")):
+        put(root, "codex-execute-phase", repo, branch, "r", reflection(
+            worked=copied,
+            didnt=f"Execute friction {repo}/{branch}.",
+            improvements="None.",
+        ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+    by_skill = corpus.admitted_by_skill()
+
+    assert boilerplate == [copied]
+    assert all("boilerplate_stripped:worked:1" in r.notes for r in by_skill["plan-detailed"])
+    assert all(r.sections["worked"] == "" for r in by_skill["plan-detailed"])
+    assert all(not any(n.startswith("boilerplate_stripped:") for n in r.notes) for r in by_skill["execute-phase"])
+    assert all(
+        r.sections["worked"] == "Lifecycle reconciliation remains under <ref>; nothing is rewritten here."
+        for r in by_skill["execute-phase"]
+    )
+
+
+def test_per_skill_boilerplate_counts_same_bare_skill_across_harnesses_and_aliases(tmp_path):
+    root = tmp_path / "skills"
+    copied = "Lifecycle reconciliation remains under some-repo#361; nothing is rewritten here."
+    for index, skill in enumerate(("codex-advisor-panel", "claude-advisor-board", "gemini-advisor-board")):
+        put(root, skill, "h", f"b{index}", "r", reflection(
+            worked=copied,
+            didnt=f"Board friction {index}.",
+            improvements="None.",
+        ))
+    put(root, "codex-execute-phase", "h", "lone", "r", reflection(
+        worked=copied,
+        didnt="Execute friction.",
+        improvements="None.",
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+    by_skill = corpus.admitted_by_skill()
+
+    assert boilerplate == [copied]
+    assert len(by_skill["advisor-board"]) == 3
+    assert all("boilerplate_stripped:worked:1" in r.notes for r in by_skill["advisor-board"])
+    (exec_reflection,) = by_skill["execute-phase"]
+    assert not any(n.startswith("boilerplate_stripped:") for n in exec_reflection.notes)
+    assert exec_reflection.sections["worked"] == "Lifecycle reconciliation remains under <ref>; nothing is rewritten here."
+
+
 def test_identical_reports_from_independent_runs_both_count(tmp_path):
     root = tmp_path / "skills"
     same = reflection(didnt="The validator rejected the template lane index.")

@@ -49,6 +49,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Scope `reflection_corpus.apply_quality_filter` boilerplate counting and single-repo
+  uniqueness per bare skill (`bare_skill`) instead of across all skills in a repo, so a
+  lone ref-, path-, or URL-carrying `What worked` line in one skill is no longer stripped
+  when a different skill in the same repo repeats it (agent-harness#1660).
 - Include each skill's `scripts/` and `assets/` files (including harness-scoped
   `_overrides/<harness>/{scripts,assets}/`, excluding `__pycache__/` and `*.pyc`) in
   `injection._bundle_sha256` (`skill_bundle_sha256`) alongside `SKILL.md` and
