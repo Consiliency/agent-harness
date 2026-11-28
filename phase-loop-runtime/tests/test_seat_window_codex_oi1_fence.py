@@ -332,22 +332,61 @@ def _base() -> str | None:
     return None
 
 
+def _is_codex_explicit_provider_guard(node: ast.stmt) -> bool:
+    if not isinstance(node, ast.If) or node.orelse or len(node.body) != 1:
+        return False
+    body = node.body[0]
+    if (
+        not isinstance(body, ast.Raise)
+        or body.cause is not None
+        or not isinstance(body.exc, ast.Call)
+        or not isinstance(body.exc.func, ast.Name)
+        or body.exc.func.id != "QualificationError"
+        or body.exc.keywords
+        or len(body.exc.args) != 1
+        or not isinstance(body.exc.args[0], ast.Constant)
+        or type(body.exc.args[0].value) is not str
+    ):
+        return False
+    test = node.test
+    if not isinstance(test, ast.BoolOp) or not isinstance(test.op, ast.And) or len(test.values) != 2:
+        return False
+    left, right = test.values
+    return (
+        isinstance(left, ast.Compare)
+        and isinstance(left.left, ast.Name) and left.left.id == "leg"
+        and len(left.ops) == 1 and isinstance(left.ops[0], ast.Eq)
+        and len(left.comparators) == 1
+        and isinstance(left.comparators[0], ast.Constant) and left.comparators[0].value == "codex"
+        and isinstance(right, ast.Compare)
+        and isinstance(right.left, ast.Name) and right.left.id == "provider"
+        and len(right.ops) == 1 and isinstance(right.ops[0], ast.IsNot)
+        and len(right.comparators) == 1
+        and isinstance(right.comparators[0], ast.Constant) and right.comparators[0].value is None
+    )
+
+
 def _without_authorized_amendments(source: bytes) -> bytes:
     lines = source.splitlines(keepends=True)
     regions = {}
+    extra_nodes = []
     for node in ast.parse(source).body:
         if isinstance(node, ast.FunctionDef) and node.name in {
             "_gemini_shape",
             "_run_probe_in_jail",
         }:
             regions[node.name] = node
+        elif isinstance(node, ast.FunctionDef) and node.name == "qualify":
+            guards = [stmt for stmt in node.body if _is_codex_explicit_provider_guard(stmt)]
+            assert len(guards) <= 1
+            extra_nodes.extend(guards)
         elif isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "_FAIL_CLOSED_FRONT"
             for target in node.targets
         ):
             regions["_FAIL_CLOSED_FRONT"] = node
     assert set(regions) == {"_gemini_shape", "_FAIL_CLOSED_FRONT", "_run_probe_in_jail"}
-    for node in sorted(regions.values(), key=lambda node: node.lineno, reverse=True):
+    for node in sorted([*regions.values(), *extra_nodes], key=lambda node: node.lineno, reverse=True):
         del lines[node.lineno - 1:node.end_lineno]
     return b"".join(lines)
 
@@ -362,3 +401,21 @@ def test_t4_seat_jail_qualification_is_unedited():
     old = subprocess.check_output(["git", "-C", str(REPO), "show", f"{base}:{FROZEN_REDUCER}"])
     assert _without_authorized_amendments((REPO / FROZEN_REDUCER).read_bytes()) == (
         _without_authorized_amendments(old))
+
+
+def test_t4_codex_explicit_provider_guard_rejects_executable_expressions():
+    allowed = ast.parse(
+        'if leg == "codex" and provider is not None:\n'
+        '    raise QualificationError("codex qualification does not accept an explicit provider override")\n'
+    ).body[0]
+    assert _is_codex_explicit_provider_guard(allowed) is True
+
+    for forbidden in (
+        'if leg == "codex" and provider is not None:\n    raise QualificationError(do_work())\n',
+        'if leg == "codex" and provider is not None:\n    raise QualificationError("msg") from other_work()\n',
+        'if leg == "codex" and provider is not None:\n    raise QualificationError(msg="msg")\n',
+        'if leg == "codex" and provider is not None:\n    raise QualificationError("a", "b")\n',
+        'if leg == "codex" and provider is not None:\n    raise QualificationError(123)\n',
+    ):
+        node = ast.parse(forbidden).body[0]
+        assert _is_codex_explicit_provider_guard(node) is False, forbidden

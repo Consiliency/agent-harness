@@ -1,6 +1,7 @@
 """Codex jail profile enabled by the recorded OD-4 acceptance."""
 
 from pathlib import Path
+import subprocess
 import time
 from types import MappingProxyType
 
@@ -163,6 +164,13 @@ def codex_admission_gate(
     from .executable_dependency import ExecutableDependencyError
     from .seat_subject import SeatSubject
 
+    def _refuse(code: str):
+        return seat_admission._refuses(leg, code)
+
+    def _refuse_sandbox(exc: seat_jail.SeatSandboxRefused):
+        code = exc.code if exc.code in seat_jail.NOTICE_CODES else seat_jail.refused("identity")
+        return _refuse(code)
+
     try:
         raw = credential.read_auth(env)
         for check in (credential.subscription_login_problem,
@@ -170,9 +178,13 @@ def codex_admission_gate(
                       credential.scope_problem):
             code = check(raw)
             if code:
-                return seat_admission.Verdict(leg, "refuses", code=code)
+                return _refuse(code)
     except seat_jail.SeatSandboxRefused as exc:
-        return seat_admission.Verdict(leg, "refuses", code=exc.code)
+        return _refuse_sandbox(exc)
+    except ExecutableDependencyError:
+        return _refuse(seat_jail.refused("identity"))
+    except (OSError, subprocess.SubprocessError):
+        return _refuse(seat_jail.refused("jail_build"))
     if not execute:
         return seat_admission.Verdict(leg, "unknown", reason="launch_measurement")
     owns_dependency = executable is None
@@ -182,17 +194,19 @@ def codex_admission_gate(
         try:
             subject, dependency = pi._resolved_jail_subject(leg, pi._broker_subscription_env(env))
         except FileNotFoundError:
-            return seat_admission.Verdict(leg, "refuses", code="seat_provider_unavailable")
+            return _refuse("seat_provider_unavailable")
         except ExecutableDependencyError:
-            return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+            return _refuse(seat_jail.refused("identity"))
         except seat_jail.SeatSandboxRefused as exc:
-            return seat_admission.Verdict(leg, "refuses", code=exc.code)
+            return _refuse_sandbox(exc)
+        except (OSError, subprocess.SubprocessError):
+            return _refuse(seat_jail.refused("jail_build"))
         executable = dependency.subject_source if dependency is not None else subject.subject_path
     texts = []
     try:
         validate_codex_projection(dependency)
         if dependency is not None and runtime is not None:
-            return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+            return _refuse(seat_jail.refused("identity"))
         if dependency is None and runtime is None and isinstance(subject, SeatSubject):
             resolved = seat_codex_runtime.subject_runtime(subject)
             if isinstance(resolved, seat_codex_runtime.AdmittedStandaloneRuntime):
@@ -204,25 +218,25 @@ def codex_admission_gate(
                 )
                 owns_runtime = True
             else:
-                return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+                return _refuse(seat_jail.refused("identity"))
             executable = Path(runtime.subject_source)
         if dependency is None and runtime is None:
-            return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+            return _refuse(seat_jail.refused("identity"))
         if runtime is not None:
             if not isinstance(runtime, seat_codex_runtime.AdmittedStandaloneRuntime):
-                return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+                return _refuse(seat_jail.refused("identity"))
             if executable is None or str(executable) != runtime.subject_source:
-                return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+                return _refuse(seat_jail.refused("identity"))
             runtime.revalidate()
         elif dependency is not None:
             if hasattr(dependency, "subject_source") and (
                 executable is None or str(executable) != str(dependency.subject_source)
             ):
-                return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+                return _refuse(seat_jail.refused("identity"))
             if callable(getattr(dependency, "revalidate", None)):
                 dependency.revalidate()
         if executable is None:
-            return seat_admission.Verdict(leg, "refuses", code="seat_provider_unavailable")
+            return _refuse("seat_provider_unavailable")
         for args in (("exec", "--help"), ("features", "list")):
             if runtime is not None:
                 runtime.revalidate()
@@ -234,23 +248,26 @@ def codex_admission_gate(
                 capture_output=True,
                 text=True,
                 timeout=30,
+                count_spawn=False,
                 **({"standalone_runtime": runtime} if runtime is not None else {}),
                 **({"dependency": dependency} if dependency is not None else {}),
             )
             texts.append(done.stdout if done.returncode == 0 else "")
     except FileNotFoundError:
-        return seat_admission.Verdict(leg, "refuses", code="seat_provider_unavailable")
+        return _refuse("seat_provider_unavailable")
     except ExecutableDependencyError:
-        return seat_admission.Verdict(leg, "refuses", code=seat_jail.refused("identity"))
+        return _refuse(seat_jail.refused("identity"))
     except seat_jail.SeatSandboxRefused as exc:
-        return seat_admission.Verdict(leg, "refuses", code=exc.code)
+        return _refuse_sandbox(exc)
+    except (OSError, subprocess.SubprocessError):
+        return _refuse(seat_jail.refused("jail_build"))
     finally:
         if owns_runtime and runtime is not None:
             runtime.close()
         if owns_dependency and dependency is not None and getattr(dependency, "_jailcore_owned", False):
             dependency.close()
     if codex_cli_shape_problem(*texts):
-        return seat_admission.Verdict(leg, "refuses", code="codex_seat_cli_shape")
+        return _refuse("codex_seat_cli_shape")
     return None
 
 

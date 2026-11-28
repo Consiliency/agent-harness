@@ -29,7 +29,7 @@ def read_tool_record(stream: bytes) -> CodexToolRecord:
     for line in stream.splitlines():
         try:
             event = json.loads(line)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             valid = False
             continue
         if not isinstance(event, dict) or not isinstance(event.get("type"), str):

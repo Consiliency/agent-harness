@@ -3197,6 +3197,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "brokered route rejects capture and research transports", "brokered route rejects empty prompt",
     "broker completed without a response", "research_profile_unenforceable",
     "research_profile_unavailable", "review_operation_cancelled", "review_monitoring_write_failed",
+    "codex leg deadline exceeded",
     "review_monitoring_policy_mismatch", "review_monitoring_policy_invalid",
     "review_monitoring_timeout_conflict", "review_monitoring_unsupported_transport",
     "review_monitoring_unsupported_api_fallback",
@@ -6941,7 +6942,8 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
 
 
 def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
-                 executor: bool = False, standalone_runtime=None, dependency=None, **kwargs) -> "subprocess.CompletedProcess[str]":
+                 executor: bool = False, standalone_runtime=None, dependency=None,
+                 count_spawn: bool = True, **kwargs) -> "subprocess.CompletedProcess[str]":
     """THE one place a review provider is started and waited on. See `launch_provider`.
 
     Every argv but a trusted ``nsenter`` observer runs through the seat-launch owner, whose
@@ -6972,6 +6974,8 @@ def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
         # A seat never reads the operator's terminal: stdin is closed unless given.
         kwargs.setdefault("stdin", subprocess.DEVNULL)
     with contextlib.ExitStack() as stack:
+        if not count_spawn:
+            stack.enter_context(_bind_spawn_counter(None))
         # K-1 §9.1: the reservation is held for the whole start, so the `launch_provider`
         # it reaches does not debit the same start twice.
         stack.enter_context(_seat_profiles.window_provider_start(argv, boundary="run"))
@@ -15017,6 +15021,12 @@ def _prepare_jailed_gemini(
         raise
 
 
+_CODEX_CONTAINMENT_CODES: frozenset[str] = frozenset({
+    "codex_seat_token_in_output",
+    "codex_seat_token_refreshed_in_jail",
+})
+
+
 def _prepare_jailed_codex(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str], egress,
@@ -15040,10 +15050,16 @@ def _prepare_jailed_codex(
         raise ValueError("contract_bug")
 
     tree = _approved_stage_or_refuse(review_dir, review_authorization)
-    subject, dependency = _resolved_jail_subject("codex", _broker_subscription_env(env))
+    subject = None
+    dependency = None
     jails = []
     held_runtime = None
+    seat_dir_created = False
     try:
+        try:
+            subject, dependency = _resolved_jail_subject("codex", _broker_subscription_env(env))
+        except FileNotFoundError as exc:
+            raise _seat_jail.SeatSandboxRefused("seat_provider_unavailable") from exc
         _validate_jail_dependency("codex", dependency)
         validate_codex_projection(dependency)
         if subject.source != "standalone" and dependency is None:
@@ -15082,6 +15098,7 @@ def _prepare_jailed_codex(
         if credential_mode == "expired":
             copy = copy_transform(copy)
         seat_dir.mkdir(mode=0o700)
+        seat_dir_created = True
         ca = _write_egress_ca(seat_dir, egress.ca_cert)
         artifact, instructions = prompt_parts
         jail = _build_jail_with_owned_inputs(
@@ -15114,14 +15131,22 @@ def _prepare_jailed_codex(
                            expires_at=copy.expires_at if copy is not None else None,
                            delivered_copy=copy.data if copy is not None else b"",
                            codex_copy=copy)
-    except BaseException:
+    except BaseException as exc:
         for built in jails:
             _seat_jail.close_jail_fds(built)
         if held_runtime is not None:
             held_runtime.close()
         if dependency is not None and getattr(dependency, "_jailcore_owned", False):
             dependency.close()
-        shutil.rmtree(seat_dir, ignore_errors=True)
+        if seat_dir_created:
+            shutil.rmtree(seat_dir, ignore_errors=True)
+        if isinstance(exc, (_seat_jail.SeatSandboxRefused, _WindowRefused,
+                            _ReviewOperationCancelled, ProviderProcessGroupQuiescenceError)):
+            raise
+        if isinstance(exc, ExecutableDependencyError):
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity")) from exc
+        if isinstance(exc, (OSError, subprocess.SubprocessError)):
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
         raise
 
 
@@ -15177,12 +15202,19 @@ def _exec_jailed_codex_leg(
 
     stdout_guard, stderr_guard = guard(0), guard(1)
     proc = None
+    timed_out = False
+    latch_cancelled_exc: _ReviewOperationCancelled | None = None
+    timeout_output = b""
+    timeout_stderr = b""
     text = observed = b""
     unsafe = False
+    cancel_event = review_monitor.cancel if review_monitor is not None else _BOARD_CANCEL.get()
     try:
-        if review_monitor is not None and review_monitor.cancel.is_set():
+        if cancel_event is not None and cancel_event.is_set():
             _note_exec_refusal_code("review_operation_cancelled")
-            return "UNAVAILABLE", "review_operation_cancelled"
+            if failure_detail_sink is not None:
+                failure_detail_sink.append(_LegFailure(template="review_operation_cancelled"))
+            return "UNAVAILABLE", ""
         _record_broker_provider_evidence(
             broker_evidence, harness="codex", model=model, command=command, prompt=prompt,
             cwd=Path("/seat/home/workspace"),
@@ -15222,8 +15254,18 @@ def _exec_jailed_codex_leg(
                 quiescence_latch=quiescence_latch, native_run=native_run,
                 **({"review_monitor": review_monitor} if review_monitor is not None else {}),
             )
-        except subprocess.TimeoutExpired:
-            pass
+        except _ReviewOperationCancelled as exc:
+            latch_cancelled_exc = exc
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            if isinstance(exc.output, bytes):
+                timeout_output = exc.output
+            elif isinstance(exc.output, str):
+                timeout_output = exc.output.encode(errors="replace")
+            if isinstance(exc.stderr, bytes):
+                timeout_stderr = exc.stderr
+            elif isinstance(exc.stderr, str):
+                timeout_stderr = exc.stderr.encode(errors="replace")
         finally:
             stream_diagnostics.finish(native_run)
             if observation is not None:
@@ -15253,19 +15295,46 @@ def _exec_jailed_codex_leg(
             _cleanup_jailed_seat(seat, primary=sys.exception())
     if proc is not None:
         _note_exec_result(proc.returncode, command, seat.jail.env)
-    parts = (("output_file", text), *(
-        (("stdout", proc.stdout.encode(errors="replace")),
-         ("stderr", proc.stderr.encode(errors="replace"))) if proc else ()))
+    parts: tuple[tuple[str, bytes], ...] = (("output_file", text),)
+    if proc is not None:
+        parts += (
+            ("stdout", proc.stdout.encode(errors="replace")),
+            ("stderr", proc.stderr.encode(errors="replace")),
+        )
+    elif timed_out:
+        parts += (("stdout", timeout_output), ("stderr", timeout_stderr))
     kept = b"".join(data for _stream, data in parts)
+    cancelled = cancel_event is not None and cancel_event.is_set()
+    record = None
+    review = "" if unsafe else text.decode("utf-8", errors="replace")
+    if proc is not None and not timed_out and not cancelled and proc.stdout:
+        record = evidence.read_tool_record(proc.stdout.encode())
+        _note_exec_signals(
+            model_turn=record.turn_completed,
+            verdict=(terminal_verdict(review) is not None) if not unsafe else None,
+        )
     if secret_seen or any(_seat_jail.contains_secret(kept, secret) for secret in secrets):
         if not secret_seen:
             _note_secret_match(_post_exit_secret_match("codex", parts, secrets, kinds))
         return _jailed_failure("codex_seat_token_in_output", failure_detail_sink)
     if cred.tokens_changed(copy, observed):
         return _jailed_failure("codex_seat_token_refreshed_in_jail", failure_detail_sink)
+    if cancelled:
+        _note_exec_refusal_code("review_operation_cancelled")
+        if failure_detail_sink is not None:
+            failure_detail_sink.append(_LegFailure(template="review_operation_cancelled"))
+        return "UNAVAILABLE", ""
+    if latch_cancelled_exc is not None:
+        raise latch_cancelled_exc
+    if timed_out:
+        _note_exec_refusal_code("codex leg deadline exceeded")
+        if failure_detail_sink is not None:
+            failure_detail_sink.append(_LegFailure(template="codex leg deadline exceeded"))
+        return "TIMEOUT", ""
     if proc is not None and time.time() >= copy.expires_at:
         return _jailed_failure("codex_seat_token_expiring", failure_detail_sink)
-    record = evidence.read_tool_record(proc.stdout.encode() if proc is not None else b"")
+    if record is None:
+        record = evidence.read_tool_record(proc.stdout.encode() if proc is not None else b"")
     code = evidence.tools_ran_code(record)
     if code:
         return _jailed_failure(code, failure_detail_sink)
@@ -15276,7 +15345,6 @@ def _exec_jailed_codex_leg(
     if window_board is not None:
         steps = record.commands_completed
         window_board.tool_steps = steps if type(steps) is int else None
-    review = text.decode("utf-8", errors="replace")
     _note_exec_signals(model_turn=record.turn_completed, verdict=terminal_verdict(review) is not None)
     return _classify_leg(proc.returncode, review, proc.stderr, "review"), review
 
@@ -18700,6 +18768,7 @@ def _retained_leg_exec(function):
                     path = write_private_record("leg-" + record["attempt_id"] + ".json", record)
                     metadata = {"record_digest": sha256(path.read_bytes()).hexdigest(),
                         "outcome": record["outcome"], "attempt_id": record["attempt_id"],
+                        "recorded_refusal": record.get("refusal"),
                         **memory_metadata}
                     if codex_run is not None:
                         metadata["codex_run"] = codex_run
@@ -21163,10 +21232,29 @@ def _default_spawn(
                                 window_board=window_board,
                                 review_authorization=review_authorization,
                             )
+                        except _ReviewOperationCancelled:
+                            board_cancel = _BOARD_CANCEL.get()
+                            if (
+                                (review_monitor is not None and review_monitor.cancel.is_set())
+                                or (board_cancel is not None and board_cancel.is_set())
+                                or broker._cancel_event.is_set()
+                                or broker._shutdown_disposition == "operation_cancelled"
+                            ):
+                                _note_exec_refusal_code("review_operation_cancelled")
+                                codex_sink.append(_LegFailure(template="review_operation_cancelled"))
+                                codex_status, codex_text = "UNAVAILABLE", ""
+                            elif broker._shutdown_disposition == "deadline_exceeded":
+                                _note_exec_refusal_code("codex leg deadline exceeded")
+                                codex_sink.append(_LegFailure(template="codex leg deadline exceeded"))
+                                codex_status, codex_text = "TIMEOUT", ""
+                            else:
+                                raise
                         except _WindowRefused as exc:
+                            _note_exec_refusal(exc, exc.code)
                             codex_sink.append(_LegFailure(template=exc.code))
                             codex_status, codex_text = "DEGRADED", ""
                         except _seat_jail.SeatSandboxRefused as exc:
+                            _note_exec_refusal(exc, exc.code)
                             codex_sink.append(_LegFailure(template=exc.code))
                             codex_status, codex_text = "DEGRADED", ""
                             seat_notices.extend(exc.also)
@@ -21174,7 +21262,8 @@ def _default_spawn(
                             seat_notices.extend(seat.notices)
                         if codex_status != "OK" and codex_sink:
                             leg_detail = codex_sink[-1]
-                            seat_notices.append(leg_detail.template)
+                            if leg_detail.template in _seat_jail.NOTICE_CODES:
+                                seat_notices.append(leg_detail.template)
                         return codex_status, codex_text
                     if leg == "grok" and jailed:
                         # GROK SL-3: the jailed Grok leg (jail contract §2-§4.4).
@@ -21341,11 +21430,64 @@ def _default_spawn(
                     broker_latch.is_quiescent,
                 )
                 _note_exec_stage("broker")
-                response, probe = broker.run_credentialless_client(
-                    adapter, deadline_s=None if review_monitor is not None else float(leg_deadline),
-                    **({"cancel_event": review_monitor.cancel} if review_monitor is not None else {}),
+                codex_disposition_result: tuple[str, _LegFailure] | None = None
+                broker_cancel_event = (
+                    review_monitor.cancel
+                    if review_monitor is not None
+                    else (_BOARD_CANCEL.get() if leg == "codex" and jailed else None)
                 )
-                broker_latch.raise_if_set()
+                try:
+                    response, probe = broker.run_credentialless_client(
+                        adapter, deadline_s=None if review_monitor is not None else float(leg_deadline),
+                        **({"cancel_event": broker_cancel_event} if broker_cancel_event is not None else {}),
+                    )
+                except ProviderProcessGroupQuiescenceError:
+                    raise
+                except ValueError as exc:
+                    if type(exc) is not ValueError or not (leg == "codex" and jailed):
+                        raise
+                    disposition = broker.evidence.get("broker_failure_disposition")
+                    if disposition == "operation_cancelled":
+                        try:
+                            broker_latch.raise_if_set()
+                        except _ReviewOperationCancelled:
+                            pass
+                        if (
+                            isinstance(leg_detail, _LegFailure)
+                            and leg_detail.template in _CODEX_CONTAINMENT_CODES
+                        ):
+                            codex_disposition_result = ("DEGRADED", leg_detail)
+                        else:
+                            _note_exec_refusal_code("review_operation_cancelled")
+                            codex_disposition_result = (
+                                "UNAVAILABLE",
+                                _LegFailure(template="review_operation_cancelled"),
+                            )
+                    elif disposition == "deadline_exceeded":
+                        try:
+                            broker_latch.raise_if_set()
+                        except _ReviewOperationCancelled:
+                            pass
+                        if (
+                            isinstance(leg_detail, _LegFailure)
+                            and leg_detail.template in _CODEX_CONTAINMENT_CODES
+                        ):
+                            codex_disposition_result = ("DEGRADED", leg_detail)
+                        elif leg_detail is None or (
+                            isinstance(leg_detail, _LegFailure)
+                            and leg_detail.template == "codex leg deadline exceeded"
+                        ):
+                            _note_exec_refusal_code("codex leg deadline exceeded")
+                            codex_disposition_result = (
+                                "TIMEOUT",
+                                _LegFailure(template="codex leg deadline exceeded"),
+                            )
+                        else:
+                            raise
+                    else:
+                        raise
+                if codex_disposition_result is None:
+                    broker_latch.raise_if_set()
             finally:
                 primary = sys.exc_info()[1]
                 try:
@@ -21354,6 +21496,22 @@ def _default_spawn(
                     if primary is None:
                         raise
                     broker.evidence["cleanup_failed"] = True
+            if codex_disposition_result is not None:
+                disp_status, disp_detail = codex_disposition_result
+                probe = broker.evidence
+                probe.update({
+                    "provider_response_status": disp_status,
+                    "provider_response_sha256": sha256(b"").hexdigest(),
+                    "provider_response_bytes": 0,
+                })
+                placement_evidence = _sandbox_evidence()
+                if placement_evidence:
+                    probe.update(placement_evidence)
+                return _BrokeredSpawnResult(
+                    disp_status, "", disp_detail, evidence=probe,
+                    seat_notices=_dedupe(seat_notices),
+                    placement=placement_evidence,
+                )
             if response is None or probe is None:
                 raise ValueError("broker completed without a response")
             response_text = str(response["text"])
@@ -23537,10 +23695,16 @@ def invoke_board(
                                if key in exec_metadata}
                 body_notices = getattr(result, "_seat_notice_codes", ())
                 placement_evidence = result.sandbox_placement_evidence
+                codex_containment = (
+                    result.leg == "codex"
+                    and result.detail in _CODEX_CONTAINMENT_CODES
+                )
                 if monitor.write_failed:
                     result = _skip(seat, seat.harness, "review_monitoring_write_failed")
-                if operation_cancel.is_set():
+                if operation_cancel.is_set() and not (codex_containment and not monitor.write_failed):
                     result = replace(result, status="UNAVAILABLE", text="", detail="review_operation_cancelled")
+                    if result.leg == "codex" and not monitor.write_failed:
+                        object.__setattr__(result, "_leg_exec_refusal", "review_operation_cancelled")
                 monitor.observe(terminal="monitoring_write_failed" if monitor.write_failed else
                                 "user_cancel" if operation_cancel.is_set() else
                                 "completed" if result.status == "OK" else "process_exit_or_failure")
@@ -23577,6 +23741,14 @@ def invoke_board(
                 # Preserve the original execution-record binding across Claude cancellation
                 # replacement while keeping existing retention behavior for monitoring failures
                 # and all other seats.
+                object.__setattr__(result, "_leg_exec_metadata", orig_exec_metadata)
+            if (result.leg == "codex"
+                    and orig_exec_metadata is not None
+                    and getattr(result, "_leg_exec_metadata", None) is None
+                    and operation_cancel.is_set()
+                    and not monitor.write_failed
+                    and monitor.record.get("terminal_reason") != "monitoring_write_failed"
+                    and orig_exec_metadata.get("recorded_refusal") == "review_operation_cancelled"):
                 object.__setattr__(result, "_leg_exec_metadata", orig_exec_metadata)
             if seat_memory:
                 object.__setattr__(result, "_seat_memory_metadata", seat_memory)
