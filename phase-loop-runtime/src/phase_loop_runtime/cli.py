@@ -2506,7 +2506,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             print(f"advisor-board: native fill refused [{refusal.reason}]: {refusal.detail} (seat {refusal.seat_key})", file=sys.stderr)
             if bool(getattr(args, "json", False)):
                 print(json.dumps(
-                    _native_fill_refusal_json(board.name, refusal),
+                    _native_fill_refusal_json(board, refusal, preflight=True),
                     indent=2, sort_keys=True,
                 ))
             return 2
@@ -2639,7 +2639,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         if bool(getattr(args, "json", False)):
             print(json.dumps(
                 _native_fill_refusal_json(
-                    board.name, refusal, legs=exc_legs, seat_modes=seat_modes,
+                    board, refusal, legs=exc_legs, seat_modes=seat_modes,
                     board_wide_failure=board_wide,
                 ),
                 indent=2, sort_keys=True,
@@ -3071,25 +3071,42 @@ def _board_notices_json(legs) -> list[dict[str, str]]:
     return [notice.as_json() for leg in legs for notice in leg.seat_notices]
 
 
+_PREFLIGHT_NATIVE_FILL_JSON_DETAILS: dict[str, str] = {
+    "native_fill_duplicate_seat": "duplicate native fill supplied for the same seat",
+    "native_fill_seat_not_deferred": "supplied fill does not match a deferred claude seat for this board",
+    "native_fill_digest_mismatch": "supplied fill digest does not match the staged artifact or review brief",
+    "native_fill_composition_drift": "board composition changed since the native fill request was emitted",
+    "native_fill_stale_request": "supplied native fill request is stale",
+}
+
+
 def _native_fill_refusal_json(
-    board_name: str,
+    board,
     refusal,
     *,
     legs=(),
     seat_modes=(),
     board_wide_failure: str | None = None,
+    preflight: bool = False,
 ) -> dict[str, object]:
     """Structured JSON error payload for `advisor-board --json` on a native-fill refusal
     (agent-harness#1183), carrying the typed refusal, optional board-wide summary, and
-    per-seat closed-vocabulary status/detail without raw review text."""
+    per-seat closed-vocabulary status/detail without raw review text or unvalidated
+    request.json strings."""
+    valid_seat_keys = {seat.seat_key for seat in getattr(board, "seats", ())}
+    validated_seat_key = refusal.seat_key if refusal.seat_key in valid_seat_keys else None
+    if preflight or validated_seat_key is None or "not the fill's model" in str(refusal.detail or ""):
+        json_detail = _PREFLIGHT_NATIVE_FILL_JSON_DETAILS.get(refusal.reason, "native fill refused")
+    else:
+        json_detail = refusal.detail
     return {
-        "board": board_name,
+        "board": board.name,
         "usable": False,
         "status": "native_fill_refused",
         "refusal": {
             "reason": refusal.reason,
-            "detail": refusal.detail,
-            "seat_key": refusal.seat_key,
+            "detail": json_detail,
+            "seat_key": validated_seat_key,
         },
         "board_wide_failure": board_wide_failure,
         "seat_modes": [mode.as_json() for mode in seat_modes],

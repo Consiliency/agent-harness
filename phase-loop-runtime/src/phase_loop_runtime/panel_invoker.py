@@ -12986,13 +12986,10 @@ def board_wide_failure_summary(legs: Sequence[PanelLegResult]) -> str | None:
     ):
         return None
     details = [str(item.detail) if item.detail else "" for item in legs]
-    if details[0] and len(set(details)) == 1:
+    if details[0] and not details[0].startswith("unknown failure") and len(set(details)) == 1:
         return f"all {len(legs)} seats failed with {details[0]}"
     if all(detail.startswith("unknown failure") for detail in details):
-        return (
-            f"all {len(legs)} seats failed/degraded "
-            "(shared environment or staging failure; inspect per-seat leg logs)"
-        )
+        return f"all {len(legs)} seats failed/degraded; inspect retained leg logs"
     return f"all {len(legs)} seats failed/degraded"
 
 
@@ -13030,7 +13027,8 @@ def apply_native_leg_fills(
     result is never replaced). Status is OK iff the fill's last non-empty line is a conforming
     terminal verdict, else DEGRADED — an unbound or verdict-less fill never counts.
     """
-    out = list(legs)
+    original = tuple(legs)
+    out = list(original)
     for fill in fills:
         idx = next((i for i, leg in enumerate(out) if leg.seat_key == fill.seat_key), None)
         leg = out[idx] if idx is not None else None
@@ -13043,10 +13041,10 @@ def apply_native_leg_fills(
             raise NativeFillRefusalError(
                 NativeFillRefusal(
                     NATIVE_FILL_SEAT_NOT_DEFERRED,
-                    _not_deferred_detail(fill, leg, out),
+                    _not_deferred_detail(fill, leg, original),
                     fill.seat_key,
                 ),
-                legs=out,
+                legs=original,
             )
         conforming = terminal_verdict(fill.text) is not None
         filled = PanelLegResult(
