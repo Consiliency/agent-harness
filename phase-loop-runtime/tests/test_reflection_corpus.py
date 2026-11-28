@@ -1464,6 +1464,9 @@ def test_non_proposal_remnants_after_repo_specific_drop_stay_unarchived(tmp_path
     "- None.\n- None.",
     "- Hosted CI: passed\n  on main.",
     "```sh\n\n```",
+    "---",
+    "-",
+    "- None.\n  Hosted CI: passed on main.",
 ])
 def test_standalone_non_proposal_remnants_are_not_admitted_as_agnostic(tmp_path, improvements):
     root = tmp_path / "skills"
@@ -1475,3 +1478,88 @@ def test_standalone_non_proposal_remnants_are_not_admitted_as_agnostic(tmp_path,
 
     assert corpus.admitted == []
     assert corpus.scanned[0].excluded == "no_friction_or_proposal"
+
+
+def test_list_item_opening_with_code_fence_does_not_swallow_generic_sibling(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "- ```sh\n"
+        "  cat /home/example/private-repo/notes.md\n"
+        "  ```\n"
+        "- Require bounded retries on network calls."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries on network calls." in bundle
+    assert "private-repo" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+def test_hash_comment_inside_fenced_example_does_not_end_improvements_section(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "```sh\n"
+        "## shell comment inside fence\n"
+        "cat /home/example/private-repo/notes.md\n"
+        "```\n"
+        "- Require bounded retries on network calls."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries on network calls." in bundle
+    assert "private-repo" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+@pytest.mark.parametrize("improvements", [
+    "- Fix agent-harness#1371.\n - Require bounded retries.",
+    "1. Fix agent-harness#1371.\n  - Require bounded retries.",
+])
+def test_list_nesting_uses_content_indent_not_marker_indent(tmp_path, improvements):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries." in bundle
+    assert "agent-harness#1371" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+@pytest.mark.parametrize("improvements", [
+    "- Fix agent-harness#1371.\n- None.\n  Hosted CI: passed on main.",
+    "- Fix agent-harness#1371.\n- None.\n  Hosted CI: passed\n  on main.",
+    "- Fix agent-harness#1371.\n---",
+    "- Fix agent-harness#1371.\n-",
+    "- Fix agent-harness#1371.\n- ```sh\n  ```",
+])
+def test_post_ledger_non_proposal_remnants_after_repo_specific_drop_stay_unarchived(
+    tmp_path, improvements
+):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
