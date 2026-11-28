@@ -85,7 +85,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   transiently closed fds such as the supervisor's `go_write` pipe), gating stalled-spawn
   release with bounded `threading.Event` synchronization, and surfacing executor
   output/log diagnostics on failure (agent-harness#2032).
-- Remove the stale `model=gpt-5.6-terra` pin from the `## Execution Policy` example in
+- Remove the stale `model=gpt-5.6-terra` pin on `execute` and the `model`/`fallback`/
+  `unsupported=fallback` override on `SL-2` from the `## Execution Policy` example in
   `skills-src/codex/codex-plan-phase/SKILL.md` (and regenerate `phase-loop-skills/` and
   `phase-loop-runtime/src/phase_loop_runtime/skills_bundle/`) so planners copying the
   example inherit the active roster instead of overriding it via plan-policy precedence
