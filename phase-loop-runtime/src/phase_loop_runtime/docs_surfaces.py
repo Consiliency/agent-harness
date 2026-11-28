@@ -70,12 +70,20 @@ NON_PUBLIC_TEST_GLOBS = (
     "**/tests/**",
 )
 
+# A changelog fragment (towncrier-style `changelog.d/<issue>.<type>.md`) is a CHANGELOG
+# entry that has not been assembled into CHANGELOG.md yet. It satisfies every
+# requirement a CHANGELOG edit satisfies, so concurrent pull requests need not all edit
+# the same `[Unreleased]` lines. Numbered files only: editing changelog.d/README.md is
+# not an entry.
+CHANGELOG_FRAGMENT_GLOB = "changelog.d/[0-9]*.md"
+
 # Durable doc surfaces — what a "doc change" can be.
 DOC_SURFACE_GLOBS = (
     "README.md",
     "**/README.md",
     "CHANGELOG.md",
     "**/CHANGELOG*",
+    CHANGELOG_FRAGMENT_GLOB,
     "RELEASE*",
     "docs/**",
     "**/_contract_docs/**",
@@ -84,17 +92,17 @@ DOC_SURFACE_GLOBS = (
 # Relevance binding (IF-0-P1-1): a changed release surface requires its mapped doc
 # surface(s) to ALSO have changed. (release-surface pattern -> required doc patterns)
 RELEASE_DOC_REQUIREMENTS = (
-    ("VERSION", ("CHANGELOG*",)),
-    ("pyproject.toml", ("CHANGELOG*",)),
-    ("ruff.toml", ("CHANGELOG*",)),
-    (".ruff.toml", ("CHANGELOG*",)),
-    ("setup.cfg", ("CHANGELOG*",)),
-    ("setup.py", ("CHANGELOG*",)),
-    ("uv.lock", ("CHANGELOG*",)),
-    ("poetry.lock", ("CHANGELOG*",)),
-    ("requirements*.txt", ("CHANGELOG*",)),
-    (".github/workflows/**", ("CHANGELOG*", "docs/release*")),
-    ("scripts/*release*", ("CHANGELOG*", "docs/release*")),
+    ("VERSION", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB)),
+    ("pyproject.toml", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB)),
+    ("ruff.toml", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB)),
+    (".ruff.toml", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB)),
+    ("setup.cfg", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB)),
+    ("setup.py", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB)),
+    ("uv.lock", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB)),
+    ("poetry.lock", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB)),
+    ("requirements*.txt", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB)),
+    (".github/workflows/**", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB, "docs/release*")),
+    ("scripts/*release*", ("CHANGELOG*", CHANGELOG_FRAGMENT_GLOB, "docs/release*")),
 )
 
 

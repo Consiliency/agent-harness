@@ -9,6 +9,9 @@ name: docs-audit
 #   audit also runs here to RED-MARK a stale-docs commit post-hoc (detect-and-alert).
 #   The whole pushed batch is diffed (github.event.before..HEAD), not just the tip commit.
 #   This preserves the autonomy model (no forced PRs / branch protection).
+# - merge_group: the merge queue's required-check run. The queue commit's diff against
+#   the group's base_sha is exactly the queued PR, so it is fed through the push
+#   `before` input below (GITHUB_BASE_REF is unset on merge_group).
 # - push: tags ['v*']: enforce at release-tag time — a tag pushed with a release surface
 #   whose required doc was not updated since the prior tag fails the check.
 on:
@@ -16,6 +19,8 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -41,8 +46,10 @@ jobs:
 
       - name: Run docs-audit
         # --base auto-resolves: GITHUB_BASE_REF (PR) / prior tag (tag push) / the push
-        # `before` SHA (branch push — the WHOLE batch, not just the tip). Non-zero exit
-        # fails the check: blocks the merge on a PR, red-marks the commit on push:main.
+        # `before` SHA (branch push — the WHOLE batch, not just the tip; merge_group —
+        # the group's base_sha, so the diff is the queued PR alone). Non-zero exit
+        # fails the check: blocks the merge on a PR or in the queue, red-marks the
+        # commit on push:main.
         env:
-          DOCS_AUDIT_PUSH_BEFORE: ${{ github.event.before }}
+          DOCS_AUDIT_PUSH_BEFORE: ${{ github.event.before || github.event.merge_group.base_sha }}
         run: python -m phase_loop_runtime.cli docs-audit --repo . --json
