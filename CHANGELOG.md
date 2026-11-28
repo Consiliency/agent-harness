@@ -105,6 +105,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   enforce post-run `codex_seat_token_expiring` even on zero exit codes; and document the
   2100 s launch floor and non-refreshing `exp` bound for heartbeat-only Codex legs
   (agent-harness#1951).
+- Teach the `chronology-retention` guard in `.github/workflows/test.yml` to verify that
+  the `pytest` job's chronology JUnit upload step exists uniquely, retains `always() &&`,
+  and names every retaining `matrix.python-version` lane in its `if:` expression, with
+  positive and negative mutation controls in `test_ci_chronology_scope.py`
+  (agent-harness#1598).
 - Harden the jailed Codex review seat's timeout, cancellation, setup, probe accounting,
   qualification, and doctor ordering: classify Codex `TimeoutExpired` and clean broker
   deadline exits as `TIMEOUT` with closed detail `codex leg deadline exceeded` (and

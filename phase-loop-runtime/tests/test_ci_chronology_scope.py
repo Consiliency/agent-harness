@@ -592,3 +592,100 @@ def test_the_wheel_smoke_keeps_gate_a_parity():
     assert smoke["env"] == {"PHASE_LOOP_SKIP_GATE_A_SUITE": "1"}
     assert step("wheel-smoke", "Set up Python")["with"]["python-version"] == \
         step("cleanroom", "Set up Python")["with"]["python-version"]
+
+
+def _run_chronology_retention_guard(tmp_path: Path, workflow_data: dict) -> subprocess.CompletedProcess[str]:
+    """Execute the real chronology-retention guard step against a candidate test.yml."""
+    import shutil
+
+    wf_dir = tmp_path / ".github" / "workflows"
+    ci_dir = tmp_path / "ci"
+    wf_dir.mkdir(parents=True, exist_ok=True)
+    ci_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SCOPE_SCRIPT, ci_dir / "chronology-scope.sh")
+    (wf_dir / "test.yml").write_text(yaml.safe_dump(workflow_data, sort_keys=False), encoding="utf-8")
+
+    real_wf = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    guard_step = next(
+        s for s in real_wf["jobs"]["chronology-retention"]["steps"]
+        if "run" in s
+    )
+    # Put the active test interpreter first as `python3` so PyYAML is available even
+    # when the host's system python3 lacks it.
+    bin_dir = tmp_path / "_bin"
+    bin_dir.mkdir(exist_ok=True)
+    py_link = bin_dir / "python3"
+    if not py_link.exists():
+        py_link.symlink_to(sys.executable)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"}
+    return subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", guard_step["run"]],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_chronology_retention_guard_enforces_junit_upload_retaining_lane(tmp_path: Path) -> None:
+    """agent-harness#1598: the guard asserts the junit upload step's if: names the retaining lane."""
+    import copy
+
+    base_wf = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+
+    # Positive control: the real workflow passes.
+    ok = _run_chronology_retention_guard(tmp_path / "ok", copy.deepcopy(base_wf))
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+    # Positive control: bumping matrix, suite retaining check, and upload if: together passes.
+    bumped_ok = copy.deepcopy(base_wf)
+    bumped_ok["jobs"]["pytest"]["strategy"]["matrix"]["python-version"] = ["3.13"]
+    for step in bumped_ok["jobs"]["pytest"]["steps"]:
+        if step.get("name") == "Run standalone test suite":
+            step["run"] = step["run"].replace('= "3.12" ]', '= "3.13" ]')
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@") and "chronology-junit" in str(
+            (step.get("with") or {}).get("name", "")
+        ):
+            step["if"] = "always() && matrix.python-version == '3.13'"
+    res_bumped = _run_chronology_retention_guard(tmp_path / "bumped_ok", bumped_ok)
+    assert res_bumped.returncode == 0, res_bumped.stdout + res_bumped.stderr
+
+    # Negative 1: matrix + suite bumped to 3.13, upload if: left on 3.12.
+    stale_upload = copy.deepcopy(base_wf)
+    stale_upload["jobs"]["pytest"]["strategy"]["matrix"]["python-version"] = ["3.13"]
+    for step in stale_upload["jobs"]["pytest"]["steps"]:
+        if step.get("name") == "Run standalone test suite":
+            step["run"] = step["run"].replace('= "3.12" ]', '= "3.13" ]')
+    res_stale = _run_chronology_retention_guard(tmp_path / "stale_upload", stale_upload)
+    assert res_stale.returncode != 0
+    assert "3.13" in (res_stale.stdout + res_stale.stderr)
+
+    # Negative 2..5: malformed / wrong / prefix-colliding / negated / non-always() upload if:.
+    bad_ifs = [
+        ("wrong_lane", "always() && matrix.python-version == '3.11'"),
+        ("prefix_trap", "always() && matrix.python-version == '3.120'"),
+        ("no_always", "matrix.python-version == '3.12'"),
+        ("negated", "always() && !(matrix.python-version == '3.12')"),
+    ]
+    for label, bad_if in bad_ifs:
+        mutated = copy.deepcopy(base_wf)
+        for step in mutated["jobs"]["pytest"]["steps"]:
+            if str(step.get("uses", "")).startswith("actions/upload-artifact@") and "chronology-junit" in str(
+                (step.get("with") or {}).get("name", "")
+            ):
+                step["if"] = bad_if
+        res = _run_chronology_retention_guard(tmp_path / label, mutated)
+        assert res.returncode != 0, f"{label} unexpectedly passed: {res.stdout}"
+
+    # Negative 6: upload step removed entirely.
+    no_upload = copy.deepcopy(base_wf)
+    no_upload["jobs"]["pytest"]["steps"] = [
+        step for step in no_upload["jobs"]["pytest"]["steps"]
+        if not (
+            str(step.get("uses", "")).startswith("actions/upload-artifact@")
+            and "chronology-junit" in str((step.get("with") or {}).get("name", ""))
+        )
+    ]
+    res_removed = _run_chronology_retention_guard(tmp_path / "no_upload", no_upload)
+    assert res_removed.returncode != 0
+    assert "chronology junit upload step" in (res_removed.stdout + res_removed.stderr)
