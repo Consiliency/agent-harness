@@ -26,15 +26,27 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import math
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 RUFF_PIN = "ruff==0.15.5"  # .github/workflows/test.yml `lint (pyflakes)` job
 PKG = "phase-loop-runtime"
+TEAM_HOST_MARKER = Path("/etc/consiliency/team-host")
+DEFAULT_MAX_WORKERS = 2
+SHARED_HOST_MAX_WORKERS = 0
+SHARED_HOST_ENV = "LOCAL_CHECK_SHARED_HOST"
+WORKERS_ENV = "LOCAL_CHECK_WORKERS"
+OVERRIDE_ENV = "LOCAL_CHECK_ALLOW_SHARED_HOST_OVERRIDE"
+CPU_LIMIT_ENV = "LOCAL_CHECK_CPU_LIMIT"
+MEMORY_LIMIT_GIB_ENV = "LOCAL_CHECK_MEMORY_LIMIT_GIB"
+_FALSY_ENV = frozenset({"", "0", "false", "no", "off"})
+_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 CI_GUARD_GLOBS = ("tests/test_ci_*.py", "tests/test_*workflow*.py")
 CI_TRIGGERS = (".github/workflows/", "ci/", f"{PKG}/scripts/gate_a_cleanroom.sh")
 FULL_TRIGGERS = (f"{PKG}/tests/conftest.py", f"{PKG}/pyproject.toml", f"{PKG}/tests/phase_loop_test_utils.py")
@@ -195,7 +207,26 @@ def clean_env(python: str) -> dict[str, str]:
     return env
 
 
-def copied_tree_run(repo: Path, pkg_root: Path, python: str, files: list[str]) -> tuple[list[str], Path, dict[str, str]]:
+def xdist_args(has_xdist: bool, workers: int) -> list[str]:
+    """Return bounded pytest worker arguments for a pytest invocation (agent-harness#1826).
+
+    Serial runs omit ``-n`` (matching ``phase-loop-runtime/AGENTS.md``) and pass
+    ``-o addopts=`` so repository or ini defaults cannot silently inject ``-n``.
+    """
+    if not has_xdist or workers == 0:
+        return ["-o", "addopts="]
+    return ["-o", "addopts=", "-n", str(workers), "--dist", "loadfile", "--max-worker-restart=0"]
+
+
+def copied_tree_run(
+    repo: Path,
+    pkg_root: Path,
+    python: str,
+    files: list[str],
+    *,
+    has_xdist: bool = False,
+    workers: int = 0,
+) -> tuple[list[str], Path, dict[str, str]]:
     """(argv, cwd, extra env) that run ``files`` the way test.yml does: from a copy of
     tests/ plus specs/phase-plans-v10.md in a tree with no ``.git``. The working tree's
     src/ is put on the path so the run tests the current code, not the cached install."""
@@ -208,21 +239,187 @@ def copied_tree_run(repo: Path, pkg_root: Path, python: str, files: list[str]) -
     roadmap = repo / "specs" / "phase-plans-v10.md"
     if roadmap.is_file():
         shutil.copy2(roadmap, base / "specs" / roadmap.name)
-    argv = [python, "-m", "pytest", "-m", "not dotfiles_integration", "-q", "-p", "no:cacheprovider",
-            *[str(suite_root / f) for f in files]]
+    argv = [
+        python,
+        "-m",
+        "pytest",
+        "-m",
+        "not dotfiles_integration",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        *xdist_args(has_xdist, workers),
+        *[str(suite_root / f) for f in files],
+    ]
     return argv, suite_root, {"PYTHONPATH": f"{suite_root / 'tests'}{os.pathsep}{pkg_root / 'src'}"}
+
+
+def is_shared_host(
+    env: Mapping[str, str] | None = None,
+    *,
+    marker: Path | None = None,
+) -> tuple[bool, str | None]:
+    """Return ``(True, reason)`` on a shared team host (agent-harness#1826).
+
+    The host marker ``/etc/consiliency/team-host`` always wins (cannot be
+    disabled by an environment variable). ``LOCAL_CHECK_SHARED_HOST`` lets any
+    non-marker host opt into shared-host protection too (fail-closed on any
+    unrecognized non-empty value).
+    """
+    marker_path = TEAM_HOST_MARKER if marker is None else marker
+    if marker_path.exists():
+        return True, f"team-host marker present ({marker_path})"
+    source = os.environ if env is None else env
+    raw = source.get(SHARED_HOST_ENV)
+    if raw is not None and raw.strip().lower() not in _FALSY_ENV:
+        return True, f"{SHARED_HOST_ENV}={raw.strip()!r}"
+    return False, None
+
+
+def parse_owner_override(
+    *,
+    allow_override: bool,
+    cpu_limit_raw: str | None,
+    memory_limit_gib_raw: str | None,
+    env: Mapping[str, str] | None = None,
+) -> tuple[int, float] | None:
+    """Validate an explicit owner-set shared-host override with stated CPU and memory limits."""
+    source = os.environ if env is None else env
+    env_flag = source.get(OVERRIDE_ENV)
+    requested = allow_override or (
+        env_flag is not None and env_flag.strip().lower() in _TRUTHY_ENV
+    )
+    if not requested:
+        return None
+    cpu_text = cpu_limit_raw if cpu_limit_raw is not None else source.get(CPU_LIMIT_ENV)
+    mem_text = (
+        memory_limit_gib_raw
+        if memory_limit_gib_raw is not None
+        else source.get(MEMORY_LIMIT_GIB_ENV)
+    )
+    if not cpu_text or not cpu_text.strip() or not mem_text or not mem_text.strip():
+        raise ValueError(
+            "shared-host override requires explicit CPU and memory limits: pass "
+            f"--cpu-limit N ({CPU_LIMIT_ENV}) and --memory-limit-gib M ({MEMORY_LIMIT_GIB_ENV})"
+        )
+    try:
+        cpu_limit = int(cpu_text.strip())
+    except ValueError as exc:
+        raise ValueError(f"invalid --cpu-limit / {CPU_LIMIT_ENV}: {cpu_text!r} (expected integer >= 1)") from exc
+    if cpu_limit < 1:
+        raise ValueError(f"invalid --cpu-limit / {CPU_LIMIT_ENV}: {cpu_limit} (expected >= 1)")
+    try:
+        memory_limit_gib = float(mem_text.strip())
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid --memory-limit-gib / {MEMORY_LIMIT_GIB_ENV}: {mem_text!r} (expected finite number > 0)"
+        ) from exc
+    if not math.isfinite(memory_limit_gib) or memory_limit_gib <= 0:
+        raise ValueError(
+            f"invalid --memory-limit-gib / {MEMORY_LIMIT_GIB_ENV}: {mem_text!r} (expected finite number > 0)"
+        )
+    return cpu_limit, memory_limit_gib
+
+
+def resolve_workers(
+    *,
+    has_xdist: bool,
+    raw_workers: str | None,
+    shared_host: bool,
+    override: tuple[int, float] | None,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    """Resolve a bounded pytest-xdist worker count; never returns ``auto`` (agent-harness#1826)."""
+    source = os.environ if env is None else env
+    if raw_workers is not None:
+        raw: str | None = raw_workers
+    elif WORKERS_ENV in source:
+        raw = source[WORKERS_ENV]
+    else:
+        raw = None
+    if raw is None:
+        if shared_host and override is None:
+            workers = SHARED_HOST_MAX_WORKERS
+        elif shared_host and override is not None:
+            workers = min(DEFAULT_MAX_WORKERS, override[0])
+        else:
+            workers = DEFAULT_MAX_WORKERS
+    else:
+        token = raw.strip()
+        try:
+            workers = int(token)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid --workers / {WORKERS_ENV}: {token!r} "
+                "(must be a non-negative integer; unbounded 'auto' is forbidden)"
+            ) from exc
+        if workers < 0:
+            raise ValueError(
+                f"invalid --workers / {WORKERS_ENV}: {workers} (must be >= 0)"
+            )
+    if shared_host:
+        cap = override[0] if override is not None else SHARED_HOST_MAX_WORKERS
+        if workers > cap:
+            if override is None:
+                raise ValueError(
+                    f"requested {workers} pytest worker(s) on a shared host without an owner "
+                    "override; shared-host runs default to serial execution (0, without -n) "
+                    "per phase-loop-runtime/AGENTS.md. Omit --workers (or pass --workers 0), "
+                    "use hosted CI or Gate A, or pass --allow-shared-host-override with "
+                    "--cpu-limit and --memory-limit-gib"
+                )
+            raise ValueError(
+                f"requested {workers} pytest worker(s) exceeds the override --cpu-limit of {cap}"
+            )
+    if not has_xdist:
+        return 0
+    return workers
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--full", action="store_true", help="run the whole standalone suite")
+    ap.add_argument(
+        "--workers",
+        default=None,
+        help=f"pytest-xdist worker count (non-negative integer; default {DEFAULT_MAX_WORKERS}, never 'auto'; env {WORKERS_ENV})",
+    )
+    ap.add_argument(
+        "--allow-shared-host-override",
+        action="store_true",
+        help=(
+            "explicit owner override for --full or >2 workers on a shared host; "
+            f"requires --cpu-limit and --memory-limit-gib (env {OVERRIDE_ENV})"
+        ),
+    )
+    ap.add_argument(
+        "--cpu-limit",
+        default=None,
+        help=f"stated CPU worker limit for --allow-shared-host-override (integer >= 1; env {CPU_LIMIT_ENV})",
+    )
+    ap.add_argument(
+        "--memory-limit-gib",
+        default=None,
+        help=f"stated memory limit in GiB for --allow-shared-host-override (> 0; env {MEMORY_LIMIT_GIB_ENV})",
+    )
     ap.add_argument("--with-chronology", action="store_true",
                     help="keep the ~50-minute CONFORM chronology node (CI runs it on py3.12/Gate A)")
     ap.add_argument("--host-env", action="store_true", help="keep this shell's environment")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, run nothing")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)
+
+    shared_host, shared_reason = is_shared_host()
+    try:
+        override = parse_owner_override(
+            allow_override=bool(args.allow_shared_host_override),
+            cpu_limit_raw=args.cpu_limit,
+            memory_limit_gib_raw=args.memory_limit_gib,
+        )
+    except ValueError as exc:
+        print(f"local_check: REFUSED — {exc}", file=sys.stderr)
+        return 2
 
     pkg_root = Path(__file__).resolve().parents[1]
     repo = pkg_root.parent
@@ -236,14 +433,44 @@ def main(argv: list[str] | None = None) -> int:
     for reason in reasons:
         print(f"  - {reason}")
 
+    if shared_host and tests is None and override is None:
+        print(
+            f"local_check: REFUSED — whole-suite runs (--full or shared-config triggers) are "
+            f"disabled on shared hosts ({shared_reason}). Run targeted affected-file tests "
+            "locally and leave full-suite verification to hosted CI or Gate A. An owner with "
+            "confirmed host headroom may pass --allow-shared-host-override with explicit "
+            "--cpu-limit N and --memory-limit-gib M.",
+            file=sys.stderr,
+        )
+        return 2
+
     python = sys.executable if args.dry_run and not os.environ.get("LOCAL_CHECK_PYTHON") else check_python(repo)
     version = subprocess.run([python, "-c", "import sys; print(sys.version.split()[0])"],
                              capture_output=True, text=True).stdout.strip()
     print(f"  python: {python} ({version})")
     has_xdist = subprocess.run([python, "-c", "import xdist"], capture_output=True).returncode == 0
-    pytest_cmd = [python, "-m", "pytest", "-m", "not dotfiles_integration", "-q", "-p", "no:cacheprovider"]
-    if has_xdist:
-        pytest_cmd += ["-n", "auto", "--dist", "loadfile", "--max-worker-restart=0"]
+    try:
+        workers = resolve_workers(
+            has_xdist=has_xdist,
+            raw_workers=args.workers,
+            shared_host=shared_host,
+            override=override,
+        )
+    except ValueError as exc:
+        print(f"local_check: REFUSED — {exc}", file=sys.stderr)
+        return 2
+
+    pytest_cmd = [
+        python,
+        "-m",
+        "pytest",
+        "-m",
+        "not dotfiles_integration",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        *xdist_args(has_xdist, workers),
+    ]
     copied = list(SUITE_IGNORES) if tests is None else [t for t in (tests or []) if t in SUITE_IGNORES]
     main_tests = None if tests is None else [t for t in tests if t not in SUITE_IGNORES]
     if tests is None:
@@ -267,6 +494,24 @@ def main(argv: list[str] | None = None) -> int:
 
     uvx = shutil.which("uvx")
     lint_cmd = [uvx, RUFF_PIN.replace("==", "@"), "check", "."] if uvx else None
+    worker_summary = (
+        f"{workers} (xdist, --dist loadfile)"
+        if has_xdist and workers > 0
+        else "0 (serial, without -n)"
+        if has_xdist
+        else "0 (serial; pytest-xdist absent)"
+    )
+    if shared_host:
+        if override is not None:
+            print(
+                f"  host   : shared ({shared_reason}); owner override active "
+                f"(cpu_limit={override[0]}, memory_limit_gib={override[1]:g})"
+            )
+        else:
+            print(
+                f"  host   : shared ({shared_reason}); --full refused, serial only (without -n)"
+            )
+    print(f"  workers: {worker_summary}")
     print(f"  lint : {' '.join(lint_cmd) if lint_cmd else 'UNAVAILABLE (install uv for uvx; CI pins ' + RUFF_PIN + ')'}")
     print(f"  tests: {'none selected' if tests == [] else ' '.join(pytest_cmd[3:]) if main_tests != [] else '(main run: none)'}")
     if copied:
@@ -281,13 +526,16 @@ def main(argv: list[str] | None = None) -> int:
     if lint_cmd:
         status |= subprocess.run(lint_cmd, cwd=repo).returncode
     env = dict(os.environ, PYTHONPATH="src:tests") if args.host_env else clean_env(python)
+    env.pop("PYTEST_ADDOPTS", None)
     if tests is None or main_tests:
         code = subprocess.run(pytest_cmd, cwd=pkg_root, env=env).returncode
         # 5 = nothing collected: fine when every SELECTED test was deselected by marker;
         # never for the whole suite.
         status |= 0 if code == 5 and tests is not None else code
     if copied:
-        copied_argv, copied_cwd, copied_env = copied_tree_run(repo, pkg_root, python, copied)
+        copied_argv, copied_cwd, copied_env = copied_tree_run(
+            repo, pkg_root, python, copied, has_xdist=has_xdist, workers=workers
+        )
         code = subprocess.run(copied_argv, cwd=copied_cwd, env={**env, **copied_env}).returncode
         # 5 (nothing collected) is tolerable only when this run is a strict SUBSET of CI's
         # copied step; CI runs both files together and fails on 5 (#1059 r1).
