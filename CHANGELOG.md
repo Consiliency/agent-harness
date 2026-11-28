@@ -169,6 +169,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   stored seat-token override is ignored) from `panel_invoker.seat_profile` into the leg's
   `seat_notices` on the Claude print route — matching the jailed route on both brokered and
   non-brokered launches and on `SeatSandboxRefused` credential refusals (agent-harness#1682).
+- Classify `SeatSandboxRefused` failures during first-use and CLI seat-jail qualification
+  (including `private_dir_unsafe` with an actionable `chmod 700 /tmp/phase-loop-<uid>` fix
+  and `sandbox_refused` / `store_unsafe`), persist `exception_class` and allowlisted
+  refusal diagnostics in `seat-jail-qualify-failures/<digest>.json`, render them on the
+  seat mode line, and key `seat_jail_autoqualify.recent_outcome` lookups and board
+  `qualified_now` memoization by the JAILCORE `QualificationKey` digest (falling back to
+  `jail_profile_digest` only when no qualification key is present) (agent-harness#1287).
 - Thread the caller's environment (`RouteRequest.env`) through `seat_route` into Codex's
   `credential_present` and L6 credential preconditions (`seat_codex_credential.present(env)`,
   `seat_profile_codex`) so route pre-check, admission gate, and seat setup always resolve

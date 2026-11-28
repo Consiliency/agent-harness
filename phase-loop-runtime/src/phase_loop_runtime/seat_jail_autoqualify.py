@@ -22,10 +22,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import stat
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator, Mapping
 
@@ -34,6 +35,22 @@ from . import seat_jail
 QUALIFIED = "qualified"            # a pass was already recorded
 QUALIFIED_NOW = "qualified_now"    # this process (or one it waited for) recorded it now
 FAILED = "failed"
+
+_PRIVATE_DIR_REFUSAL_MESSAGES = frozenset({
+    "private directory owner or mode",
+    "writable private directory ancestor",
+    "private directory component",
+    "private directory creation",
+    "private directory walk",
+    "private directory must be absolute",
+    "invalid private directory path",
+})
+# Closed allowlist of static literal SeatSandboxRefused messages safe to persist in
+# failure records, display on the seat mode line, and echo from the CLI (agent-harness#1287).
+# Any other SeatSandboxRefused message (which may wrap OSError text or host paths) is
+# omitted and represented solely by its closed refusal code.
+_APPROVED_REFUSAL_MESSAGES = _PRIVATE_DIR_REFUSAL_MESSAGES
+_EXCEPTION_CLASS_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,127}")
 
 #: Typed reasons; each has a literal fix.
 REASON_FIXES: Mapping[str, str] = {
@@ -44,6 +61,13 @@ REASON_FIXES: Mapping[str, str] = {
         "make $XDG_STATE_HOME, its phase-loop directory and seat-jail-passes private "
         "(chmod go-w; group-writable is accepted only for your user-private group), then "
         "run `phase-loop seat-sandbox qualify`"),
+    "private_dir_unsafe": (
+        "ensure the operator's private runtime directory (typically /tmp/phase-loop-<uid>) "
+        "and its subdirectories are owned by you with mode 0700 "
+        "(chmod 700 /tmp/phase-loop-<uid>), then run `phase-loop seat-sandbox qualify`"),
+    "sandbox_refused": (
+        "the seat sandbox refused a host invariant during qualification; inspect the refusal "
+        "detail or run `phase-loop seat-sandbox qualify`"),
     "uid_switch_denied": (
         "the host denied the seat's uid switch inside bwrap. On Ubuntu 24.04 and later the cause "
         "is usually the AppArmor profile that confines bwrap's children (`unpriv_bwrap`, from "
@@ -70,6 +94,9 @@ _SCHEMA = "seat_jail_qualify_failure.v1"
 class Outcome:
     state: str
     reason: str | None = None
+    exception_class: str | None = field(default=None, compare=False)
+    refusal_code: str | None = field(default=None, compare=False)
+    refusal_message: str | None = field(default=None, compare=False)
 
     @property
     def qualified(self) -> bool:
@@ -121,8 +148,47 @@ def _private_dirs(*paths: Path) -> None:
             pass
 
 
-def cached_failure(digest: str, *, now: float, retry_after_s: float) -> str | None:
-    """The cached failure reason for this host, digest and layout, while it is fresh."""
+def _valid_exception_class(value: object) -> str | None:
+    if isinstance(value, str) and _EXCEPTION_CLASS_RE.fullmatch(value):
+        return value
+    return None
+
+
+def safe_refusal_message(value: object) -> str | None:
+    """Return an approved static refusal message, or None for arbitrary/unapproved text."""
+    text = str(value) if isinstance(value, seat_jail.SeatSandboxRefused) else value
+    if isinstance(text, str) and text in _APPROVED_REFUSAL_MESSAGES:
+        return text
+    return None
+
+
+def _failure_diagnostic(exc: BaseException | None) -> tuple[str | None, str | None, str | None]:
+    """Extract safe, bounded diagnostic metadata from a qualification failure."""
+    if exc is None:
+        return None, None, None
+    exc_class = _valid_exception_class(type(exc).__name__)
+    if isinstance(exc, seat_jail.SeatSandboxRefused):
+        code = exc.code if exc.code in seat_jail.NOTICES else None
+        message = safe_refusal_message(exc) if code is not None else None
+        return exc_class, code, message
+    return exc_class, None, None
+
+
+def format_reason(outcome: Outcome | None) -> str:
+    """Render a failed qualification outcome for the seat mode line (agent-harness#1287)."""
+    reason = outcome.reason if outcome is not None and outcome.reason else "error"
+    if outcome is None:
+        return reason
+    if outcome.refusal_code is not None:
+        exc_name = outcome.exception_class or "SeatSandboxRefused"
+        detail = outcome.refusal_message or outcome.refusal_code
+        return f"{reason} ({exc_name}: {detail})"
+    if reason == "error" and outcome.exception_class is not None:
+        return f"{reason} ({outcome.exception_class})"
+    return reason
+
+
+def _read_cached_failure(digest: str, *, now: float, retry_after_s: float) -> Outcome | None:
     path = failure_dir() / f"{digest}.json"
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
@@ -148,15 +214,54 @@ def cached_failure(digest: str, *, now: float, retry_after_s: float) -> str | No
             or isinstance(failed_at, bool) or not isinstance(failed_at, (int, float))
             or now - failed_at >= retry_after_s):
         return None
-    return reason
+    exc_class = _valid_exception_class(record.get("exception_class"))
+    raw_code = record.get("refusal_code")
+    refusal_code = raw_code if isinstance(raw_code, str) and raw_code in seat_jail.NOTICES else None
+    refusal_message = (
+        safe_refusal_message(record.get("refusal_message"))
+        if refusal_code is not None
+        else None
+    )
+    return Outcome(
+        FAILED,
+        reason,
+        exception_class=exc_class,
+        refusal_code=refusal_code,
+        refusal_message=refusal_message,
+    )
 
 
-def _record_failure(digest: str, reason: str, now: float) -> None:
+def cached_failure(digest: str, *, now: float, retry_after_s: float) -> str | None:
+    """The cached failure reason for this host, digest and layout, while it is fresh."""
+    outcome = _read_cached_failure(digest, now=now, retry_after_s=retry_after_s)
+    return outcome.reason if outcome is not None else None
+
+
+def _record_failure(
+    digest: str,
+    reason: str,
+    now: float,
+    *,
+    exception_class: str | None = None,
+    refusal_code: str | None = None,
+    refusal_message: str | None = None,
+) -> None:
     try:
         _private_dirs(seat_jail.state_home(), _state_dir(), failure_dir())
-        record = {"schema": _SCHEMA, "profile_digest": digest, "reason": reason,
-                  "failed_at": now, "host_identity": seat_jail.host_identity(),
-                  "falsifier_layout": seat_jail.falsifier_layout_identity()}
+        record: dict[str, object] = {
+            "schema": _SCHEMA,
+            "profile_digest": digest,
+            "reason": reason,
+            "failed_at": now,
+            "host_identity": seat_jail.host_identity(),
+            "falsifier_layout": seat_jail.falsifier_layout_identity(),
+        }
+        if exception_class is not None:
+            record["exception_class"] = exception_class
+        if refusal_code is not None:
+            record["refusal_code"] = refusal_code
+            if refusal_message is not None:
+                record["refusal_message"] = refusal_message
         target = failure_dir() / f"{digest}.json"
         staged = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
@@ -216,11 +321,17 @@ def fix_for(reason: str) -> str:
 
 
 def classify_failure(exc: BaseException) -> str:
-    """A qualification exception's typed reason (the message itself is never shown)."""
+    """A qualification exception's typed reason (arbitrary exception messages are never shown)."""
     from . import seat_jail_qualification, seat_uid
 
     if isinstance(exc, TimeoutError):
         return "timeout"
+    if isinstance(exc, seat_jail.SeatSandboxRefused):
+        if exc.code == seat_jail.refused("pass_store_unsafe"):
+            return "store_unsafe"
+        if exc.code == seat_jail.refused("identity") and str(exc) in _PRIVATE_DIR_REFUSAL_MESSAGES:
+            return "private_dir_unsafe"
+        return "sandbox_refused"
     if isinstance(exc, seat_jail_qualification.QualificationError):
         text = str(exc)
         if (text == seat_uid.PREREQUISITE or text == "egress isolation unavailable"
@@ -268,34 +379,59 @@ def ensure_qualified(
     if why.startswith(("store_unsafe:", "error:")):
         # A run cannot fix these: an unsafe store refuses the pass it would write. They are
         # cheap to re-detect, so they are not cached (the chmod takes effect at once).
-        return _remember(digest, Outcome(
-            FAILED, "store_unsafe" if why.startswith("store_unsafe:") else "error"))
-    cached = cached_failure(digest, now=now(), retry_after_s=retry_after)
+        if why.startswith("store_unsafe:"):
+            return _remember(digest, Outcome(FAILED, "store_unsafe"))
+        exc_class = _valid_exception_class(why.split(":", 1)[1].strip())
+        return _remember(digest, Outcome(FAILED, "error", exception_class=exc_class))
+    cached = _read_cached_failure(digest, now=now(), retry_after_s=retry_after)
     if cached is not None:
-        return _remember(digest, Outcome(FAILED, cached))
+        return _remember(digest, cached)
     try:
         fd = _acquire_lock(lock_wait_s)
     except TimeoutError:
         return _remember(digest, Outcome(FAILED, "timeout"))   # not cached: someone is running
-    except (OSError, ImportError):
-        return _remember(digest, Outcome(FAILED, "error"))
+    except (OSError, ImportError) as exc:
+        return _remember(
+            digest,
+            Outcome(FAILED, "error", exception_class=_valid_exception_class(type(exc).__name__)),
+        )
     try:
         # Another process may have finished while this one waited.
         if verdict(verdict_input)[0]:
             return _remember(digest, Outcome(QUALIFIED_NOW))
-        cached = cached_failure(digest, now=now(), retry_after_s=retry_after)
+        cached = _read_cached_failure(digest, now=now(), retry_after_s=retry_after)
         if cached is not None:
-            return _remember(digest, Outcome(FAILED, cached))
+            return _remember(digest, cached)
+        exc_class: str | None = None
+        refusal_code: str | None = None
+        refusal_message: str | None = None
         try:
             evidence = (_default_qualify(leg, qualification_key)
                         if qualify is _default_qualify else qualify(leg))
             reason = None if evidence.get("result") == "pass" else "falsifiers_failed"
         except Exception as exc:  # every failure is typed; the seat is degraded, not run
             reason = classify_failure(exc)
+            exc_class, refusal_code, refusal_message = _failure_diagnostic(exc)
         if reason is None and verdict(verdict_input)[0]:
             return _remember(digest, Outcome(QUALIFIED_NOW))
         reason = reason or "error"
-        _record_failure(digest, reason, now())
-        return _remember(digest, Outcome(FAILED, reason))
+        _record_failure(
+            digest,
+            reason,
+            now(),
+            exception_class=exc_class,
+            refusal_code=refusal_code,
+            refusal_message=refusal_message,
+        )
+        return _remember(
+            digest,
+            Outcome(
+                FAILED,
+                reason,
+                exception_class=exc_class,
+                refusal_code=refusal_code,
+                refusal_message=refusal_message,
+            ),
+        )
     finally:
         os.close(fd)

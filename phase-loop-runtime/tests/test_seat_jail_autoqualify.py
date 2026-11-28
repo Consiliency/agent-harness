@@ -172,3 +172,157 @@ def test_a_qualifier_that_reports_a_pass_but_records_none_is_a_failure():
     outcome = aq.ensure_qualified("claude", verdict=store.verdict,
                                   qualify=lambda leg: {"result": "pass"})
     assert outcome == aq.Outcome(aq.FAILED, "error") and not outcome.qualified
+
+
+def test_private_dir_refusal_is_typed_persisted_and_reloaded_from_cache():
+    # agent-harness#1287: SeatSandboxRefused("private directory owner or mode") gets a typed
+    # reason, actionable chmod 700 fix, and persisted refusal metadata in the failure cache.
+    import json
+
+    exc = seat_jail.SeatSandboxRefused(
+        seat_jail.refused("identity"), "private directory owner or mode",
+    )
+    clock = [2000.0]
+    store = _Store(raises=exc)
+    first = _ensure(store, now=lambda: clock[0], retry_after_s=3600)
+    assert first == aq.Outcome(aq.FAILED, "private_dir_unsafe")
+    assert first.exception_class == "SeatSandboxRefused"
+    assert first.refusal_code == "seat_sandbox_refused:identity"
+    assert first.refusal_message == "private directory owner or mode"
+    assert "chmod 700 /tmp/phase-loop-<uid>" in aq.fix_for("private_dir_unsafe")
+    assert aq.format_reason(first) == (
+        "private_dir_unsafe (SeatSandboxRefused: private directory owner or mode)"
+    )
+
+    digest = seat_jail.jail_profile_digest("claude")
+    record_path = aq.failure_dir() / f"{digest}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["reason"] == "private_dir_unsafe"
+    assert record["exception_class"] == "SeatSandboxRefused"
+    assert record["refusal_code"] == "seat_sandbox_refused:identity"
+    assert record["refusal_message"] == "private directory owner or mode"
+
+    # Reload from the on-disk failure cache in a fresh in-memory state.
+    aq._RECENT.clear()
+    clock[0] += 10.0
+    second = _ensure(store, now=lambda: clock[0], retry_after_s=3600)
+    assert store.runs == 1
+    assert second == aq.Outcome(aq.FAILED, "private_dir_unsafe")
+    assert second.exception_class == "SeatSandboxRefused"
+    assert second.refusal_code == "seat_sandbox_refused:identity"
+    assert second.refusal_message == "private directory owner or mode"
+
+
+@pytest.mark.parametrize("exc, expected_reason, expected_msg", [
+    (
+        seat_jail.SeatSandboxRefused(seat_jail.refused("pass_store_unsafe")),
+        "store_unsafe",
+        None,
+    ),
+    (
+        seat_jail.SeatSandboxRefused(
+            seat_jail.refused("identity"), "writable private directory ancestor",
+        ),
+        "private_dir_unsafe",
+        "writable private directory ancestor",
+    ),
+    (
+        seat_jail.SeatSandboxRefused(
+            seat_jail.refused("identity"),
+            "OSError: '/home/alice/my secret dir' token=sk-live-secret",
+        ),
+        "sandbox_refused",
+        None,
+    ),
+    (
+        seat_jail.SeatSandboxRefused(seat_jail.refused("stage_not_private")),
+        "sandbox_refused",
+        None,
+    ),
+])
+def test_sandbox_refused_variants_only_allowlist_approved_messages(
+        exc, expected_reason, expected_msg):
+    import json
+
+    outcome = _ensure(_Store(raises=exc), now=lambda: 3000.0, retry_after_s=3600)
+    assert outcome == aq.Outcome(aq.FAILED, expected_reason)
+    assert outcome.exception_class == "SeatSandboxRefused"
+    assert outcome.refusal_code == exc.code
+    assert outcome.refusal_message == expected_msg
+    assert aq.REASON_FIXES[expected_reason]
+    digest = seat_jail.jail_profile_digest("claude")
+    raw = (aq.failure_dir() / f"{digest}.json").read_text(encoding="utf-8")
+    record = json.loads(raw)
+    assert record["refusal_code"] == exc.code
+    assert "/home/alice" not in raw and "sk-live-secret" not in raw
+    if expected_msg is None:
+        assert "refusal_message" not in record
+        assert aq.format_reason(outcome) == f"{expected_reason} (SeatSandboxRefused: {exc.code})"
+    else:
+        assert record["refusal_message"] == expected_msg
+        assert aq.format_reason(outcome) == f"{expected_reason} (SeatSandboxRefused: {expected_msg})"
+
+
+def test_cached_failure_readback_drops_unapproved_refusal_message():
+    import json
+
+    digest = seat_jail.jail_profile_digest("claude")
+    aq._private_dirs(seat_jail.state_home(), aq._state_dir(), aq.failure_dir())
+    (aq.failure_dir() / f"{digest}.json").write_text(json.dumps({
+        "schema": aq._SCHEMA,
+        "profile_digest": digest,
+        "reason": "sandbox_refused",
+        "exception_class": "SeatSandboxRefused",
+        "refusal_code": "seat_sandbox_refused:identity",
+        "refusal_message": "OSError: '/home/alice/my secret dir' token=sk-live-secret",
+        "failed_at": 5500.0,
+        "host_identity": seat_jail.host_identity(),
+        "falsifier_layout": seat_jail.falsifier_layout_identity(),
+    }), encoding="utf-8")
+    outcome = _ensure(_Store(), now=lambda: 5510.0, retry_after_s=3600)
+    assert outcome == aq.Outcome(aq.FAILED, "sandbox_refused")
+    assert outcome.refusal_code == "seat_sandbox_refused:identity"
+    assert outcome.refusal_message is None
+    assert aq.format_reason(outcome) == (
+        "sandbox_refused (SeatSandboxRefused: seat_sandbox_refused:identity)"
+    )
+
+
+def test_generic_exception_persists_class_only_and_never_message():
+    # agent-harness#1287: persist exception_class without leaking arbitrary exception text.
+    import json
+
+    store = _Store(raises=RuntimeError("token=shh /home/alice/private"))
+    outcome = _ensure(store, now=lambda: 4000.0, retry_after_s=3600)
+    assert outcome == aq.Outcome(aq.FAILED, "error")
+    assert outcome.exception_class == "RuntimeError"
+    assert outcome.refusal_code is None
+    assert outcome.refusal_message is None
+    assert aq.format_reason(outcome) == "error (RuntimeError)"
+
+    digest = seat_jail.jail_profile_digest("claude")
+    raw = (aq.failure_dir() / f"{digest}.json").read_text(encoding="utf-8")
+    record = json.loads(raw)
+    assert record["exception_class"] == "RuntimeError"
+    assert "refusal_code" not in record and "refusal_message" not in record
+    assert "token=shh" not in raw and "/home/alice/private" not in raw
+
+
+def test_legacy_v1_failure_record_without_diagnostic_fields_still_loads():
+    import json
+
+    digest = seat_jail.jail_profile_digest("claude")
+    aq._private_dirs(seat_jail.state_home(), aq._state_dir(), aq.failure_dir())
+    (aq.failure_dir() / f"{digest}.json").write_text(json.dumps({
+        "schema": aq._SCHEMA,
+        "profile_digest": digest,
+        "reason": "error",
+        "failed_at": 5000.0,
+        "host_identity": seat_jail.host_identity(),
+        "falsifier_layout": seat_jail.falsifier_layout_identity(),
+    }), encoding="utf-8")
+    assert aq.cached_failure(digest, now=5010.0, retry_after_s=3600) == "error"
+    outcome = _ensure(_Store(), now=lambda: 5010.0, retry_after_s=3600)
+    assert outcome == aq.Outcome(aq.FAILED, "error")
+    assert outcome.exception_class is None
+    assert aq.format_reason(outcome) == "error"

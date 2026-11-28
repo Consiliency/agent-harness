@@ -2231,6 +2231,20 @@ def _seat_launch_modes(
                                           ignored)
         return credential[margin]
 
+    def _qualification_digest(leg: str, resolved: object) -> str | None:
+        qkey = getattr(resolved, "qualification_key", None)
+        if qkey is not None:
+            return _seat_route_contract.key_digest(qkey)
+        if _seat_profiles.profile_for(leg) is not None:
+            return _seat_jail.jail_profile_digest(leg)
+        return None
+
+    def _recent_qualification_outcome(leg: str, resolved: object):
+        digest = _qualification_digest(leg, resolved)
+        if digest is None:
+            return None
+        return _seat_jail_autoqualify.recent_outcome(digest)
+
     sdk_ready: dict[str, object] = {}
     sdk_refused: set[int] = set()
     modes = []
@@ -2293,14 +2307,12 @@ def _seat_launch_modes(
                                          "this route has no file tools", "", None, position))
         elif refusal == "seat_jail_qualification_failed":
             # Plan amendments A2 + A3b: degraded and not run, with the typed reason and its fix.
-            profile = _seat_profiles.profile_for(leg)
-            outcome = (_seat_jail_autoqualify.recent_outcome(
-                _seat_jail.jail_profile_digest(leg)
-            ) if profile is not None else None)
+            outcome = _recent_qualification_outcome(leg, resolved)
             reason = outcome.reason if outcome is not None and outcome.reason else "error"
+            detail = _seat_jail_autoqualify.format_reason(outcome)
             _what, why, _fix = _seat_jail.NOTICES[refusal]
             modes.append(sp.SeatMode(key, leg, sp.MODE_DEGRADED, refusal,
-                                     f"{why}; reason: {reason}",
+                                     f"{why}; reason: {detail}",
                                      _seat_jail_autoqualify.fix_for(reason), None, position))
         elif refusal is not None:
             # agent-harness#1244: every route that is not jailed lands here, sealed codes
@@ -2329,35 +2341,35 @@ def _seat_launch_modes(
                 continue
             kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
                                               else (sp.MODE_JAILED, None, None, None, ()))
-            profile = _seat_profiles.profile_for(leg)
-            if leg not in qualified_now and profile is not None:
-                outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
-                qualified_now[leg] = (outcome is not None
-                                      and outcome.state == _seat_jail_autoqualify.QUALIFIED_NOW)
-            qualified_now.setdefault(leg, False)
+            qual_key = _qualification_digest(leg, resolved) or leg
+            if qual_key not in qualified_now:
+                outcome = _recent_qualification_outcome(leg, resolved)
+                qualified_now[qual_key] = (outcome is not None
+                                           and outcome.state == _seat_jail_autoqualify.QUALIFIED_NOW)
+            is_qualified_now = qualified_now[qual_key]
             if code == _CLAUDE_LOGIN_AWAITING:
                 _what, why, fix = _seat_jail.NOTICES[code]
                 modes.append(sp.SeatMode(
                     key, leg, sp.MODE_JAILED, code,
                     f"{why} (expires in {_minutes(left)}m; waits up to "
                     f"{int(_seat_credentials.login_refresh_wait_s())} s, then will not run)",
-                    fix, source, position, qualified_now[leg], also))
+                    fix, source, position, is_qualified_now, also))
             elif code is not None:
                 _what, why, fix = _seat_jail.NOTICES[code]
                 modes.append(sp.SeatMode(key, leg, kind, code, why, fix, source, position,
-                                         qualified_now[leg] if kind == sp.MODE_JAILED else False,
+                                         is_qualified_now if kind == sp.MODE_JAILED else False,
                                          also))
             elif also:
                 # Jailed on the login, and the operator must see why the override was not
                 # used (plan amendment A4).
                 _what, why, fix = _seat_jail.NOTICES[also[0]]
                 modes.append(sp.SeatMode(key, leg, sp.MODE_JAILED, also[0], why, fix, source,
-                                         position, qualified_now[leg], also[1:]))
+                                         position, is_qualified_now, also[1:]))
             else:
                 modes.append(sp.SeatMode(
                     key, leg, sp.MODE_JAILED, None,
                     "full tools inside its per-seat jail", "",
-                    source, position, qualified_now[leg]))
+                    source, position, is_qualified_now))
     # agent-harness#1253 round 1: every Claude seat's mode says when a stored override was
     # ignored -- above all when the seat does not run -- as a sibling notice, never as a
     # second refusal code.
