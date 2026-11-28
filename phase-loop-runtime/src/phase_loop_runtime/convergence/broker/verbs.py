@@ -172,6 +172,22 @@ class AdapterStartOwnerContended(PermissionError):
     """
 
 
+class PostAmbiguityObservationUnreadable(PermissionError):
+    """The post-ambiguity observation side file was unreadable during owner recovery.
+
+    Retryable refusal, not promotion: nothing was written to ``evidence.jsonl``
+    and the unsealed owner stays in ``provider_call_in_flight`` so a later retry
+    can complete the ambiguity row referenced by any durable observation instead
+    of permanently hiding a saved PR URL behind ``unsealed-adapter-start-owner``
+    (agent-harness#1701).
+    """
+
+    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+        super().__init__(message)
+        self.effect_key = effect_key
+        self.transaction_id = transaction_id
+
+
 class UnsealedOwnerBlocksPartition(PermissionError):
     """An unsealed adapter-start owner was promoted to ``outcome_ambiguous_blocked``.
 
@@ -1067,17 +1083,19 @@ class BrokerService:
                         f"(transaction {current_owner.transaction_id}) is held by a live "
                         "writer mid-attempt; retry after it finishes. No evidence was written."
                     )
-                if current is None:
-                    current = self.evidence_store._append_locked(
-                        EvidenceRecord(
-                            current_owner.effect_key,
-                            TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT,
+                if (
+                    current is None
+                    or current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT
+                ):
+                    ambiguous_record = self._recovery_ambiguity_record(current_owner)
+                    if current is None:
+                        self.evidence_store._append_locked(
+                            EvidenceRecord(
+                                current_owner.effect_key,
+                                TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT,
+                            )
                         )
-                    )
-                if current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
-                    self.evidence_store._append_locked(
-                        self._recovery_ambiguity_record(current_owner)
-                    )
+                    self.evidence_store._append_locked(ambiguous_record)
                 return True
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
@@ -1101,6 +1119,9 @@ class BrokerService:
         with an authenticated observation matching ``current_owner`` and that
         digest completes the ``adapter-exception`` row so retries replay the
         preserved PR URL instead of mismatching on ``unsealed-adapter-start-owner``.
+        If the observation side file is unreadable (e.g. a transient ``EIO``),
+        refuse retryably before appending any ambiguity row so a later retry
+        can still recover the saved observation.
         """
         adapter_exception = EvidenceRecord(
             current_owner.effect_key,
@@ -1111,15 +1132,22 @@ class BrokerService:
         observations = evidence_module.read_post_ambiguity_observations(
             self.evidence_store.root
         )
-        if observations is not evidence_module.UNREADABLE:
-            for obs in observations.get(current_owner.effect_key, ()):
-                if (
-                    obs.transaction_id == current_owner.transaction_id
-                    and obs.owner_nonce == current_owner.owner_nonce
-                    and obs.head_sha == current_owner.committed_head
-                    and obs.ambiguity_digest == expected_digest
-                ):
-                    return adapter_exception
+        if observations is evidence_module.UNREADABLE:
+            raise PostAmbiguityObservationUnreadable(
+                f"post-ambiguity observation side file in {self.evidence_store.root} is "
+                "unreadable during unsealed-owner recovery; retry after read recovery "
+                "before promoting the owner to outcome_ambiguous_blocked",
+                effect_key=current_owner.effect_key,
+                transaction_id=current_owner.transaction_id,
+            )
+        for obs in observations.get(current_owner.effect_key, ()):
+            if (
+                obs.transaction_id == current_owner.transaction_id
+                and obs.owner_nonce == current_owner.owner_nonce
+                and obs.head_sha == current_owner.committed_head
+                and obs.ambiguity_digest == expected_digest
+            ):
+                return adapter_exception
         return EvidenceRecord(
             current_owner.effect_key,
             TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED,

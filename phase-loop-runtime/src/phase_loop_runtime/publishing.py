@@ -1813,7 +1813,30 @@ def _human_publication_handoff(
                 "during the provider call"
             ),
         )
-        if refusal.get("provider_call_made"):
+        if refusal.get("observation_unreadable"):
+            # agent-harness#1701: owner recovery could not read
+            # post_ambiguity_observations.jsonl; refuse retryably before appending
+            # any ambiguity row so a transient read error cannot hide a saved PR URL.
+            handoff.update(
+                next_step_source=(
+                    "owner recovery could not read post_ambiguity_observations.jsonl, so "
+                    "no outcome_ambiguous_blocked row was appended: the unsealed "
+                    "adapter-start owner and its provider_call_in_flight intent stay "
+                    "unchanged so a transient read error cannot hide a saved pull request "
+                    "URL behind unsealed-adapter-start-owner"
+                ),
+                resume=(
+                    "retry once with the same plan and verification artifact after the "
+                    "transient storage/read error clears (or inspect "
+                    "post_ambiguity_observations.jsonl if it remains unreadable)"
+                ),
+                attestation_evidence=(
+                    "no provider call was made on this retry and no terminal was written; "
+                    "do not dispose the key attested_not_landed while "
+                    "post_ambiguity_observations.jsonl is unreadable"
+                ),
+            )
+        elif refusal.get("provider_call_made"):
             # agent-harness#1628: the same stored shape, but the provider WAS
             # entered.  Nothing here supports attested_not_landed by construction.
             # agent-harness#1684: an adapter that returned is not reported as
@@ -2069,6 +2092,17 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
             lambda error: (
                 "retry_once_before_partition_rotation",
                 {"effect_key": error.effect_key, "transaction_id": error.transaction_id},
+            ),
+        ),
+        (
+            verbs.PostAmbiguityObservationUnreadable,
+            lambda error: (
+                "retry_once_before_partition_rotation",
+                {
+                    "effect_key": error.effect_key,
+                    "transaction_id": error.transaction_id,
+                    "observation_unreadable": True,
+                },
             ),
         ),
         (
