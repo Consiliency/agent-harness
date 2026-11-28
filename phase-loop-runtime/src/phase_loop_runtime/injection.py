@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -683,26 +684,55 @@ def _skill_bodies(
     return "\n\n".join(blocks)
 
 
+def _iter_subdir_files(base: Path, *, ignore_bytecode: bool) -> list[tuple[str, Path]]:
+    """Yield ``(relpath_under_base, path)`` following directory symlinks (matching ``copytree``).
+
+    Tracks visited ``(st_dev, st_ino)`` directory identities so cyclic symlinks terminate
+    without looping.
+    """
+    if not base.is_dir():
+        return []
+    entries: list[tuple[str, Path]] = []
+    visited: set[tuple[int, int]] = set()
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
+        dir_p = Path(dirpath)
+        try:
+            st = os.stat(dir_p)
+        except OSError:
+            dirnames[:] = []
+            continue
+        ident = (st.st_dev, st.st_ino)
+        if ident in visited:
+            dirnames[:] = []
+            continue
+        visited.add(ident)
+        dirnames[:] = sorted(
+            d for d in dirnames if not (ignore_bytecode and d == "__pycache__")
+        )
+        for filename in sorted(filenames):
+            if ignore_bytecode and filename.endswith(".pyc"):
+                continue
+            file_p = dir_p / filename
+            if file_p.is_file():
+                entries.append((file_p.relative_to(base).as_posix(), file_p))
+    return entries
+
+
 def _skill_subdir_sources(
     skill_dir: Path, harness_target: str, subdir: str
 ) -> tuple[tuple[str, Path], ...]:
-    """Files under one skill subdirectory as ``(path under <subdir>/, source)``.
+    """Effective files under one skill subdirectory as ``(path under <subdir>/, source)``.
 
     An assembled skill dir keeps them in ``<subdir>/``; a canonical
     ``phase-loop-skills/<skill>`` dir may also keep harness-only ones in
-    ``_overrides/<harness>/<subdir>/``, which reach only that harness.
+    ``_overrides/<harness>/<subdir>/``, which reach only that harness (override wins for
+    flattened delivery destinations such as ``skills/<skill>/references/<rel>``).
     """
+    ignore_bytecode = subdir == "scripts"
     found: dict[str, Path] = {}
     for base in (skill_dir / subdir, skill_dir / "_overrides" / harness_target / subdir):
-        if not base.is_dir():
-            continue
-        for path in base.rglob("*"):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(base)
-            if "__pycache__" in rel.parts or path.suffix == ".pyc":
-                continue
-            found[rel.as_posix()] = path
+        for rel, path in _iter_subdir_files(base, ignore_bytecode=ignore_bytecode):
+            found[rel] = path
     return tuple(sorted(found.items()))
 
 
@@ -826,12 +856,25 @@ def _skill_subdir_sha256(
     *,
     payloads: list[tuple[str, bytes]] | None = None,
 ) -> dict[str, str]:
-    digests = {}
-    for rel, source in _skill_subdir_sources(skill_dir, harness_target, subdir):
-        content = source.read_bytes()
-        digests[source.relative_to(skill_dir).as_posix()] = hashlib.sha256(content).hexdigest()
-        if payloads is not None:
-            payloads.append((rel, content))
+    """Hash every file in ``<subdir>/`` and ``_overrides/<harness>/<subdir>/``.
+
+    Keying by ``source.relative_to(skill_dir).as_posix()`` hashes both base and override
+    files when a same-path collision exists (since ``copytree`` delivers both trees to
+    Claude), while ``payloads`` still carries the deduplicated per-destination bytes
+    (override wins for context-file delivery).
+    """
+    ignore_bytecode = subdir == "scripts"
+    digests: dict[str, str] = {}
+    effective_payloads: dict[str, bytes] = {}
+    for base in (skill_dir / subdir, skill_dir / "_overrides" / harness_target / subdir):
+        for rel, source in _iter_subdir_files(base, ignore_bytecode=ignore_bytecode):
+            content = source.read_bytes()
+            digests[source.relative_to(skill_dir).as_posix()] = hashlib.sha256(content).hexdigest()
+            if payloads is not None:
+                effective_payloads[rel] = content
+    if payloads is not None:
+        for rel in sorted(effective_payloads):
+            payloads.append((rel, effective_payloads[rel]))
     return digests
 
 

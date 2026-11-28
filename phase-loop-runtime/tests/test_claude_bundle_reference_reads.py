@@ -130,6 +130,37 @@ class ClaudeBundleReferenceReadsTest(unittest.TestCase):
                 digest("codex-execute-phase", canonical_dir, harness="codex"), codex_before
             )
 
+            # Same-path collision between base scripts/ and _overrides/claude/scripts/:
+            # copytree delivers both, so editing EITHER base or override must change the digest.
+            base_main = canonical_dir / "scripts" / "main.sh"
+            override_main = canonical_dir / "_overrides" / "claude" / "scripts" / "main.sh"
+            base_main.write_text("#!/bin/sh\necho base-v1\n", encoding="utf-8")
+            override_main.write_text("#!/bin/sh\necho override-v1\n", encoding="utf-8")
+            collision_before = digest("claude-execute-phase", canonical_dir, harness="claude")
+            base_main.write_text("#!/bin/sh\necho base-v2\n", encoding="utf-8")
+            collision_after_base = digest("claude-execute-phase", canonical_dir, harness="claude")
+            self.assertNotEqual(collision_after_base, collision_before)
+            override_main.write_text("#!/bin/sh\necho override-v2\n", encoding="utf-8")
+            self.assertNotEqual(
+                digest("claude-execute-phase", canonical_dir, harness="claude"),
+                collision_after_base,
+            )
+
+            # Symlinked subdirectories under scripts/ are traversed (matching copytree) and cycles terminate.
+            linked_target = Path(td) / "linked-scripts-target"
+            linked_target.mkdir()
+            linked_helper = linked_target / "helper.sh"
+            linked_helper.write_text("#!/bin/sh\necho v1\n", encoding="utf-8")
+            (exec_dir / "scripts" / "linked").symlink_to(linked_target, target_is_directory=True)
+            before_linked = digest("claude-execute-phase", exec_dir)
+            linked_helper.write_text("#!/bin/sh\necho v2\n", encoding="utf-8")
+            after_linked = digest("claude-execute-phase", exec_dir)
+            self.assertNotEqual(after_linked, before_linked)
+
+            # Cyclic symlink inside scripts/ does not hang.
+            (linked_target / "loop").symlink_to(linked_target, target_is_directory=True)
+            self.assertEqual(digest("claude-execute-phase", exec_dir), after_linked)
+
 
 if __name__ == "__main__":
     unittest.main()
