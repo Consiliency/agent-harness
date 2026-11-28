@@ -71,6 +71,105 @@ class ClaudeBundleReferenceReadsTest(unittest.TestCase):
             reference.write_text(reference.read_text() + "\nedited\n")
             self.assertNotEqual(digest(skill_dir), before)
 
+    def test_bundle_digest_changes_when_a_script_or_asset_changes(self):
+        def digest(skill_name, skill_dir, *, harness="claude", action="execute"):
+            with patch.object(
+                injection, "_resolve_pack_skill_dirs", return_value={skill_name: skill_dir}
+            ):
+                return injection._bundle_sha256(
+                    repo=skill_dir,
+                    harness_target=harness,
+                    action=action,
+                    workflow_command=f"{skill_name} plan.md",
+                    body="body",
+                    expected_skill_pack=(skill_name,),
+                )
+
+        with tempfile.TemporaryDirectory() as td:
+            exec_dir = Path(td) / "claude-execute-phase"
+            shutil.copytree(PACKAGED / "claude-execute-phase", exec_dir)
+            before_exec = digest("claude-execute-phase", exec_dir)
+            self.assertEqual(digest("claude-execute-phase", exec_dir), before_exec)
+
+            # Bytecode caches created when running Python helpers must not churn the digest.
+            pycache = exec_dir / "scripts" / "__pycache__"
+            pycache.mkdir(parents=True, exist_ok=True)
+            (pycache / "state.cpython-312.pyc").write_bytes(b"\x00\x00pyc")
+            self.assertEqual(digest("claude-execute-phase", exec_dir), before_exec)
+
+            # Editing a helper script changes skill_bundle_sha256.
+            helper = exec_dir / "scripts" / "verify_harness.sh"
+            self.assertTrue(helper.is_file())
+            helper.write_text(helper.read_text(encoding="utf-8") + "\n# edited\n", encoding="utf-8")
+            after_script = digest("claude-execute-phase", exec_dir)
+            self.assertNotEqual(after_script, before_exec)
+
+            # Adding or editing an asset changes skill_bundle_sha256.
+            plan_dir = Path(td) / "claude-plan-phase"
+            shutil.copytree(PACKAGED / "claude-plan-phase", plan_dir)
+            before_plan = digest("claude-plan-phase", plan_dir, action="plan")
+            asset = plan_dir / "assets" / "review_prompt.md"
+            self.assertTrue(asset.is_file())
+            asset.write_text(asset.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
+            self.assertNotEqual(
+                digest("claude-plan-phase", plan_dir, action="plan"), before_plan
+            )
+
+            # Harness-specific overrides under _overrides/<harness>/{scripts,assets} affect only that harness.
+            canonical_dir = Path(td) / "execute-phase"
+            shutil.copytree(PACKAGED / "claude-execute-phase", canonical_dir)
+            claude_before = digest("claude-execute-phase", canonical_dir, harness="claude")
+            codex_before = digest("codex-execute-phase", canonical_dir, harness="codex")
+            override_script = canonical_dir / "_overrides" / "claude" / "scripts" / "extra.sh"
+            override_script.parent.mkdir(parents=True, exist_ok=True)
+            override_script.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+            self.assertNotEqual(
+                digest("claude-execute-phase", canonical_dir, harness="claude"), claude_before
+            )
+            self.assertEqual(
+                digest("codex-execute-phase", canonical_dir, harness="codex"), codex_before
+            )
+
+            # Same-path collision between base scripts/ and _overrides/claude/scripts/:
+            # copytree delivers both, so editing EITHER base or override must change the digest.
+            base_main = canonical_dir / "scripts" / "main.sh"
+            override_main = canonical_dir / "_overrides" / "claude" / "scripts" / "main.sh"
+            base_main.write_text("#!/bin/sh\necho base-v1\n", encoding="utf-8")
+            override_main.write_text("#!/bin/sh\necho override-v1\n", encoding="utf-8")
+            collision_before = digest("claude-execute-phase", canonical_dir, harness="claude")
+            base_main.write_text("#!/bin/sh\necho base-v2\n", encoding="utf-8")
+            collision_after_base = digest("claude-execute-phase", canonical_dir, harness="claude")
+            self.assertNotEqual(collision_after_base, collision_before)
+            override_main.write_text("#!/bin/sh\necho override-v2\n", encoding="utf-8")
+            self.assertNotEqual(
+                digest("claude-execute-phase", canonical_dir, harness="claude"),
+                collision_after_base,
+            )
+
+            # Symlinked subdirectories under scripts/ are traversed (matching copytree) and cycles terminate.
+            linked_target = Path(td) / "linked-scripts-target"
+            linked_target.mkdir()
+            linked_helper = linked_target / "helper.sh"
+            linked_helper.write_text("#!/bin/sh\necho v1\n", encoding="utf-8")
+            (exec_dir / "scripts" / "linked").symlink_to(linked_target, target_is_directory=True)
+            before_linked = digest("claude-execute-phase", exec_dir)
+            linked_helper.write_text("#!/bin/sh\necho v2\n", encoding="utf-8")
+            after_linked = digest("claude-execute-phase", exec_dir)
+            self.assertNotEqual(after_linked, before_linked)
+
+            # Cyclic symlink inside scripts/ does not hang.
+            (linked_target / "loop").symlink_to(linked_target, target_is_directory=True)
+            self.assertEqual(digest("claude-execute-phase", exec_dir), after_linked)
+
+            # Distinct non-cyclic directory alias (two paths to the same directory) changes the digest.
+            real_sub = exec_dir / "scripts" / "a_real"
+            real_sub.mkdir()
+            (real_sub / "helper.sh").write_text("#!/bin/sh\necho alias-helper\n", encoding="utf-8")
+            before_alias = digest("claude-execute-phase", exec_dir)
+            (exec_dir / "scripts" / "z_alias").symlink_to(real_sub, target_is_directory=True)
+            after_alias = digest("claude-execute-phase", exec_dir)
+            self.assertNotEqual(after_alias, before_alias)
+
 
 if __name__ == "__main__":
     unittest.main()

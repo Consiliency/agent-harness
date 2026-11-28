@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -683,21 +684,67 @@ def _skill_bodies(
     return "\n\n".join(blocks)
 
 
-def _skill_reference_sources(skill_dir: Path, harness_target: str) -> tuple[tuple[str, Path], ...]:
-    """A skill's linked reference files as ``(path under references/, source)``.
+def _iter_subdir_files(base: Path, *, ignore_bytecode: bool) -> list[tuple[str, Path]]:
+    """Yield ``(relpath_under_base, path)`` following directory symlinks (matching ``copytree``).
 
-    An assembled skill dir keeps them in ``references/``; a canonical
-    ``phase-loop-skills/<skill>`` dir keeps harness-only ones in
-    ``_overrides/<harness>/references/``, which reach only that harness.
+    Tracks directory ``(st_dev, st_ino)`` identities along the current ancestry so cyclic
+    symlinks terminate while distinct non-cyclic directory aliases (e.g. ``scripts/z_alias``
+    pointing to ``scripts/a_real``) are each included under their own relative paths.
     """
-    found: dict[str, Path] = {}
-    for references in (skill_dir / "references", skill_dir / "_overrides" / harness_target / "references"):
-        if not references.is_dir():
+    if not base.is_dir():
+        return []
+    entries: list[tuple[str, Path]] = []
+    stack: list[tuple[Path, frozenset[tuple[int, int]]]] = [(base, frozenset())]
+    while stack:
+        dir_p, ancestors = stack.pop()
+        try:
+            st = os.stat(dir_p)
+        except OSError:
             continue
-        for path in references.rglob("*"):
-            if path.is_file():
-                found[path.relative_to(references).as_posix()] = path
+        ident = (st.st_dev, st.st_ino)
+        if ident in ancestors:
+            continue
+        next_ancestors = ancestors | {ident}
+        try:
+            children = sorted(dir_p.iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        subdirs: list[Path] = []
+        for child in children:
+            name = child.name
+            if child.is_dir():
+                if not (ignore_bytecode and name == "__pycache__"):
+                    subdirs.append(child)
+            elif child.is_file():
+                if ignore_bytecode and name.endswith(".pyc"):
+                    continue
+                entries.append((child.relative_to(base).as_posix(), child))
+        for sub in reversed(subdirs):
+            stack.append((sub, next_ancestors))
+    return entries
+
+
+def _skill_subdir_sources(
+    skill_dir: Path, harness_target: str, subdir: str
+) -> tuple[tuple[str, Path], ...]:
+    """Effective files under one skill subdirectory as ``(path under <subdir>/, source)``.
+
+    An assembled skill dir keeps them in ``<subdir>/``; a canonical
+    ``phase-loop-skills/<skill>`` dir may also keep harness-only ones in
+    ``_overrides/<harness>/<subdir>/``, which reach only that harness (override wins for
+    flattened delivery destinations such as ``skills/<skill>/references/<rel>``).
+    """
+    ignore_bytecode = subdir == "scripts"
+    found: dict[str, Path] = {}
+    for base in (skill_dir / subdir, skill_dir / "_overrides" / harness_target / subdir):
+        for rel, path in _iter_subdir_files(base, ignore_bytecode=ignore_bytecode):
+            found[rel] = path
     return tuple(sorted(found.items()))
+
+
+def _skill_reference_sources(skill_dir: Path, harness_target: str) -> tuple[tuple[str, Path], ...]:
+    """A skill's linked reference files as ``(path under references/, source)``."""
+    return _skill_subdir_sources(skill_dir, harness_target, "references")
 
 
 def skill_reference_files(
@@ -797,24 +844,50 @@ def _bundle_sha256(
                 "name": skill_name,
                 "source": _skill_source_label(repo, skill_dir),
                 "sha256": hashlib.sha256(skill_file.read_bytes()).hexdigest() if skill_file.exists() else None,
-                # agent-harness#1358: SKILL.md links detail into references/; editing one
-                # must change the bundle identity, not only edits to SKILL.md.
+                # agent-harness#1358 / #1698: SKILL.md links detail into references/ and
+                # ships executable helpers in scripts/ and templates in assets/; editing
+                # any of them must change the bundle identity, not only edits to SKILL.md.
                 "references": references,
+                "scripts": _skill_subdir_sha256(skill_dir, harness_target, "scripts"),
+                "assets": _skill_subdir_sha256(skill_dir, harness_target, "assets"),
             }
         )
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _skill_subdir_sha256(
+    skill_dir: Path,
+    harness_target: str,
+    subdir: str,
+    *,
+    payloads: list[tuple[str, bytes]] | None = None,
+) -> dict[str, str]:
+    """Hash every file in ``<subdir>/`` and ``_overrides/<harness>/<subdir>/``.
+
+    Keying by ``source.relative_to(skill_dir).as_posix()`` hashes both base and override
+    files when a same-path collision exists (since ``copytree`` delivers both trees to
+    Claude), while ``payloads`` still carries the deduplicated per-destination bytes
+    (override wins for context-file delivery).
+    """
+    ignore_bytecode = subdir == "scripts"
+    digests: dict[str, str] = {}
+    effective_payloads: dict[str, bytes] = {}
+    for base in (skill_dir / subdir, skill_dir / "_overrides" / harness_target / subdir):
+        for rel, source in _iter_subdir_files(base, ignore_bytecode=ignore_bytecode):
+            content = source.read_bytes()
+            digests[source.relative_to(skill_dir).as_posix()] = hashlib.sha256(content).hexdigest()
+            if payloads is not None:
+                effective_payloads[rel] = content
+    if payloads is not None:
+        for rel in sorted(effective_payloads):
+            payloads.append((rel, effective_payloads[rel]))
+    return digests
+
+
 def _skill_references_sha256(
     skill_dir: Path, harness_target: str, *, payloads: list[tuple[str, bytes]] | None = None,
 ) -> dict[str, str]:
-    references = {}
-    for rel, source in _skill_reference_sources(skill_dir, harness_target):
-        content = source.read_bytes()
-        references[source.relative_to(skill_dir).as_posix()] = hashlib.sha256(content).hexdigest()
-        if payloads is not None:
-            payloads.append((rel, content))
-    return references
+    return _skill_subdir_sha256(skill_dir, harness_target, "references", payloads=payloads)
 
 
 def _skill_bundle_id(harness_target: str, action: str, expected_skill_pack: tuple[str, ...]) -> str:
