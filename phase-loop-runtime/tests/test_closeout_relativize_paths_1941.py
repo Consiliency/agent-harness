@@ -267,3 +267,92 @@ def test_missing_in_repo_verification_artifact_and_log_keep_blocked_closeout(tmp
     assert result_missing_log["code"] == "missing_log"
     assert result_missing_log["log_path"] == ".phase-loop/runs/missing-log-run/verification.log"
     assert phase_loop_closeout_diagnostic(missing_log_closeout) is None
+
+
+def test_symlink_loop_in_plan_or_artifact_does_not_abort_closeout(tmp_path, monkeypatch):
+    repo = tmp_path / "home" / "alice" / "proj"
+    (repo / "plans").mkdir(parents=True)
+    plan = repo / "plans" / "plan.md"
+    plan.write_text("# plan\n", encoding="utf-8")
+
+    loop_a = repo / "plans" / "loop-a"
+    loop_b = repo / "plans" / "loop-b"
+    loop_a.symlink_to(loop_b)
+    loop_b.symlink_to(loop_a)
+
+    # Real OS symlink loop (OSError on Python 3.13+, RuntimeError on Python 3.12).
+    closeout = build_phase_loop_closeout(
+        phase_alias="P1",
+        plan_path=plan,
+        terminal_summary={
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "artifact_paths": {"loop": str(loop_a)},
+        },
+        automation={
+            "status": "complete",
+            "verification_status": "passed",
+            "human_required": False,
+        },
+        repo_root=repo,
+    )
+    assert closeout["artifacts"]["artifact_paths"]["loop"] == str(loop_a)
+    diagnostic = phase_loop_closeout_diagnostic(closeout)
+    assert diagnostic is not None
+    assert "absolute_private_path" in diagnostic["message"]
+
+    # Explicit Python 3.12 RuntimeError simulation on Path.resolve() for both helpers.
+    from pathlib import Path as _Path
+
+    orig_resolve = _Path.resolve
+
+    def _raise_runtime_on_loop(self, strict=False):
+        if "py312-loop" in str(self):
+            raise RuntimeError(f"Symlink loop from {self}")
+        return orig_resolve(self, strict=strict)
+
+    monkeypatch.setattr(_Path, "resolve", _raise_runtime_on_loop)
+    py312_loop_plan = repo / "plans" / "py312-loop-plan.md"
+    py312_loop_artifact = repo / "plans" / "py312-loop-artifact"
+    closeout_py312 = build_phase_loop_closeout(
+        phase_alias="P1",
+        plan_path=py312_loop_plan,
+        terminal_summary={
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "artifact_paths": {"loop": str(py312_loop_artifact)},
+        },
+        automation={
+            "status": "complete",
+            "verification_status": "passed",
+            "human_required": False,
+        },
+    )
+    assert closeout_py312["artifacts"]["plan_path"] == str(py312_loop_plan)
+    assert closeout_py312["artifacts"]["artifact_paths"]["loop"] == str(py312_loop_artifact)
+    diag_py312 = phase_loop_closeout_diagnostic(closeout_py312)
+    assert diag_py312 is not None
+    assert "absolute_private_path" in diag_py312["message"]
+
+    closeout_py312_explicit = build_phase_loop_closeout(
+        phase_alias="P1",
+        plan_path=plan,
+        terminal_summary={
+            "terminal_status": "complete",
+            "verification_status": "passed",
+            "artifact_paths": {"loop": str(py312_loop_artifact)},
+        },
+        automation={
+            "status": "complete",
+            "verification_status": "passed",
+            "human_required": False,
+        },
+        repo_root=repo,
+    )
+    assert closeout_py312_explicit["artifacts"]["plan_path"] == "plans/plan.md"
+    assert closeout_py312_explicit["artifacts"]["artifact_paths"]["loop"] == str(
+        py312_loop_artifact
+    )
+    diag_explicit = phase_loop_closeout_diagnostic(closeout_py312_explicit)
+    assert diag_explicit is not None
+    assert "absolute_private_path" in diag_explicit["message"]

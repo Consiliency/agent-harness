@@ -848,6 +848,20 @@ def _policy_source(assignment: Mapping[str, Any]) -> str | None:
     return policy.get("execution_policy_source") or policy.get("source")
 
 
+def _safe_resolve(path: Path) -> Path | None:
+    """Resolve ``path``, returning ``None`` on symlink loops or resolution errors across
+    Python 3.12 (``RuntimeError``) and Python 3.13+ (``OSError`` / ``ELOOP``)."""
+    try:
+        return path.resolve(strict=True)
+    except FileNotFoundError:
+        try:
+            return path.resolve(strict=False)
+        except (OSError, RuntimeError):
+            return None
+    except (OSError, RuntimeError):
+        return None
+
+
 def _infer_repo_root(
     repo_root: str | Path | None,
     plan_path: str | Path,
@@ -863,9 +877,8 @@ def _infer_repo_root(
         return Path(repo_root)
     if not plan_path or not str(plan_path).strip():
         return None
-    try:
-        start = Path(plan_path).resolve()
-    except OSError:
+    start = _safe_resolve(Path(plan_path))
+    if start is None:
         return None
     search_root = start if start.is_dir() else start.parent
     for ancestor in (search_root, *search_root.parents):
@@ -886,11 +899,13 @@ def _relativize_repo_path(value: str | Path, repo_root: Path | None) -> str:
     candidate = Path(text)
     if not candidate.is_absolute():
         return text
+    resolved_root = _safe_resolve(repo_root)
+    resolved_candidate = _safe_resolve(candidate)
+    if resolved_root is None or resolved_candidate is None:
+        return text
     try:
-        resolved_root = repo_root.resolve()
-        resolved_candidate = candidate.resolve()
         return resolved_candidate.relative_to(resolved_root).as_posix()
-    except (OSError, ValueError):
+    except ValueError:
         return text
 
 
