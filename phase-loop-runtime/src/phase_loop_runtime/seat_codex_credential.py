@@ -55,12 +55,17 @@ CODEX_SCOPE_CEILING: frozenset[str] = frozenset({
     "api.connectors.read", "api.connectors.invoke",
 })
 
-#: Seconds an access token must still be valid for a seat to receive it. SL-1.5 measured
-#: no renewal by the 0.167.0 CLI while its access token is valid, at any ``last_refresh``
-#: age up to 29 days, and a seat's copy cannot be renewed in the jail. So the copy must
-#: outlast the longest leg, plus clock skew and launch work before that leg's timer
-#: starts: the panel backstop plus the 300s the namespace already adds
-#: (``panel_invoker._LEG_TIMEOUT_MAX_S + 300``).
+#: Clock-skew and launch-work slack added to a bounded leg's hard deadline.
+CODEX_LOGIN_SLACK_S: int = 300
+
+#: Default minimum seconds an access token must still be valid for a seat to receive it.
+#: SL-1.5 measured no renewal by the 0.167.0 CLI while its access token is valid, at any
+#: ``last_refresh`` age up to 29 days, and a seat's copy cannot be renewed in the jail.
+#: Bounded legs tie their launch margin to ``deadline_s + CODEX_LOGIN_SLACK_S`` via
+#: :func:`required_margin_s`, which equals this default (``panel_invoker._LEG_TIMEOUT_MAX_S + 300``)
+#: under the default 1800 s backstop. Heartbeat-only legs have no wall-clock deadline and
+#: therefore enforce this 2100 s launch floor while remaining bounded by the access token's
+#: non-refreshing ``exp`` (failing closed post-run with :data:`TOKEN_EXPIRING` if outlived).
 CODEX_LOGIN_MIN_S: int = 2100
 
 API_KEY_REFUSED = "codex_seat_api_key_refused"
@@ -96,10 +101,10 @@ def auth_path(env: Mapping[str, str] | None = None) -> Path:
     return Path(home) / ".codex" / AUTH_FILE_NAME
 
 
-def present() -> bool:
-    """Is there a login file to check? A link or other object is present here and refused
-    when it is read."""
-    return os.path.lexists(auth_path())
+def present(env: Mapping[str, str] | None = None) -> bool:
+    """Is there a login file to check in ``env`` (default ``os.environ``)? A link or other
+    object is present here and refused when it is read."""
+    return os.path.lexists(auth_path(env))
 
 
 def _owner_uid() -> int:
@@ -215,15 +220,36 @@ def subscription_login_problem(raw: bytes) -> str | None:
     return None if _login(raw) is not None else API_KEY_REFUSED
 
 
-def token_margin_problem(raw: bytes, *, now: float) -> str | None:
+def required_margin_s(deadline_s: float | None = None) -> float:
+    """Required remaining access-token lifetime at launch.
+
+    When ``deadline_s`` is given (a bounded leg's hard deadline in seconds), returns
+    ``deadline_s + CODEX_LOGIN_SLACK_S``. When ``deadline_s`` is ``None`` (the default
+    backstop or a heartbeat-only leg, which has no wall-clock deadline), returns
+    :data:`CODEX_LOGIN_MIN_S` (2100 s).
+    """
+    if deadline_s is None:
+        return float(CODEX_LOGIN_MIN_S)
+    if isinstance(deadline_s, bool) or not isinstance(deadline_s, (int, float)) or not math.isfinite(deadline_s) or deadline_s < 0:
+        raise ValueError("deadline_s must be a finite, non-negative number of seconds")
+    return float(deadline_s) + float(CODEX_LOGIN_SLACK_S)
+
+
+def token_margin_problem(raw: bytes, *, now: float, margin_s: float | None = None) -> str | None:
     """``codex_seat_token_expiring`` when the access token is valid for less than
-    :data:`CODEX_LOGIN_MIN_S` after ``now``, or states no expiry. Claims that cannot be
-    decoded are left to :func:`scope_problem`, which refuses them."""
+    ``margin_s`` (default :data:`CODEX_LOGIN_MIN_S`) after ``now``, or states no expiry.
+    Claims that cannot be decoded are left to :func:`scope_problem`, which refuses them."""
+    if margin_s is None:
+        required = float(CODEX_LOGIN_MIN_S)
+    else:
+        if isinstance(margin_s, bool) or not isinstance(margin_s, (int, float)) or not math.isfinite(margin_s) or margin_s < 0:
+            raise ValueError("margin_s must be a finite, non-negative number of seconds")
+        required = float(margin_s)
     claims = _claims(raw)
     if claims is None:
         return None
     expires_at = _expiry(claims)
-    if expires_at is None or expires_at - now < CODEX_LOGIN_MIN_S:
+    if expires_at is None or expires_at - now < required:
         return TOKEN_EXPIRING
     return None
 
@@ -297,8 +323,8 @@ def install_seat_copy(home_fd: int, copy: CodexSeatCopy) -> None:
 
 
 __all__ = [
-    "AUTH_CAP_BYTES", "CODEX_LOGIN_MIN_S", "CODEX_SCOPE_CEILING", "CodexSeatCopy",
-    "SEAT_AUTH_RELPATH", "auth_path", "build_seat_copy", "install_seat_copy", "present",
-    "read_auth", "scope_problem", "subscription_login_problem", "token_margin_problem",
-    "tokens_changed",
+    "AUTH_CAP_BYTES", "CODEX_LOGIN_MIN_S", "CODEX_LOGIN_SLACK_S", "CODEX_SCOPE_CEILING",
+    "CodexSeatCopy", "SEAT_AUTH_RELPATH", "auth_path", "build_seat_copy", "install_seat_copy",
+    "present", "read_auth", "required_margin_s", "scope_problem", "subscription_login_problem",
+    "token_margin_problem", "tokens_changed",
 ]

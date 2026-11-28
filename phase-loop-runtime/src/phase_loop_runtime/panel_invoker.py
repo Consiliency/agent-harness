@@ -2273,6 +2273,7 @@ def _seat_launch_modes(
                 env=base_env,
                 native=native_rung,
                 cache_decision=True,
+                deadline_s=_codex_seat_deadline_s(timeouts.get(leg)) if leg == "codex" else None,
             )
         route, _notices, refusal = routes[route_key]
         resolved = getattr(route, "decision", None)
@@ -14752,6 +14753,7 @@ def _prepare_jailed_codex(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str], egress,
     *, env: Mapping[str, str] | None = None,
+    deadline_s: float | None = None,
     credential_mode: str = "live", copy_transform=None,
 ) -> _JailedSeat:
     """K-1 §5.1 credential seam: ``live`` (the default) is production delivery, byte for
@@ -14759,7 +14761,11 @@ def _prepare_jailed_codex(
     ``expired`` passes the production copy through ``copy_transform`` before it is
     installed, and the margin re-check still reads the live login."""
     from . import seat_codex_credential as cred, seat_codex_runtime as runtime
-    from .seat_profile_codex import codex_admission_gate, validate_codex_projection
+    from .seat_profile_codex import (
+        _token_margin_problem,
+        codex_admission_gate,
+        validate_codex_projection,
+    )
 
     if credential_mode not in {"live", "none", "expired"} or (
             credential_mode == "expired" and not callable(copy_transform)):
@@ -14777,13 +14783,16 @@ def _prepare_jailed_codex(
         executable = Path(dependency.subject_source) if dependency is not None else subject.subject_path
         if executable is None or (dependency is None and resolved is None):
             raise _seat_jail.SeatSandboxRefused("seat_provider_unavailable")
-        verdict = codex_admission_gate("codex", os.environ if env is None else env, True,
-                                       executable=executable, dependency=dependency)
+        caller_env = os.environ if env is None else env
+        verdict = codex_admission_gate("codex", caller_env, True,
+                                       executable=executable, dependency=dependency,
+                                       deadline_s=deadline_s)
         if verdict is not None:
             raise _seat_jail.SeatSandboxRefused(verdict.code or "codex_seat_cli_shape")
-        raw = cred.read_auth(os.environ if env is None else env)
+        raw = cred.read_auth(caller_env)
         for check in (cred.subscription_login_problem,
-                      lambda data: cred.token_margin_problem(data, now=time.time()), cred.scope_problem):
+                      lambda data: _token_margin_problem(cred, data, deadline_s=deadline_s),
+                      cred.scope_problem):
             code = check(raw)
             if code:
                 raise _seat_jail.SeatSandboxRefused(code)
@@ -14803,7 +14812,7 @@ def _prepare_jailed_codex(
         home_fd = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
         try:
             # Recheck the clock immediately before delivery, after jail preparation.
-            code = cred.token_margin_problem(raw, now=time.time())
+            code = _token_margin_problem(cred, raw, deadline_s=deadline_s)
             if code:
                 raise _seat_jail.SeatSandboxRefused(code)
             if copy is not None:
@@ -17926,6 +17935,20 @@ def _republish_jailed_claude_mode(code: str) -> None:
             "seat claude [%s]: the seat mode was not republished (%s)", code, type(exc).__name__)
 
 
+def _codex_seat_deadline_s(timeout_s: int | None, *, review_monitor=None) -> float | None:
+    """Deadline threaded into Codex's token-margin checks (agent-harness#1951).
+
+    Heartbeat-only legs (``review_monitor is not None``) have no wall-clock deadline and
+    return ``None`` so the ``CODEX_LOGIN_MIN_S`` (2100 s) launch floor applies. Bounded legs
+    with an explicit ``timeout_s`` pass that exact hard deadline so the margin scales to
+    ``deadline_s + 300 s``; omitted ``timeout_s`` uses the default 1800 s backstop (which
+    equals ``CODEX_LOGIN_MIN_S``).
+    """
+    if review_monitor is not None or timeout_s is None:
+        return None
+    return float(_leg_hard_deadline_s(timeout_s))
+
+
 def _claude_seat_login_margin_s(timeout_s: int | None) -> float:
     """The ONE lifetime a Claude seat's login token must still have when the seat launches
     (plan amendment A1): its leg's hard deadline, or ``PHASE_LOOP_SEAT_LOGIN_TOKEN_MARGIN_S``.
@@ -19913,6 +19936,7 @@ def _seat_route_for_spawn(
     env: Mapping[str, str] | None = None,
     native=None,
     cache_decision: bool = False,
+    deadline_s: float | None = None,
 ) -> "tuple[_seat_jail.SeatRoute | None, list[str], str | None]":
     """Adapt the JAILCORE decision to the retained launch tuple surface.
 
@@ -19955,7 +19979,8 @@ def _seat_route_for_spawn(
                 staged_tree_approved=(
                     getattr(review_authorization, "staged_tree_sha256", None) is not None
                 ),
-                env=dict(env or os.environ),
+                env=dict(os.environ if env is None else env),
+                deadline_s=deadline_s,
             ),
             policy=_seat_route.load_route_policy(),
             remote=_seat_route.INACTIVE_REMOTE_RUNG,
@@ -20035,6 +20060,7 @@ def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAutho
     route, _notices, refusal = _seat_route_for_spawn(
         leg, review_authorization, eligible=True, seat_key=seat_key, env=env,
         cache_decision=True,
+        deadline_s=_codex_seat_deadline_s(timeout_s) if leg == "codex" else None,
     )
     if route is None or not route.jailed or refusal is not None:
         return False
@@ -20264,6 +20290,10 @@ def _default_spawn(
         ),
         seat_key=seat_key,
         env=env,
+        deadline_s=(
+            _codex_seat_deadline_s(timeout_s, review_monitor=review_monitor)
+            if leg == "codex" else None
+        ),
     )
     if seat_refusal is not None:
         if leg == "claude" and seat_refusal in {
@@ -20824,6 +20854,10 @@ def _default_spawn(
                                     review_dir, base / "seat", review_authorization, seat_id,
                                     _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
                                     (staged_bundle, staged_instructions), gemini_egress, env=env,
+                                    deadline_s=(
+                                        float(leg_deadline)
+                                        if review_monitor is None and timeout_s is not None else None
+                                    ),
                                 )
                             seat = _bind_route_qualification(seat, seat_route)
                             codex_status, codex_text = _exec_jailed_codex_leg(

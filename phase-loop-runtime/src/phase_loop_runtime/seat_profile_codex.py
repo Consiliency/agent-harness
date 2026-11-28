@@ -86,27 +86,36 @@ def _env(inputs):
     })
 
 
-def _check(name):
+def _token_margin_problem(credential, raw: bytes, *, deadline_s: float | None = None) -> str | None:
+    now = time.time()
+    if deadline_s is None:
+        return credential.token_margin_problem(raw, now=now)
+    return credential.token_margin_problem(
+        raw, now=now, margin_s=credential.required_margin_s(deadline_s),
+    )
+
+
+def _check(name, env=None, *, deadline_s: float | None = None):
     from . import seat_codex_credential as credential
     from .seat_jail import SeatSandboxRefused
     try:
-        raw = credential.read_auth()
-        return (credential.token_margin_problem(raw, now=time.time()) if name == "token_margin"
-                else getattr(credential, name)(raw))
+        raw = credential.read_auth(env)
+        return (_token_margin_problem(credential, raw, deadline_s=deadline_s)
+                if name == "token_margin" else getattr(credential, name)(raw))
     except SeatSandboxRefused as exc:
         return exc.code
 
 
-def _subscription():
-    return _check("subscription_login_problem")
+def _subscription(env=None):
+    return _check("subscription_login_problem", env)
 
 
-def _margin():
-    return _check("token_margin")
+def _margin(env=None, *, deadline_s: float | None = None):
+    return _check("token_margin", env, deadline_s=deadline_s)
 
 
-def _scope():
-    return _check("scope_problem")
+def _scope(env=None):
+    return _check("scope_problem", env)
 
 
 def _auth_probe():
@@ -125,9 +134,9 @@ def _mount_points(_paths):
     return ("/seat/egress-ca.pem", *CODEX_RUNTIME_DESTINATIONS)
 
 
-def _credential_present():
+def _credential_present(env=None):
     from . import seat_codex_credential as credential
-    return credential.present()
+    return credential.present(env)
 
 
 def validate_codex_projection(dependency):
@@ -145,13 +154,13 @@ def validate_codex_projection(dependency):
         raise ExecutableDependencyError("authority_invalid", "Codex runtime destinations")
 
 
-def codex_admission_gate(leg, env, execute, *, executable=None, dependency=None):
+def codex_admission_gate(leg, env, execute, *, executable=None, dependency=None, deadline_s: float | None = None):
     from . import seat_codex_credential as credential
     from . import panel_invoker as pi, seat_admission, seat_jail
     try:
         raw = credential.read_auth(env)
         for check in (credential.subscription_login_problem,
-                      lambda data: credential.token_margin_problem(data, now=time.time()),
+                      lambda data: _token_margin_problem(credential, data, deadline_s=deadline_s),
                       credential.scope_problem):
             code = check(raw)
             if code:
