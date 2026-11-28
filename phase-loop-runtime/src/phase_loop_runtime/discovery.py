@@ -457,7 +457,11 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
             path = repo / path
         authorized = assert_roadmap_authorized(repo, path)
         if not path.exists():
-            raise FileNotFoundError(f"roadmap not found: {path}")
+            rel = roadmap_lint._display_path(path, repo)
+            raise roadmap_lint.RoadmapNotFoundError(
+                f"roadmap not found: {rel}. "
+                "Fix: pass an existing roadmap path via --roadmap (for example specs/phase-plans-v*.md)."
+            )
         return _return_selectable_roadmap(repo, authorized, "explicit")
 
     authority_roadmap = active_authorized_roadmap(repo)
@@ -489,7 +493,10 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
 
     candidates = sorted((repo / "specs").glob("phase-plans-v*.md"))
     if not candidates:
-        raise FileNotFoundError("no specs/phase-plans-v*.md roadmap found")
+        raise roadmap_lint.RoadmapNotFoundError(
+            "no specs/phase-plans-v*.md roadmap found. "
+            "Fix: create a roadmap under specs/phase-plans-v*.md or pass --roadmap."
+        )
     if len(candidates) != 1:
         raise AmbiguousRoadmapError([c.resolve() for c in candidates])
     assert_roadmap_authorized(repo, candidates[0])
@@ -542,7 +549,10 @@ def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path
     try:
         text = candidate.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise roadmap_lint.MalformedBannerError(f"{rel}: cannot read roadmap lifecycle banner") from exc
+        raise roadmap_lint.MalformedBannerError(
+            f"{rel}: cannot read roadmap lifecycle banner. "
+            f"Fix: ensure {rel} is a readable UTF-8 roadmap markdown file."
+        ) from exc
 
     banner_status: str | None
     try:

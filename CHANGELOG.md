@@ -78,6 +78,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the `pipeline` fixture event-loop startup bounds (alongside `ANSWER_BOUND_S` / deadline
   hardening in agent-harness#2221) so any future `not_run` failure reports its exact rung
   and stage (agent-harness#1977).
+- Raise typed `RoadmapStatusError` subclasses (including `RoadmapNotFoundError`, a
+  `FileNotFoundError` subclass) with repo-relative paths and actionable fix lines across
+  remaining roadmap discovery, lint, and ownership read paths (`roadmap_lint.py`,
+  `discovery.py`, and `roadmap_ownership.py`) instead of leaking raw `UnicodeDecodeError`
+  tracebacks, `/proc/self/fd/...` descriptor paths, or absolute host paths
+  (agent-harness#1831).
 - Give `test_openshell_backend.py`'s `pipeline` fixture and
   `test_untrusted_or_lost_result_refused_no_replay` load-proof `ANSWER_BOUND_S` and
   placement deadline headroom (and assert `not decision.placement._launch_failed`) so

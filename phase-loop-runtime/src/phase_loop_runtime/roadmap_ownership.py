@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from .roadmap_lint import (
+    ROADMAP_STATUS_REGISTRY_REL,
     RoadmapStatusError,
     validate_roadmap_status_coherence,
 )
@@ -115,9 +116,11 @@ def resolve_roadmap(repo: Path) -> Path:
         return declared_active_roadmap(Path(repo))
     except Exception as exc:  # registry absent/unreadable, or no single active
         raise RoadmapUnreadable(
-            f"could not determine the active roadmap for {repo}: {exc}. "
+            f"could not determine the active roadmap: {exc}. "
             f"Refusing to guess -- auditing ownership against the wrong roadmap "
-            f"would produce credible-looking false results."
+            f"would produce credible-looking false results. "
+            f"Fix: declare exactly one active roadmap in {ROADMAP_STATUS_REGISTRY_REL} "
+            f"with a matching lifecycle banner."
         ) from exc
 
 
