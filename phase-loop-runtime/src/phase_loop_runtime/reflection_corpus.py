@@ -82,9 +82,16 @@ _SHA = re.compile(r"\b[0-9a-f]{40}\b")
 _JSON_BLOB = re.compile(r"\{\".*\}")
 _LEDGER_PREFIXES = ("publication result:", "hosted ci:", "lifecycle warning:")
 _NONE_LEAD = re.compile(
-    r"^\s*[-*]?\s*(?:none(?: required| proposed| needed)?|no (?:skill )?(?:edits?|changes?|improvements?)(?: (?:are |is )?(?:proposed|required|needed))?|n/?a)\b[.:;,]?\s*",
+    r"^\s*(?:[-*+]|\d+[.)])?\s*(?:none(?: required| proposed| needed)?|no (?:skill )?(?:edits?|changes?|improvements?)(?: (?:are |is )?(?:proposed|required|needed))?|n/?a)\b[.:;,]?\s*",
     re.IGNORECASE,
 )
+_LIST_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>(?:[-*+]|\d+[.)]))(?:\s+|$)")
+_FENCE_OPEN_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_THEMATIC_BREAK_RE = re.compile(r"^[ \t]*(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}(?:\s|$)")
+_SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(?:=+|-+)[ \t]*$")
+_ANY_SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]*(?:=+|-+)[ \t]*$")
+_PLACEHOLDER_ONLY_RE = re.compile(r"^(?:<(?:sha|json|url|path|ref)>|[\s.,;:!?()\[\]{}`\"'/-])*$")
 
 
 @dataclass
@@ -199,22 +206,82 @@ def split_skill(skill: str) -> tuple[str, str] | None:
     return None
 
 
+def _strip_blank_edges(lines: Sequence[str]) -> str:
+    """Drop leading/trailing blank lines while preserving first-line indentation."""
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    end = len(lines)
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return "\n".join(lines[start:end]).rstrip()
+
+
 def parse_sections(text: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current: str | None = None
+    # (fence_char, fence_len, min_indent_or_None): track fences across the entire
+    # document (including preamble and unknown `##` sections) so fenced examples
+    # cannot inject fake headings, while bounding list-contained fences to their
+    # enclosing list item's content column so unclosed list fences close on dedent.
+    open_fence: tuple[str, int, int | None] | None = None
+    list_indents: list[int] = []
+    saw_blank = False
     for line in text.splitlines():
+        if open_fence is not None:
+            char, length, min_indent = open_fence
+            if min_indent is not None and line.strip() and _indent_width(line) < min_indent:
+                open_fence = None
+                cur_indent = _indent_width(line)
+                while list_indents and cur_indent < list_indents[-1]:
+                    list_indents.pop()
+            else:
+                if current is not None:
+                    sections[current].append(line)
+                close_min = min_indent or 0
+                if _fence_close(line, char, length, min_indent=close_min, max_indent=close_min + 3):
+                    open_fence = None
+                continue
         heading = re.match(r"^##\s+(.+?)\s*$", line)
         if heading:
             key = SECTION_KEYS.get(heading.group(1).strip().lower())
             # An unknown second-level heading ends the current section; trailing
             # ledger/successor sections are not reflection content.
             current = key
+            list_indents.clear()
+            saw_blank = False
             if key is not None:
                 sections.setdefault(key, [])
             continue
         if current is not None:
             sections[current].append(line)
-    return {key: "\n".join(lines).strip() for key, lines in sections.items()}
+        if not line.strip():
+            saw_blank = True
+            continue
+        cur_indent = _indent_width(line)
+        if saw_blank:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+        saw_blank = False
+        item_indent = _list_item_content_indent(line)
+        if item_indent is not None:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+            list_indents.append(item_indent)
+            inline_fence = _fence_open_after_list_marker(line)
+            if inline_fence is not None:
+                open_fence = (inline_fence[0], inline_fence[1], list_indents[-1])
+            continue
+        active_indent = list_indents[-1] if list_indents else None
+        if active_indent is not None and cur_indent >= active_indent:
+            opener = _fence_open(line, min_indent=active_indent, max_indent=active_indent + 3)
+            if opener is not None:
+                open_fence = (opener[0], opener[1], active_indent)
+        else:
+            opener = _fence_open(line, min_indent=0, max_indent=3)
+            if opener is not None:
+                open_fence = (opener[0], opener[1], None)
+    return {key: _strip_blank_edges(lines) for key, lines in sections.items()}
 
 
 def _run_context_value(run_context: str, name: str) -> str:
@@ -309,6 +376,433 @@ def classify_improvements(text: str) -> str:
     return "agnostic"
 
 
+def _indent_width(line: str) -> int:
+    expanded = line.expandtabs(4)
+    return len(expanded) - len(expanded.lstrip(" "))
+
+
+def _list_item_content_indent(line: str) -> int | None:
+    """CommonMark content column for a list item, or ``None`` if not a list item."""
+    if _THEMATIC_BREAK_RE.match(line):
+        return None
+    expanded = line.expandtabs(4)
+    match = _LIST_ITEM_RE.match(expanded)
+    if match is None:
+        return None
+    marker_end = len(match.group("indent")) + len(match.group("marker"))
+    rest = expanded[marker_end:]
+    if not rest.strip():
+        return marker_end + 1
+    spaces = len(rest) - len(rest.lstrip(" "))
+    return marker_end + (1 if spaces >= 5 else spaces)
+
+
+def _fence_open(
+    line: str, *, min_indent: int = 0, max_indent: int = 3
+) -> tuple[str, int] | None:
+    indent = _indent_width(line)
+    if indent < min_indent or indent > max_indent:
+        return None
+    match = _FENCE_OPEN_RE.match(line)
+    if not match:
+        return None
+    fence = match.group("fence")
+    info = match.group("info")
+    # CommonMark: backtick fence info strings cannot contain backticks.
+    if fence[0] == "`" and "`" in info:
+        return None
+    return fence[0], len(fence)
+
+
+def _fence_open_after_list_marker(line: str) -> tuple[str, int] | None:
+    """Detect a fence opener directly after a list marker (``- ```sh``), respecting CommonMark's 4-space code rule."""
+    if _THEMATIC_BREAK_RE.match(line):
+        return None
+    expanded = line.expandtabs(4)
+    match = _LIST_ITEM_RE.match(expanded)
+    if match is None:
+        return None
+    marker_end = len(match.group("indent")) + len(match.group("marker"))
+    rest = expanded[marker_end:]
+    if not rest.strip():
+        return None
+    spaces = len(rest) - len(rest.lstrip(" "))
+    # 1 space separates the marker from item content; up to 3 more spaces are
+    # allowed before a fence opener (5+ spaces is an indented code block).
+    if spaces > 4:
+        return None
+    return _fence_open(rest.lstrip(" "), min_indent=0, max_indent=0)
+
+
+def _fence_open_or_list_fence(
+    line: str, *, min_indent: int = 0, max_indent: int = 3
+) -> tuple[str, int] | None:
+    """Detect a fence opener on ``line`` itself or right after a list marker (``- ```sh``)."""
+    opener = _fence_open(line, min_indent=min_indent, max_indent=max_indent)
+    if opener is not None:
+        return opener
+    return _fence_open_after_list_marker(line)
+
+
+def _fence_close(
+    line: str, char: str, length: int, *, min_indent: int = 0, max_indent: int = 3
+) -> bool:
+    indent = _indent_width(line)
+    if indent < min_indent or indent > max_indent:
+        return False
+    stripped = line.strip()
+    return len(stripped) >= length and set(stripped) == {char}
+
+
+def _consume_fence(
+    lines: Sequence[str],
+    start: int,
+    opener: tuple[str, int] | None = None,
+    *,
+    min_indent: int | None = None,
+) -> tuple[list[str], int]:
+    resolved = opener if opener is not None else _fence_open_or_list_fence(lines[start])
+    assert resolved is not None
+    char, length = resolved
+    close_min = min_indent or 0
+    block = [lines[start]]
+    idx = start + 1
+    while idx < len(lines):
+        cur = lines[idx]
+        if min_indent is not None and cur.strip() and _indent_width(cur) < min_indent:
+            return block, idx
+        block.append(cur)
+        if _fence_close(cur, char, length, min_indent=close_min, max_indent=close_min + 3):
+            return block, idx + 1
+        idx += 1
+    return block, idx
+
+
+def _split_improvement_units(text: str) -> list[list[str]]:
+    """Group ``Improvements`` lines into atomic Markdown proposal units.
+
+    List items use CommonMark content indentation (not marker indentation) to
+    distinguish sibling items from nested sub-items and continuation paragraphs,
+    and keep lazy continuations and fenced blocks (including ``- ```...``)
+    atomic and bounded to their containing list item so dropping a repo-specific
+    entry never leaks fragments or swallows a generic sibling (agent-harness#1654).
+    """
+    lines = text.splitlines()
+    units: list[list[str]] = []
+    idx = 0
+    no_setext_before = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if not line.strip():
+            units.append([line])
+            idx += 1
+            continue
+        top_fence = _fence_open(line, min_indent=0, max_indent=3)
+        if top_fence is not None:
+            block, idx = _consume_fence(lines, idx, top_fence)
+            units.append(block)
+            continue
+        content_indent = _list_item_content_indent(line)
+        if content_indent is not None:
+            inline_fence = _fence_open_after_list_marker(line)
+            if inline_fence is not None:
+                item, idx = _consume_fence(lines, idx, inline_fence, min_indent=content_indent)
+            else:
+                item = [line]
+                idx += 1
+            while idx < len(lines):
+                cur = lines[idx]
+                if not cur.strip():
+                    # Look ahead past blank lines: a line indented to at least
+                    # the item's content column continues this list item.
+                    look = idx
+                    while look < len(lines) and not lines[look].strip():
+                        look += 1
+                    if look < len(lines) and _indent_width(lines[look]) >= content_indent:
+                        item.extend(lines[idx:look])
+                        idx = look
+                        continue
+                    break
+                cur_indent = _indent_width(cur)
+                if cur_indent >= content_indent:
+                    cur_fence = _fence_open(cur, min_indent=content_indent, max_indent=content_indent + 3)
+                    if cur_fence is not None:
+                        block, idx = _consume_fence(lines, idx, cur_fence, min_indent=content_indent)
+                        item.extend(block)
+                        continue
+                else:
+                    if _fence_open(cur, min_indent=0, max_indent=3) is not None:
+                        break
+                    if _HEADING_RE.match(cur) or _THEMATIC_BREAK_RE.match(cur):
+                        break
+                if _list_item_content_indent(cur) is not None:
+                    if cur_indent < content_indent:
+                        break
+                    nested_fence = _fence_open_after_list_marker(cur)
+                    if nested_fence is not None:
+                        block, idx = _consume_fence(lines, idx, nested_fence, min_indent=content_indent)
+                        item.extend(block)
+                        continue
+                # Either indented content (>= content_indent) or a CommonMark lazy
+                # continuation line directly following the item with no blank line.
+                item.append(cur)
+                idx += 1
+            units.append(item)
+            continue
+        # Plain (non-bullet, non-fence) line: recognize a single- or multi-line
+        # Setext heading (contiguous plain paragraph immediately followed by
+        # `===` / `---`), otherwise keep strictly more-indented continuations
+        # attached while keeping same-indent sibling lines separate.
+        base_indent = _indent_width(line)
+        if (
+            idx >= no_setext_before
+            and base_indent <= 3
+            and not _THEMATIC_BREAK_RE.match(line)
+            and not _HEADING_RE.match(line)
+            and not _SETEXT_UNDERLINE_RE.match(line)
+        ):
+            look = idx + 1
+            while look < len(lines) and lines[look].strip():
+                cand = lines[look]
+                if _SETEXT_UNDERLINE_RE.match(cand):
+                    units.append(list(lines[idx : look + 1]))
+                    idx = look + 1
+                    break
+                if (
+                    _fence_open(cand, min_indent=0, max_indent=3) is not None
+                    or _HEADING_RE.match(cand)
+                    or _THEMATIC_BREAK_RE.match(cand)
+                    or _list_item_content_indent(cand) is not None
+                ):
+                    break
+                look += 1
+            if idx == look + 1:
+                continue
+            no_setext_before = look
+        item = [line]
+        idx += 1
+        while idx < len(lines) and lines[idx].strip():
+            cur = lines[idx]
+            if _indent_width(cur) > base_indent:
+                cur_fence = _fence_open_or_list_fence(cur, min_indent=base_indent + 1, max_indent=base_indent + 4)
+                if cur_fence is not None:
+                    block, idx = _consume_fence(lines, idx, cur_fence, min_indent=base_indent + 1)
+                    item.extend(block)
+                else:
+                    item.append(cur)
+                    idx += 1
+            else:
+                break
+        units.append(item)
+    return units
+
+
+def _strip_list_marker(line: str) -> str:
+    stripped = line.strip()
+    match = _LIST_ITEM_RE.match(stripped)
+    if match is not None and not _THEMATIC_BREAK_RE.match(stripped):
+        return stripped[match.end():].strip()
+    return stripped
+
+
+def _line_is_ledger(line: str) -> bool:
+    return bool(line.strip()) and _strip_list_marker(line).lower().startswith(_LEDGER_PREFIXES)
+
+
+def _unit_is_ledger(unit: Sequence[str]) -> bool:
+    for line in unit:
+        if line.strip():
+            return _line_is_ledger(line)
+    return False
+
+
+def _strip_nested_ledger_lines(unit: Sequence[str]) -> tuple[list[str], list[str]]:
+    """Remove ledger sub-lines (and their wrapped/multi-paragraph continuations) inside a unit.
+
+    Returns ``(kept_lines, removed_ledger_lines)``.
+    """
+    kept: list[str] = []
+    removed: list[str] = []
+    idx = 0
+    while idx < len(unit):
+        line = unit[idx]
+        if _line_is_ledger(line):
+            base_indent = _indent_width(line)
+            content_indent = _list_item_content_indent(line)
+            removed.append(line)
+            idx += 1
+            while idx < len(unit):
+                cur = unit[idx]
+                if not cur.strip():
+                    if content_indent is None:
+                        break
+                    look = idx
+                    while look < len(unit) and not unit[look].strip():
+                        look += 1
+                    if look < len(unit) and _indent_width(unit[look]) >= content_indent:
+                        removed.extend(unit[idx:look])
+                        idx = look
+                        continue
+                    break
+                cur_indent = _indent_width(cur)
+                if content_indent is not None and cur_indent >= content_indent:
+                    cur_fence = _fence_open(cur, min_indent=content_indent, max_indent=content_indent + 3)
+                    if cur_fence is not None:
+                        block, idx = _consume_fence(unit, idx, cur_fence, min_indent=content_indent)
+                        removed.extend(block)
+                        continue
+                elif _fence_open(cur, min_indent=0, max_indent=3) is not None:
+                    break
+                if content_indent is not None:
+                    if cur_indent < content_indent and (_HEADING_RE.match(cur) or _THEMATIC_BREAK_RE.match(cur)):
+                        break
+                    if _list_item_content_indent(cur) is not None and cur_indent < content_indent:
+                        break
+                else:
+                    if _HEADING_RE.match(cur) or _THEMATIC_BREAK_RE.match(cur):
+                        break
+                    if _list_item_content_indent(cur) is not None and cur_indent <= base_indent:
+                        break
+                    if cur_indent < base_indent:
+                        break
+                removed.append(cur)
+                idx += 1
+            if kept and kept[-1].strip():
+                kept.append("")
+            continue
+        kept.append(line)
+        idx += 1
+    return kept, removed
+
+
+def _unit_is_empty_fence(unit: Sequence[str]) -> bool:
+    non_blank = [line for line in unit if line.strip()]
+    if not non_blank:
+        return False
+    opener = _fence_open(non_blank[0], min_indent=0, max_indent=3)
+    if opener is None:
+        return False
+    char, length = opener
+    body = non_blank[1:]
+    if body and _fence_close(body[-1], char, length, min_indent=0, max_indent=3):
+        body = body[:-1]
+    return not body
+
+
+def _line_is_non_proposal_marker(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or _THEMATIC_BREAK_RE.match(line) or re.match(r"^[ \t]*#{1,6}(?:\s|$)", line):
+        return True
+    if _list_item_content_indent(line) is not None and not _strip_list_marker(line):
+        return True
+    if classify_improvements(line) in {"none", "missing"}:
+        return True
+    redacted = redact(line, drop_ledger=True, bulleted_ledger=True)
+    if not redacted:
+        return True
+    body = _strip_list_marker(redacted)
+    return not body or bool(_PLACEHOLDER_ONLY_RE.fullmatch(body))
+
+
+def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
+    """True when ``unit`` carries no substantive proposal content."""
+    if not any(line.strip() for line in unit) or _unit_is_empty_fence(unit):
+        return True
+    # Walk original lines preserving blank-line boundaries so a paragraph
+    # followed by a blank line and `---` is never misread as a Setext heading,
+    # while using the same list-relative fence bounds as `_split_improvement_units`.
+    idx = 0
+    residual: list[str] = []
+    list_indents: list[int] = []
+    saw_blank = False
+    while idx < len(unit):
+        line = unit[idx]
+        if not line.strip():
+            saw_blank = True
+            residual.append(line)
+            idx += 1
+            continue
+        cur_indent = _indent_width(line)
+        if saw_blank:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+        saw_blank = False
+        item_indent = _list_item_content_indent(line)
+        if item_indent is not None:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+            list_indents.append(item_indent)
+            opener = _fence_open_after_list_marker(line)
+            if opener is not None:
+                min_ind = list_indents[-1]
+                block, next_idx = _consume_fence(unit, idx, opener, min_indent=min_ind)
+                char, length = opener
+                body = [b for b in block[1:] if b.strip()]
+                if body and _fence_close(body[-1], char, length, min_indent=min_ind, max_indent=min_ind + 3):
+                    body = body[:-1]
+                if body:
+                    return False
+                residual.append("")
+                idx = next_idx
+                continue
+        else:
+            active_indent = list_indents[-1] if list_indents else None
+            if active_indent is not None and cur_indent >= active_indent:
+                fence_min = active_indent
+                bound: int | None = active_indent
+            else:
+                fence_min = 0
+                bound = None
+            opener = _fence_open(line, min_indent=fence_min, max_indent=fence_min + 3)
+            if opener is not None:
+                block, next_idx = _consume_fence(unit, idx, opener, min_indent=bound)
+                char, length = opener
+                body = [b for b in block[1:] if b.strip()]
+                if body and _fence_close(body[-1], char, length, min_indent=fence_min, max_indent=fence_min + 3):
+                    body = body[:-1]
+                if body:
+                    return False
+                residual.append("")
+                idx = next_idx
+                continue
+        residual.append(line)
+        idx += 1
+    # Drop single- or multi-line Setext headings (contiguous non-blank plain
+    # paragraph lines immediately underlined by `===` / `---` with no blank line).
+    filtered_residual: list[str] = []
+    r_idx = 0
+    no_setext_before = 0
+    while r_idx < len(residual):
+        line = residual[r_idx]
+        if (
+            r_idx >= no_setext_before
+            and line.strip()
+            and _list_item_content_indent(line) is None
+            and not _THEMATIC_BREAK_RE.match(line)
+            and not re.match(r"^[ \t]*#{1,6}(?:\s|$)", line)
+            and not _ANY_SETEXT_UNDERLINE_RE.match(line)
+        ):
+            look = r_idx + 1
+            while look < len(residual) and residual[look].strip():
+                cand = residual[look]
+                if _ANY_SETEXT_UNDERLINE_RE.match(cand):
+                    r_idx = look + 1
+                    break
+                if (
+                    _list_item_content_indent(cand) is not None
+                    or _THEMATIC_BREAK_RE.match(cand)
+                    or re.match(r"^[ \t]*#{1,6}(?:\s|$)", cand)
+                ):
+                    break
+                look += 1
+            if r_idx == look + 1:
+                continue
+            no_setext_before = look
+        filtered_residual.append(line)
+        r_idx += 1
+    return all(_line_is_non_proposal_marker(line) for line in filtered_residual)
+
+
 CONTENT_KEYS = ("worked", "didnt", "improvements")
 NEAR_DUPLICATE_OVERLAP = 0.8
 
@@ -361,8 +855,10 @@ def apply_quality_filter(
     its own lines look like cross-run boilerplate. Repeated one-repo ledger lines
     and repeated one-repo lines carrying a ref, path or URL within the same skill
     are stripped from What worked and Improvements before classification.
-    Repo-specific proposals are dropped section by section, and the per-branch
-    cap keeps the newest usable reflections.
+    Repo-specific proposal lines are dropped at line granularity so generic
+    sibling proposals still reach the aggregator; when no agnostic proposal
+    survives, the Improvements section is dropped while usable friction stays
+    intact, and the per-branch cap keeps the newest usable reflections.
     """
     _mark_duplicates(reflections)
 
@@ -391,24 +887,81 @@ def apply_quality_filter(
         if reflection.excluded:
             continue
         skill_boilerplate = boilerplate_by_skill.get(reflection.bare_skill, ())
-        stripped_repo_specific = False
-        for key in CONTENT_KEYS:
-            if key not in reflection.sections:
-                continue
-            original = reflection.sections[key].splitlines()
-            kept = original if key == "didnt" else [line for line in original if _norm_line(line) not in skill_boilerplate]
+        if "worked" in reflection.sections:
+            original = reflection.sections["worked"].splitlines()
+            kept = [line for line in original if _norm_line(line) not in skill_boilerplate]
             if len(kept) != len(original):
-                reflection.notes.append(f"boilerplate_stripped:{key}:{len(original) - len(kept)}")
-            if key == "improvements":
-                stripped_repo_specific = any(classify_improvements(line) == "repo_specific" for line in original if line not in kept)
-            reflection.sections[key] = "\n".join(kept).strip()
-        reflection.improvements_class = classify_improvements(reflection.sections.get("improvements", ""))
-        if stripped_repo_specific and classify_improvements(redact(reflection.sections.get("improvements", ""), bulleted_ledger=True)) in {"none", "missing"}:
-            reflection.improvements_class = "repo_specific"
-        if reflection.improvements_class == "repo_specific":
-            reflection.sections["improvements"] = ""
-            reflection.notes.append("improvements_repo_specific")
-            reflection.notes.append("section_dropped:improvements:repo_specific")
+                reflection.notes.append(f"boilerplate_stripped:worked:{len(original) - len(kept)}")
+            reflection.sections["worked"] = _strip_blank_edges(kept)
+
+        stripped_repo_specific = False
+        dropped_repo_specific = 0
+        if "improvements" in reflection.sections:
+            # Group into Markdown proposal units BEFORE stripping boilerplate lines so
+            # boilerplate removal cannot split a wrapped repo-specific bullet and leave
+            # its continuation behind as a false generic proposal (agent-harness#1654).
+            units = _split_improvement_units(reflection.sections["improvements"])
+            bp_stripped_count = 0
+            surviving_units: list[list[str]] = []
+            for unit in units:
+                bp_lines = [line for line in unit if _norm_line(line) in skill_boilerplate]
+                bp_stripped_count += len(bp_lines)
+                if any(classify_improvements(line) == "repo_specific" for line in bp_lines):
+                    stripped_repo_specific = True
+                if _unit_is_ledger(unit):
+                    if any(classify_improvements(line) == "repo_specific" for line in unit):
+                        stripped_repo_specific = True
+                    continue
+                # Strip nested/wrapped ledger entries BEFORE classifying proposal content
+                # or stripping boilerplate so a nested ledger ref cannot discard a generic
+                # proposal and boilerplate removal cannot orphan a ledger continuation.
+                without_ledger, removed_ledger = _strip_nested_ledger_lines(unit)
+                if any(classify_improvements(line) == "repo_specific" for line in removed_ledger):
+                    stripped_repo_specific = True
+                if any(classify_improvements(line) == "repo_specific" for line in without_ledger):
+                    bp_in_non_ledger = sum(
+                        1 for line in without_ledger if _norm_line(line) in skill_boilerplate
+                    )
+                    dropped_repo_specific += len(without_ledger) - bp_in_non_ledger
+                    continue
+                kept_unit = [line for line in without_ledger if _norm_line(line) not in skill_boilerplate]
+                if _unit_is_empty_fence(kept_unit):
+                    continue
+                if kept_unit:
+                    surviving_units.append(kept_unit)
+            if bp_stripped_count:
+                reflection.notes.append(f"boilerplate_stripped:improvements:{bp_stripped_count}")
+            # Decide substantive survival AFTER ledger/boilerplate removal so a
+            # non-proposal marker paired with an indented ledger line cannot be
+            # classified as agnostic and archived (agent-harness#1654).
+            substantive_units = [unit for unit in surviving_units if not _unit_is_non_proposal(unit)]
+            if substantive_units:
+                reflection.sections["improvements"] = _strip_blank_edges(
+                    [line for unit in surviving_units for line in unit]
+                )
+                reflection.improvements_class = "agnostic"
+                if dropped_repo_specific:
+                    reflection.notes.append(
+                        f"lines_dropped:improvements:repo_specific:{dropped_repo_specific}"
+                    )
+            elif dropped_repo_specific or stripped_repo_specific:
+                reflection.sections["improvements"] = ""
+                reflection.improvements_class = "repo_specific"
+                reflection.notes.append("improvements_repo_specific")
+                reflection.notes.append("section_dropped:improvements:repo_specific")
+            else:
+                non_blank_remaining = [
+                    line for unit in surviving_units for line in unit if line.strip()
+                ]
+                has_none_marker = any(
+                    classify_improvements(line) == "none" for line in non_blank_remaining
+                )
+                reflection.sections["improvements"] = _strip_blank_edges(
+                    [line for unit in surviving_units for line in unit]
+                ) if has_none_marker else ""
+                reflection.improvements_class = "none" if has_none_marker else "missing"
+        else:
+            reflection.improvements_class = "missing"
         for key in CONTENT_KEYS:
             if key in reflection.sections:
                 reflection.sections[key] = redact(

@@ -1272,3 +1272,618 @@ def test_duplicate_of_out_of_root_twin_and_dangling_duplicate_are_not_consumed(t
         min_reflections=1,
     )
     assert [r.id for r in rc.consumed(synthetic)] == ["R0001", "R0002", "R0003"]
+
+
+# agent-harness#1654: drop repo-specific Improvements at line granularity so
+# generic sibling proposals still reach the aggregator.
+@pytest.mark.parametrize("repo_line", [
+    "- Fix the defect tracked in agent-harness#1371.",
+    "- Read /home/example/private-repo/notes.md before editing.",
+    "- Follow the workaround at https://example.com/private-proposal.",
+])
+@pytest.mark.parametrize("with_friction", [False, True])
+def test_repo_specific_improvement_line_keeps_generic_sibling_proposal(
+    tmp_path, repo_line, with_friction
+):
+    root = tmp_path / "skills"
+    generic_line = "- Add a pre-check reminding the implementer to run targeted tests before pushing."
+    for run in ("run1", "run2"):
+        put(root, "codex-plan-phase", "repo", "branch", run, reflection(
+            worked="Useful behavior was retained.",
+            didnt="FRICTION-SURVIVES." if with_friction else "",
+            improvements=f"{repo_line}\n{generic_line}",
+        ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 2
+    assert corpus.ready_skills() == ["plan-phase"]
+    assert bundle.count("Add a pre-check reminding the implementer to run targeted tests before pushing.") == 2
+    assert "agent-harness#1371" not in bundle
+    assert "/home/example/private-repo/notes.md" not in bundle
+    assert "https://example.com/private-proposal" not in bundle
+    for entry in corpus.admitted:
+        assert entry.improvements_class == "agnostic"
+        assert entry.excluded is None
+        assert "lines_dropped:improvements:repo_specific:1" in entry.notes
+        assert "section_dropped:improvements:repo_specific" not in entry.notes
+    assert len(rc.manifest(corpus, boilerplate)["reflections_consumed"]) == 2
+
+
+def test_wrapped_repo_specific_bullet_drops_its_continuation_but_keeps_sibling(tmp_path):
+    root = tmp_path / "skills"
+    improvements_first = (
+        "- Fix the defect tracked in agent-harness#1371\n"
+        "  by patching the local wrapper script.\n"
+        "- Require explicit exit-code assertions on shell helpers."
+    )
+    improvements_second = (
+        "- Patch the local wrapper script\n"
+        "  as tracked in agent-harness#1371.\n"
+        "- Require explicit exit-code assertions on shell helpers."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(worked="", didnt="", improvements=improvements_first))
+    put(root, "codex-plan-phase", "repo", "branch", "run2", reflection(worked="", didnt="", improvements=improvements_second))
+
+    corpus, _ = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 2
+    assert bundle.count("Require explicit exit-code assertions on shell helpers.") == 2
+    assert "local wrapper script" not in bundle
+    assert "agent-harness#1371" not in bundle
+    assert all("lines_dropped:improvements:repo_specific:2" in r.notes for r in corpus.admitted)
+
+
+@pytest.mark.parametrize("remainder", ["None.", "- None.", "- Hosted CI: passed on main."])
+def test_repo_specific_line_with_no_generic_sibling_still_drops_section(tmp_path, remainder):
+    root = tmp_path / "skills"
+    path = put(root, "codex-plan-phase", "repo", "branch", "run", reflection(
+        worked="",
+        didnt="",
+        improvements=f"- Fix agent-harness#1371.\n{remainder}",
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert "section_dropped:improvements:repo_specific" in corpus.scanned[0].notes
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+    assert path.exists()
+
+
+def test_repeated_repo_specific_boilerplate_keeps_generic_sibling_proposal(tmp_path):
+    root = tmp_path / "skills"
+    repeated = "Fix the defect tracked in other-repo#12 before the plan is frozen."
+    generic = "Require a targeted lint check before committing."
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="",
+            didnt="",
+            improvements=f"{repeated}\n{generic}",
+        ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert boilerplate == [repeated]
+    assert len(corpus.admitted) == 3
+    assert bundle.count(generic) == 3
+    assert "other-repo#12" not in bundle
+    assert all(r.improvements_class == "agnostic" and r.excluded is None for r in corpus.admitted)
+
+
+@pytest.mark.parametrize("wrapped_improvements", [
+    "- Fix the defect tracked in other-repo#12 before the plan is frozen.\n  Patch the local wrapper.",
+    "- Patch the local wrapper.\n  See the defect tracked in other-repo#12 before the plan is frozen.",
+])
+def test_boilerplate_on_wrapped_repo_specific_bullet_does_not_leak_continuation(
+    tmp_path, wrapped_improvements
+):
+    root = tmp_path / "skills"
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="", didnt="", improvements=wrapped_improvements,
+        ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert len(boilerplate) == 1
+    assert corpus.admitted == []
+    assert {r.excluded for r in corpus.scanned} == {"improvements_repo_specific"}
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_indented_sibling_bullets_preserve_generic_proposal(tmp_path):
+    root = tmp_path / "skills"
+    text = (
+        "## Run context\n"
+        "- Timestamp: 2026-10-01T00:00:00Z\n"
+        "- Repo: repo\n"
+        "- Branch: branch\n"
+        "- Run: run1\n\n"
+        "## Improvements to SKILL.md\n"
+        "  - Fix agent-harness#1371.\n"
+        "  - Keep the generic pre-check visible.\n"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", text)
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Keep the generic pre-check visible." in bundle
+    assert "agent-harness#1371" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+@pytest.mark.parametrize("improvements", [
+    "- Fix the defect tracked in agent-harness#1371\nby patching the local wrapper.",
+    "- Fix the defect tracked in agent-harness#1371.\n\n  Patch the local wrapper before freezing.",
+])
+def test_lazy_and_indented_paragraph_continuations_are_dropped_with_bullet(tmp_path, improvements):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("improvements", [
+    "```sh\ncat /home/example/private-repo/notes.md\n```",
+    "- Fix agent-harness#1371.\n```sh\n\n```",
+    "- Fix agent-harness#1371.\n- Hosted CI: passed\n  on main.",
+    "- Fix agent-harness#1371.\n+ None.",
+    "- Fix agent-harness#1371.\n- None.\n- None.",
+])
+def test_non_proposal_remnants_after_repo_specific_drop_stay_unarchived(tmp_path, improvements):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert "section_dropped:improvements:repo_specific" in corpus.scanned[0].notes
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("improvements", [
+    "+ None.",
+    "- None.\n- None.",
+    "- Hosted CI: passed\n  on main.",
+    "```sh\n\n```",
+    "---",
+    "-",
+    "- None.\n  Hosted CI: passed on main.",
+])
+def test_standalone_non_proposal_remnants_are_not_admitted_as_agnostic(tmp_path, improvements):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].excluded == "no_friction_or_proposal"
+
+
+def test_list_item_opening_with_code_fence_does_not_swallow_generic_sibling(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "- ```sh\n"
+        "  cat /home/example/private-repo/notes.md\n"
+        "  ```\n"
+        "- Require bounded retries on network calls."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries on network calls." in bundle
+    assert "private-repo" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+def test_hash_comment_inside_fenced_example_does_not_end_improvements_section(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "```sh\n"
+        "## shell comment inside fence\n"
+        "cat /home/example/private-repo/notes.md\n"
+        "```\n"
+        "- Require bounded retries on network calls."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries on network calls." in bundle
+    assert "private-repo" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+@pytest.mark.parametrize("improvements", [
+    "- Fix agent-harness#1371.\n - Require bounded retries.",
+    "1. Fix agent-harness#1371.\n  - Require bounded retries.",
+])
+def test_list_nesting_uses_content_indent_not_marker_indent(tmp_path, improvements):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries." in bundle
+    assert "agent-harness#1371" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+@pytest.mark.parametrize("improvements", [
+    "- Fix agent-harness#1371.\n- None.\n  Hosted CI: passed on main.",
+    "- Fix agent-harness#1371.\n- None.\n  Hosted CI: passed\n  on main.",
+    "- Fix agent-harness#1371.\n---",
+    "- Fix agent-harness#1371.\n-",
+    "- Fix agent-harness#1371.\n- ```sh\n  ```",
+])
+def test_post_ledger_non_proposal_remnants_after_repo_specific_drop_stay_unarchived(
+    tmp_path, improvements
+):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_unclosed_fence_inside_list_item_stops_at_dedent_and_keeps_sibling_and_sections(tmp_path):
+    root = tmp_path / "skills"
+    # Case 1: unclosed fence inside a repo-specific bullet must not swallow the sibling bullet.
+    improvements = (
+        "- ```sh\n"
+        "  cat /home/example/private-repo/notes.md\n"
+        "- Require bounded retries on network calls."
+    )
+    put(root, "codex-plan-phase", "repo", "branch1", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+    # Case 2: unclosed fence inside a bullet in What worked must not hide What didn't or Improvements.
+    worked_unclosed = (
+        "- ```sh\n"
+        "  echo unclosed example\n"
+    )
+    put(root, "codex-plan-phase", "repo", "branch2", "run1", reflection(
+        worked=worked_unclosed,
+        didnt="FRICTION-VISIBLE after unclosed list fence.",
+        improvements="- Require bounded retries on network calls.",
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 2
+    assert bundle.count("Require bounded retries on network calls.") == 2
+    assert "FRICTION-VISIBLE after unclosed list fence." in bundle
+    assert "private-repo" not in bundle
+
+
+def test_repeated_nested_wrapped_ledger_and_second_paragraph_do_not_leak_for_archival(tmp_path):
+    root = tmp_path / "skills"
+    # Repeated indented wrapped ledger label under `- None.` plus a rejected proposal.
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="",
+            didnt="",
+            improvements=(
+                "- Fix agent-harness#1371.\n"
+                "- None.\n"
+                "  Hosted CI: all required checks passed for the whole release pipeline\n"
+                "  on the main branch."
+            ),
+        ))
+    # Nested ledger bullet with a second paragraph after a blank line.
+    put(root, "codex-plan-phase", "repo", "branch3", "run", reflection(
+        worked="",
+        didnt="",
+        improvements=(
+            "- Fix agent-harness#1371.\n"
+            "- None.\n"
+            "  - Hosted CI: passed.\n\n"
+            "    on the main branch."
+        ),
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert {r.excluded for r in corpus.scanned} == {"improvements_repo_specific"}
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("separator", ["  ### Example", "  ---"])
+def test_indented_heading_or_thematic_break_inside_bullet_keeps_single_proposal_unit(
+    tmp_path, separator
+):
+    root = tmp_path / "skills"
+    improvements = (
+        "- Patch the local wrapper:\n"
+        f"{separator}\n"
+        "  See agent-harness#1371."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_nested_ledger_reference_does_not_discard_generic_proposal(tmp_path):
+    root = tmp_path / "skills"
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="",
+            didnt="",
+            improvements=(
+                "- Require bounded retries.\n"
+                "  - Hosted CI: all checks passed for publication on agent-harness#1371."
+            ),
+        ))
+
+    corpus, _ = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 3
+    assert bundle.count("Require bounded retries.") == 3
+    assert "agent-harness#1371" not in bundle
+    assert all(r.improvements_class == "agnostic" and r.excluded is None for r in corpus.admitted)
+
+
+def test_indented_four_space_code_with_backticks_does_not_hide_later_sections(tmp_path):
+    root = tmp_path / "skills"
+    worked = "    ```sh\n    echo indented code block, not a fence\n"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=worked,
+        didnt="FRICTION-SURVIVES after four-space indented backticks.",
+        improvements="- Require bounded retries.",
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "FRICTION-SURVIVES after four-space indented backticks." in bundle
+    assert "Require bounded retries." in bundle
+
+
+def test_standalone_heading_above_rejected_bullet_does_not_trigger_archival(tmp_path):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="",
+        didnt="",
+        improvements="### Proposed edits\n- Fix agent-harness#1371.",
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_empty_four_space_indented_fence_inside_bullet_is_non_proposal(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "- Fix agent-harness#1371.\n"
+        "- None.\n\n"
+        "    ```sh\n"
+        "    ```"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_fenced_markdown_example_in_preamble_does_not_inject_improvements_section(tmp_path):
+    root = tmp_path / "skills"
+    text = (
+        "```markdown\n"
+        "## Improvements to SKILL.md\n"
+        "- Example bullet inside preamble fence.\n"
+        "```\n\n"
+        "## Run context\n"
+        "- Timestamp: 2026-10-01T00:00:00Z\n"
+        "- Repo: repo\n"
+        "- Branch: branch\n"
+        "- Run: run1\n\n"
+        "## Improvements to SKILL.md\n"
+        "- Fix agent-harness#1371.\n"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", text)
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("underline", ["==============", "--------------"])
+def test_setext_heading_above_rejected_bullet_does_not_trigger_archival(tmp_path, underline):
+    root = tmp_path / "skills"
+    improvements = f"Proposed edits\n{underline}\n- Fix agent-harness#1371."
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("placeholder_line", [
+    "- 0123456789abcdef0123456789abcdef01234567",
+    "- `0123456789abcdef0123456789abcdef01234567`.",
+    '- {"status": "ok"}',
+])
+def test_bare_redaction_placeholder_sibling_does_not_trigger_archival(tmp_path, placeholder_line):
+    root = tmp_path / "skills"
+    improvements = f"- Fix agent-harness#1371.\n{placeholder_line}"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_horizontal_rule_after_blank_line_does_not_erase_indented_generic_proposal(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "- Fix agent-harness#1371.\n"
+        "- None.\n\n"
+        "  Require bounded retries.\n\n"
+        "  ---"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries." in bundle
+    assert "agent-harness#1371" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+def test_multiline_setext_heading_above_rejected_bullet_does_not_trigger_archival(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "Proposed edits\n"
+        "for this run\n"
+        "==============\n"
+        "- Fix agent-harness#1371."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [
+        "  ```sh\n  ```",
+        "  - Hosted CI: all checks passed for publication on agent-harness#1371.",
+    ],
+)
+def test_skipped_block_before_horizontal_rule_does_not_erase_generic_proposal(tmp_path, separator):
+    root = tmp_path / "skills"
+    improvements = (
+        "- Fix agent-harness#1371.\n"
+        "- None.\n\n"
+        "  Require bounded retries.\n"
+        f"{separator}\n"
+        "  ---"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries." in bundle
+    assert "agent-harness#1371" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+def test_plain_text_improvements_setext_scan_is_linear_time(tmp_path):
+    import time
+
+    root = tmp_path / "skills"
+    plain_lines = [f"Retry cap step {i}." for i in range(1200)]
+    plain_lines[600] = "Fix agent-harness#1371 before merging."
+    improvements = "\n".join(plain_lines)
+    assert len(improvements.encode("utf-8")) < 32_768
+
+    start = time.monotonic()
+    units = rc._split_improvement_units(improvements)
+    split_elapsed = time.monotonic() - start
+
+    assert len(units) == 1200
+    assert split_elapsed < 0.25
+
+    indented_unit = ["- None."] + [f"  Retry cap step {i}." for i in range(1200)]
+    start = time.monotonic()
+    assert not rc._unit_is_non_proposal(indented_unit)
+    non_prop_elapsed = time.monotonic() - start
+    assert non_prop_elapsed < 0.25
+
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+    corpus, _ = rc.collect([root], min_reflections=1)
+    assert len(corpus.admitted) == 1
+    assert corpus.admitted[0].improvements_class == "agnostic"
+    assert "agent-harness#1371" not in corpus.admitted[0].sections["improvements"]
+    assert "Retry cap step 0." in corpus.admitted[0].sections["improvements"]
+    assert "Retry cap step 1199." in corpus.admitted[0].sections["improvements"]
