@@ -936,7 +936,7 @@ def test_preflight_retains_the_host_modes_when_a_board_result_is_unavailable(mon
         is_available=lambda vendor: vendor in {"claude", "codex", "grok", "gemini"})
     monkeypatch.setattr(composition, "compose_review_board", lambda *args, **kwargs: board)
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
-    assert bk.effective_unconfined_co_seats() == ("codex", "grok")
+    assert bk.effective_unconfined_co_seats() == ("grok",)
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_DISABLE", "1")
     assert bk.effective_unconfined_co_seats() == ()
 

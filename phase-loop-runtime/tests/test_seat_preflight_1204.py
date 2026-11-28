@@ -44,7 +44,9 @@ def _preflight(legs, *, staged=True, review=True, under_claude_code=False):
 
 def test_brokered_seats_without_file_tools_are_warned_on_a_staged_tree():
     notices = _preflight(["codex", "claude", "gemini", "grok"])
-    assert [(n.leg, n.code) for n in notices] == [("claude", UNREADABLE), ("gemini", UNREADABLE)]
+    assert [(n.leg, n.code) for n in notices] == [
+        ("codex", UNREADABLE), ("claude", UNREADABLE), ("gemini", UNREADABLE),
+    ]
 
 
 def test_a_native_fill_claude_seat_has_file_access():
@@ -111,15 +113,16 @@ def test_chunker114_shape_the_preflight_warns_before_any_launch_and_the_seats_st
     monkeypatch.delenv("CLAUDECODE", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     result, events = _chunker114_board(tmp_path)
-    assert events[0] == ("preflight", ["claude", "gemini"])           # before ANY launch
+    assert events[0] == ("preflight", ["claude", "codex", "gemini"])  # before ANY launch
     assert sorted(leg for kind, leg in events[1:] if kind == "launch") == sorted(
         s.harness for s in DEFAULT_BOARD.seats)                         # every seat still runs
     by_leg = {leg.leg: leg for leg in result.legs}
     assert all(leg.usable for leg in result.legs)
     assert not by_leg["claude"].source_grounded and not by_leg["gemini"].source_grounded
-    assert by_leg["codex"].source_grounded and by_leg["grok"].source_grounded
+    assert not by_leg["codex"].source_grounded and by_leg["grok"].source_grounded
     assert [n.code for n in by_leg["claude"].seat_preflight_notices] == [UNREADABLE]
-    assert {leg.leg for leg in result.grounded_usable_legs} == {"codex", "grok"}
+    assert [n.code for n in by_leg["codex"].seat_preflight_notices] == [UNREADABLE]
+    assert {leg.leg for leg in result.grounded_usable_legs} == {"grok"}
 
 
 def test_without_a_pointer_brief_nothing_is_warned_or_marked(tmp_path, staged_tree):
@@ -501,8 +504,8 @@ def _jailed_route(leg, **_k):
 
 
 @pytest.mark.parametrize("qualified, unreadable", [
-    (True, ["gemini"]),               # the jailed Claude seat reads its brief
-    (False, ["claude", "gemini"]),    # a jail that cannot be qualified: the seat runs sealed
+    (True, ["gemini"]),                       # jailed Claude and Codex seats read their brief
+    (False, ["claude", "gemini", "codex"]),   # a jail that cannot be qualified: the seats run sealed
 ])
 def test_a_jailed_claude_seat_is_not_marked_unreadable(monkeypatch, qualified, unreadable):
     from phase_loop_runtime import seat_jail_autoqualify as aq

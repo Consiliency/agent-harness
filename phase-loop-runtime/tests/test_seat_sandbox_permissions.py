@@ -477,8 +477,11 @@ def test_j9_sealed_gemini_argv_settings_and_prompt_are_golden():
 
 def test_sandbox_usable_by_is_unchanged_unless_jailed():
     assert panel_invoker.sandbox_usable_by("claude", brokered=True) is False
+    assert panel_invoker.sandbox_usable_by("codex", brokered=True) is False
     assert panel_invoker.sandbox_usable_by("gemini", brokered=True) is False
     assert panel_invoker.sandbox_usable_by("claude", brokered=True, jailed=True) is True
+    assert panel_invoker.sandbox_usable_by("codex", brokered=True, jailed=True) is True
+    assert panel_invoker.sandbox_usable_by("codex", brokered=False) is True
 
 
 def _fake_jail(tmp_path: Path, **kw) -> seat_jail.SeatJail:

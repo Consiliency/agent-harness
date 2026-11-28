@@ -61,6 +61,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Fixed
 
+- Add `"codex"` to `panel_invoker._SANDBOX_INCAPABLE_BROKERED_LEGS` so the retained
+  sealed non-jailed brokered Codex route (`_brokered_codex_command`, sealed in
+  agent-harness#1916) no longer reports `seat_filesystem_unconfined` in launch modes,
+  seat notices, or `claude_bakeoff.effective_unconfined_co_seats()`, and receives the
+  sealed inline prompt instead of tool-capable sandbox instructions, while jailed Codex
+  review seats (`jailed=True`) and non-brokered Codex research seats (`brokered=False`)
+  retain full sandbox capability (agent-harness#1930).
 - Scope `reflection_corpus.apply_quality_filter` boilerplate counting and single-repo
   uniqueness per bare skill (`bare_skill`) instead of across all skills in a repo, so a
   lone ref-, path-, or URL-carrying `What worked` line in one skill is no longer stripped

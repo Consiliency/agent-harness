@@ -7112,6 +7112,11 @@ def _sandbox_evidence() -> dict[str, object]:
 #
 # `claude` brokered runs with `--tools "" --allowedTools ""` and an explicit disallow list
 # (`_broker_claude_tui_command`), so every capability the sandbox preamble names is absent.
+# `codex` brokered runs `_brokered_codex_command` with `--disable shell_tool`,
+# `--sandbox read-only`, and `--cd <out_dir>` (agent-harness#1916, agent-harness#1930), so
+# the retained non-jailed brokered route is sealed and never reads or acts on a staged tree
+# (jailed Codex review seats pass `jailed=True`; non-brokered/research Codex routes pass
+# `brokered=False`).
 # `gemini` brokered is worse than absent: `_brokered_agy_environment` denies `read_file(*)`
 # and `command(*)`, and the brokered argv omits `--dangerously-skip-permissions`, which this
 # file documents as the difference between a review and a dead leg -- the first auto-denied
@@ -7119,15 +7124,15 @@ def _sandbox_evidence() -> dict[str, object]:
 # unusable suggestion, it is an instruction to zero itself.
 #
 # So the preamble is chosen by what the seat can DO, never by what was staged.
-_SANDBOX_INCAPABLE_BROKERED_LEGS: frozenset[str] = frozenset({"claude", "gemini"})
+_SANDBOX_INCAPABLE_BROKERED_LEGS: frozenset[str] = frozenset({"claude", "codex", "gemini"})
 
 
 def sandbox_usable_by(leg: str | None, brokered: bool, *, jailed: bool = False) -> bool:
     """Can this leg act on a staged sandbox on this route?
 
-    ``jailed`` is the per-launch fact (agent-harness#1132): a claude seat launched inside
-    its per-seat jail has its full tool set and CAN act on the tree. Without it the answer
-    is today's, byte-for-byte."""
+    ``jailed`` is the per-launch fact (agent-harness#1132): a seat launched inside its
+    per-seat jail has its full tool set and CAN act on the tree. Without it the answer
+    reflects whether the non-jailed route's own command surface can use a staged tree."""
     if leg is None:
         return True
     if jailed:
