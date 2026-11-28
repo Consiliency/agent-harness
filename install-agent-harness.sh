@@ -174,7 +174,7 @@ if ! git -C "$_work" -c fetch.writeFetchHEAD=true fetch --depth 1 origin "$REF" 
 fi
 git -C "$_work" checkout --no-overwrite-ignore --detach -q "$RESOLVED"
 _publish_stage_noreplace_python() {
-    python3 - "$1" "$2" <<'PY'
+    python3 -I - "$1" "$2" <<'PY'
 import ctypes, errno, os, sys
 
 src, dst = os.fsencode(sys.argv[1]), os.fsencode(sys.argv[2])

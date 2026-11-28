@@ -124,6 +124,9 @@ elif name == 'python3':
 elif name == 'uv' and os.environ.get('INSTALL_TEST_UV_RC'):
     sys.exit(int(os.environ['INSTALL_TEST_UV_RC']))
 elif name == 'phase-loop' and 'install' in args:
+    poison_dir = os.environ.get('INSTALL_TEST_POISON_DIR')
+    if poison_dir:
+        sys.path[:] = [p for p in sys.path if p != poison_dir]
     from phase_loop_runtime.cli import main
     sys.exit(main([*args, '--json']))
 elif name == 'phase-loop':
@@ -138,8 +141,8 @@ elif name == 'curl':
     return env, template, git_run
 
 
-def run_installer(env):
-    return subprocess.run(["bash", str(INSTALLER)], env=env, capture_output=True, text=True)
+def run_installer(env, *, cwd=None):
+    return subprocess.run(["bash", str(INSTALLER)], env=env, cwd=cwd, capture_output=True, text=True)
 
 
 def effects(env):
@@ -527,3 +530,21 @@ def test_non_collision_publish_error_preserves_underlying_diagnostic(installatio
     assert "appeared during installation" not in result.stderr
     assert not Path(env["AGENT_HARNESS_HOME"]).exists()
     assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_shadow_ctypes_in_cwd_and_pythonpath_cannot_hijack_publish(installation, tmp_path):
+    # agent-harness#1605: the publisher invokes `python3 -I -`, isolating stdlib
+    # imports from caller cwd and PYTHONPATH so a project-local `ctypes.py` cannot run.
+    env, template, git_run = installation
+    poison = tmp_path / "poison"
+    poison.mkdir()
+    (poison / "ctypes.py").write_text("raise RuntimeError('shadow ctypes executed')\n")
+    env["PYTHONPATH"] = f"{poison}{os.pathsep}{env['PYTHONPATH']}"
+    env["INSTALL_TEST_POISON_DIR"] = str(poison)
+    expected = git_run("-C", str(template), "rev-parse", "v1.2.3^{commit}").stdout.strip()
+    result = run_installer(env, cwd=poison)
+    assert result.returncode == 0, result.stderr
+    assert "shadow ctypes executed" not in result.stderr
+    target = Path(env["AGENT_HARNESS_HOME"])
+    assert git_run("-C", str(target), "rev-parse", "HEAD").stdout.strip() == expected
+    assert _stages(env) == []
