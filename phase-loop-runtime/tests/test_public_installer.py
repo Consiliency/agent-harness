@@ -100,13 +100,33 @@ elif name == 'git' and command == 'checkout':
         pathlib.Path(race, 'sentinel').write_text('not ours')
     sys.exit(subprocess.run([{git!r}, *args]).returncode)
 elif name == 'mv':
-    late = os.environ.get('INSTALL_TEST_RACE_BEFORE_PUBLISH')
-    if late:  # an EMPTY home appears in the instant before publication
-        os.makedirs(late, exist_ok=True)
+    if os.environ.get('INSTALL_TEST_BSD_MV') and '-T' in args:
+        sys.stderr.write('mv: illegal option -- T\\nusage: mv [-f | -i | -n] [-hv] source target\\n')
+        sys.exit(64)
     os.execv('/bin/mv', ['/bin/mv', *args])
+elif name == 'python3':
+    late = os.environ.get('INSTALL_TEST_RACE_BEFORE_PUBLISH')
+    if late:  # an EMPTY home (or symlink) appears in the instant before publication
+        if os.environ.get('INSTALL_TEST_RACE_KIND') == 'dangling_symlink':
+            os.symlink('/nonexistent/foreign-target', late)
+        else:
+            os.makedirs(late, exist_ok=True)
+    ro_parent = os.environ.get('INSTALL_TEST_CHMOD_PARENT_RO')
+    if ro_parent:
+        os.chmod(ro_parent, 0o555)
+    stub_rc = os.environ.get('INSTALL_TEST_PYTHON_RC')
+    if stub_rc:
+        stub_err = os.environ.get('INSTALL_TEST_PYTHON_STDERR', '')
+        if stub_err:
+            sys.stderr.write(stub_err + '\\n')
+        sys.exit(int(stub_rc))
+    os.execv({sys.executable!r}, [{sys.executable!r}, *args])
 elif name == 'uv' and os.environ.get('INSTALL_TEST_UV_RC'):
     sys.exit(int(os.environ['INSTALL_TEST_UV_RC']))
 elif name == 'phase-loop' and 'install' in args:
+    poison_dir = os.environ.get('INSTALL_TEST_POISON_DIR')
+    if poison_dir:
+        sys.path[:] = [p for p in sys.path if p != poison_dir]
     from phase_loop_runtime.cli import main
     sys.exit(main([*args, '--json']))
 elif name == 'phase-loop':
@@ -114,15 +134,15 @@ elif name == 'phase-loop':
 elif name == 'curl':
     sys.exit('unexpected network request')
 """
-    for name in ("git", "uv", "phase-loop", "curl", "mv"):
+    for name in ("git", "uv", "phase-loop", "curl", "mv", "python3"):
         path = tools / name
         path.write_text(wrapper)
         path.chmod(0o755)
     return env, template, git_run
 
 
-def run_installer(env):
-    return subprocess.run(["bash", str(INSTALLER)], env=env, capture_output=True, text=True)
+def run_installer(env, *, cwd=None):
+    return subprocess.run(["bash", str(INSTALLER)], env=env, cwd=cwd, capture_output=True, text=True)
 
 
 def effects(env):
@@ -406,3 +426,125 @@ def test_an_empty_home_created_just_before_publication_is_not_replaced(installat
     assert marker.is_dir() and list(marker.iterdir()) == [], "the foreign empty home was replaced"
     assert _stages(env) == []
     assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_fresh_install_succeeds_under_bsd_mv(installation):
+    # agent-harness#1605: BSD/macOS `mv` has no `-T`; publication uses native
+    # kernel-atomic exclusive rename directly and never invokes `mv`.
+    env, template, git_run = installation
+    env["INSTALL_TEST_BSD_MV"] = "1"
+    expected = git_run("-C", str(template), "rev-parse", "v1.2.3^{commit}").stdout.strip()
+    result = run_installer(env)
+    assert result.returncode == 0, result.stderr
+    target = Path(env["AGENT_HARNESS_HOME"])
+    assert git_run("-C", str(target), "rev-parse", "HEAD").stdout.strip() == expected
+    assert _resolved_install(env) == expected
+    assert (Path(env["AGENT_HARNESS_SKILL_DEST"]) / "codex-plan-detailed").is_dir()
+    assert not any(call[0] == "mv" for call in effects(env))
+    assert _stages(env) == []
+
+
+def test_bsd_mv_refuses_empty_home_created_just_before_publication(installation):
+    # agent-harness#1605: an empty directory created right before publish must neither
+    # be overwritten nor have the stage moved inside it.
+    env, _, _ = installation
+    env["INSTALL_TEST_BSD_MV"] = "1"
+    env["INSTALL_TEST_RACE_BEFORE_PUBLISH"] = env["AGENT_HARNESS_HOME"]
+    marker = Path(env["AGENT_HARNESS_HOME"])
+    result = run_installer(env)
+    assert result.returncode != 0 and "appeared during installation" in result.stderr
+    assert marker.is_dir() and list(marker.iterdir()) == [], "the foreign empty home was replaced or polluted"
+    assert _stages(env) == []
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_dangling_symlink_created_just_before_publication_is_not_replaced(installation):
+    # agent-harness#1605: a dangling symlink appearing just before publish is refused
+    # atomically and preserved intact.
+    env, _, _ = installation
+    env["INSTALL_TEST_RACE_BEFORE_PUBLISH"] = env["AGENT_HARNESS_HOME"]
+    env["INSTALL_TEST_RACE_KIND"] = "dangling_symlink"
+    marker = Path(env["AGENT_HARNESS_HOME"])
+    result = run_installer(env)
+    assert result.returncode != 0 and "appeared during installation" in result.stderr
+    assert marker.is_symlink() and os.readlink(marker) == "/nonexistent/foreign-target"
+    assert _stages(env) == []
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_failing_python3_launcher_reports_actionable_error(installation):
+    # agent-harness#1605: e.g. macOS /usr/bin/python3 Xcode CLT stub failing to launch
+    # must report an actionable python3 error, never falsely claim a destination race.
+    env, _, _ = installation
+    env["INSTALL_TEST_PYTHON_RC"] = "1"
+    env["INSTALL_TEST_PYTHON_STDERR"] = "xcode-select: note: No developer tools were found."
+    result = run_installer(env)
+    assert result.returncode != 0
+    assert "python3" in result.stderr and "xcode-select --install" in result.stderr
+    assert "No developer tools were found" in result.stderr
+    assert "appeared during installation" not in result.stderr
+    assert not Path(env["AGENT_HARNESS_HOME"]).exists()
+    assert _stages(env) == []
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_missing_python3_fails_closed_with_actionable_error(installation, tmp_path):
+    # agent-harness#1605: when python3 is absent from PATH, fail closed with an
+    # actionable error instead of falling back to non-atomic mv or reporting a race.
+    env, _, _ = installation
+    tools = Path(env["PATH"].split(":")[0])
+    (tools / "python3").unlink()
+    minimal_bin = tmp_path / "no-python-bin"
+    minimal_bin.mkdir()
+    for tool_name in ("bash", "dirname", "mkdir", "mktemp", "rm", "tr", "sed", "cat"):
+        found = shutil.which(tool_name)
+        if found:
+            (minimal_bin / tool_name).symlink_to(found)
+    env["PATH"] = f"{tools}:{minimal_bin}"
+    assert shutil.which("python3", path=env["PATH"]) is None
+    result = run_installer(env)
+    assert result.returncode != 0
+    assert "python3 is required" in result.stderr and "xcode-select --install" in result.stderr
+    assert "appeared during installation" not in result.stderr
+    assert not Path(env["AGENT_HARNESS_HOME"]).exists()
+    assert _stages(env) == []
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory mode 0555")
+def test_non_collision_publish_error_preserves_underlying_diagnostic(installation):
+    # agent-harness#1605: an OS failure such as EACCES while the destination is absent
+    # must preserve the underlying diagnostic instead of claiming the destination appeared.
+    env, _, _ = installation
+    parent = Path(env["AGENT_HARNESS_HOME"]).parent
+    env["INSTALL_TEST_CHMOD_PARENT_RO"] = str(parent)
+    try:
+        result = run_installer(env)
+    finally:
+        parent.chmod(0o755)
+        for leftover in _stages(env):
+            shutil.rmtree(leftover, ignore_errors=True)
+    assert result.returncode != 0
+    assert "failed to publish" in result.stderr
+    assert "Permission denied" in result.stderr
+    assert "appeared during installation" not in result.stderr
+    assert not Path(env["AGENT_HARNESS_HOME"]).exists()
+    assert not any(call[0] == "uv" and "install" in call for call in effects(env))
+
+
+def test_shadow_ctypes_in_cwd_and_pythonpath_cannot_hijack_publish(installation, tmp_path):
+    # agent-harness#1605: the publisher invokes `python3 -I -`, isolating stdlib
+    # imports from caller cwd and PYTHONPATH so a project-local `ctypes.py` cannot run.
+    env, template, git_run = installation
+    poison = tmp_path / "poison"
+    poison.mkdir()
+    (poison / "ctypes.py").write_text("raise RuntimeError('shadow ctypes executed')\n")
+    env["PYTHONPATH"] = f"{poison}{os.pathsep}{env['PYTHONPATH']}"
+    env["INSTALL_TEST_POISON_DIR"] = str(poison)
+    expected = git_run("-C", str(template), "rev-parse", "v1.2.3^{commit}").stdout.strip()
+    result = run_installer(env, cwd=poison)
+    assert result.returncode == 0, result.stderr
+    assert "shadow ctypes executed" not in result.stderr
+    target = Path(env["AGENT_HARNESS_HOME"])
+    assert git_run("-C", str(target), "rev-parse", "HEAD").stdout.strip() == expected
+    assert _stages(env) == []

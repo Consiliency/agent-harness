@@ -173,12 +173,81 @@ if ! git -C "$_work" -c fetch.writeFetchHEAD=true fetch --depth 1 origin "$REF" 
     exit 1
 fi
 git -C "$_work" checkout --no-overwrite-ignore --detach -q "$RESOLVED"
+_publish_stage_noreplace_python() {
+    python3 -I - "$1" "$2" <<'PY'
+import ctypes, errno, os, sys
+
+src, dst = os.fsencode(sys.argv[1]), os.fsencode(sys.argv[2])
+if sys.platform == "darwin":
+    lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    fn = getattr(lib, "renamex_np", None)
+    if fn is None:
+        sys.stderr.write("PUBLISH_RENAME_ERR:unsupported:renamex_np is unavailable\n")
+        sys.exit(2)
+    fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+    fn.restype = ctypes.c_int
+    rc = fn(src, dst, 0x00000004)  # RENAME_EXCL
+elif sys.platform.startswith("linux"):
+    lib = ctypes.CDLL(None, use_errno=True)
+    fn = getattr(lib, "renameat2", None)
+    if fn is None:
+        sys.stderr.write("PUBLISH_RENAME_ERR:unsupported:renameat2 is unavailable\n")
+        sys.exit(2)
+    fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    fn.restype = ctypes.c_int
+    rc = fn(-100, src, -100, dst, 1)  # AT_FDCWD, RENAME_NOREPLACE
+else:
+    sys.stderr.write(
+        f"PUBLISH_RENAME_ERR:unsupported:platform {sys.platform} has no configured atomic no-replace rename\n"
+    )
+    sys.exit(2)
+
+if rc == 0:
+    sys.exit(0)
+err = ctypes.get_errno()
+if err in (errno.EEXIST, errno.ENOTEMPTY):
+    sys.stderr.write(f"PUBLISH_RENAME_ERR:exists:{os.strerror(err)}\n")
+    sys.exit(17)
+sys.stderr.write(f"PUBLISH_RENAME_ERR:os:{os.strerror(err)} (errno {err})\n")
+sys.exit(3)
+PY
+}
+
 if [ -n "$_stage" ]; then
-    # Publish with an ATOMIC no-replace rename: GNU `mv -T -n` issues
-    # renameat2(RENAME_NOREPLACE), so a home that appeared at any moment -- even an empty
-    # directory created an instant before -- is refused, never replaced. `mv -n` exits 0
-    # when it skips (coreutils 8.x), so success is judged by where the stage ended up.
-    mv -T -n -- "$_stage" "$HOME_DIR" || true
+    # Publish with a kernel-atomic exclusive rename (agent-harness#1605):
+    # `renamex_np(RENAME_EXCL)` on macOS and `renameat2(AT_FDCWD, ..., RENAME_NOREPLACE)`
+    # on Linux. Avoid `mv -T -n`, which BSD/macOS `mv` rejects and BusyBox / older GNU
+    # coreutils can degrade to a non-atomic check-then-rename that overwrites an empty
+    # directory appearing during publication. Fail closed if atomic rename is unavailable.
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "ERROR: python3 is required to publish ${HOME_DIR} atomically without replacing existing targets (on macOS, run 'xcode-select --install' or install Python 3)." >&2
+        exit 1
+    fi
+    _pub_rc=0
+    _pub_err="$(_publish_stage_noreplace_python "$_stage" "$HOME_DIR" 2>&1)" || _pub_rc=$?
+    if [ "$_pub_rc" -ne 0 ]; then
+        if [ "$_pub_rc" -eq 17 ] || [ -e "$HOME_DIR" ] || [ -L "$HOME_DIR" ]; then
+            echo "ERROR: ${HOME_DIR} appeared during installation; refusing to replace it." >&2
+            exit 1
+        fi
+        case "$_pub_err" in
+            PUBLISH_RENAME_ERR:unsupported:*)
+                echo "ERROR: cannot publish ${HOME_DIR} atomically without replacing existing targets (${_pub_err#PUBLISH_RENAME_ERR:unsupported:})." >&2
+                exit 1
+                ;;
+            PUBLISH_RENAME_ERR:os:*)
+                echo "ERROR: failed to publish ${HOME_DIR}: ${_pub_err#PUBLISH_RENAME_ERR:os:}" >&2
+                exit 1
+                ;;
+            *)
+                echo "ERROR: python3 failed to launch while publishing ${HOME_DIR} atomically (on macOS, run 'xcode-select --install' or install Python 3)." >&2
+                if [ -n "$_pub_err" ]; then
+                    printf '%s\n' "$_pub_err" >&2
+                fi
+                exit 1
+                ;;
+        esac
+    fi
     if [ -e "$_stage" ] ||
        [ "$(git -C "$HOME_DIR" rev-parse -q --verify HEAD 2>/dev/null)" != "$RESOLVED" ]; then
         echo "ERROR: ${HOME_DIR} appeared during installation; refusing to replace it." >&2

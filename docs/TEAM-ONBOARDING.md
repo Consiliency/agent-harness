@@ -61,8 +61,11 @@ To upgrade an old installer checkout that is refused, move it aside for safekeep
 or choose a new, absent `AGENT_HARNESS_HOME`, then rerun the installer.
 
 **Prereqs:** git, `curl` (the installer uses it to resolve the release pin, and the one-liner
-form is delivered by it), and your harness CLI already installed (Claude Code / Codex / Gemini
-/ OpenCode). The installer brings everything else (it installs `uv` if you don't have it).
+form is delivered by it), a working `python3` (used to publish a fresh checkout atomically
+without replacing existing paths; on macOS, Xcode Command Line Tools `xcode-select --install`
+supplies both `git` and `python3`), and your harness CLI already installed (Claude Code /
+Codex / Gemini / OpenCode). The installer brings everything else (it installs `uv` if you
+don't have it).
 Claude advisor-board seats run headless `claude -p` by default, which needs Claude Code
 2.1.259 or newer; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` restores the PTY adapter. A jailed Claude
 seat stays on the TUI by default; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=print` selects its jailed print
