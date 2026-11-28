@@ -620,6 +620,7 @@
   {"count": 1, "function": "resolve_repo", "module": "discovery", "primitive": "subprocess.check_output", "role": "operator-out-of-scope"},
   {"count": 1, "function": "roadmap_closeout_evidence_audit_enabled", "module": "discovery", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "select_roadmap", "module": "discovery", "primitive": "io.glob", "role": "host-io"},
+  {"count": 1, "function": "select_roadmap", "module": "discovery", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "verification_commands_from_plan", "module": "discovery", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "DispatchLock.acquire", "module": "dispatch_lock", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_ppid", "module": "dispatch_lock", "primitive": "io.open", "role": "host-io"},
