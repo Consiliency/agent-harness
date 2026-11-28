@@ -108,6 +108,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   sealed inline prompt instead of tool-capable sandbox instructions, while jailed Codex
   review seats (`jailed=True`) and non-brokered Codex research seats (`brokered=False`)
   retain full sandbox capability (agent-harness#1930).
+- Clarify in the Gemini capability note (`capability_registry.py`) and `GEMINI_WORKER_MODEL`
+  comment (`profiles.py`) that the worker class (`3.8 Flash`) and the lite tier /
+  `gemini-3.5-flash-lite` alias (`3.5 Flash`) intentionally point at different Flash
+  generations, with a regression test in `test_model_tier_taxonomy.py`
+  (agent-harness#1718).
 - Tighten the Claude bundle manifest's `references/` read exception wording in
   `injection._claude_bundle_manifest` to `"directly under the active skill's \`references/\`"`,
   pin the exact exception sentence with no extra permission clauses in

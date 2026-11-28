@@ -448,5 +448,25 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, launch_json.get("claude_route_warnings", []))
 
 
+class GeminiWorkerLiteNoteTest(unittest.TestCase):
+    """agent-harness#1718: document the Gemini worker (3.8 Flash) vs lite (3.5 Flash) split."""
+
+    def test_gemini_capability_note_explains_worker_and_lite_generation_difference(self):
+        from phase_loop_runtime.advisor_board.harness_mapping import _GEMINI_MODEL_ID_ALIASES
+        from phase_loop_runtime.capability_registry import provider_policy_capabilities
+        from phase_loop_runtime.profiles import resolve_model_class
+
+        self.assertEqual(resolve_model_class("gemini", "worker"), "gemini-3.8-flash-high")
+        self.assertEqual(resolve("lite", "gemini").model_id, "gemini-3.5-flash-lite")
+        self.assertEqual(
+            _GEMINI_MODEL_ID_ALIASES["gemini-3.5-flash-lite"],
+            "gemini-3.5-flash-high",
+        )
+        notes = " ".join(provider_policy_capabilities()["gemini"].notes)
+        self.assertIn("worker class (3.8 Flash)", notes)
+        self.assertIn("lite tier / `gemini-3.5-flash-lite` alias (3.5 Flash)", notes)
+        self.assertIn("different Flash generations", notes)
+
+
 if __name__ == "__main__":
     unittest.main()
