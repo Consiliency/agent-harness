@@ -55,6 +55,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   compatibility matrix and isolated `base_env` so `test_panel_invoker.py` fails fast
   on any regression instead of resolving host provider binaries or running live `agy`
   qualification (agent-harness#2054).
+- Harden `test_fabpub_shared_epoch.py::test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_after_possible_provider_effect`
+  by scoping `held_seal` to the owner thread (`fabpub-owner`), widening the barrier and
+  join bounds (`_SEAL_RACE_TIMEOUT_S = 30.0`), asserting explicitly that the held seal
+  never silently timed out behind `verbs.py`'s replay exception handler, and capturing
+  surviving thread stacks (`sys._current_frames()`), event states, and join elapsed times
+  on join failure (agent-harness#1976).
 - Surface full placement decision diagnostics (`outcome`, `code`, `trail`, `notices`, and
   `endpoint.calls` RPC stage) on `test_openshell_backend.py` placement assertions and widen
   the `pipeline` fixture event-loop startup bounds (alongside `ANSWER_BOUND_S` / deadline

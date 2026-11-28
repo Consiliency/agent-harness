@@ -35,6 +35,8 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1905,6 +1907,116 @@ def test_fabpub_broker_envelope_publish_allocates_through_admit_next(tmp_path, r
 # ===========================================================================
 
 
+_SEAL_RACE_TIMEOUT_S = 30.0
+
+
+def _capture_thread_snapshot(
+    thread: threading.Thread, *, join_elapsed_s: float | None = None
+) -> dict[str, object]:
+    """Capture one thread's liveness and stack atomically at a single observation point (agent-harness#1976)."""
+    frames = sys._current_frames()
+    ident = thread.ident
+    alive = thread.is_alive()
+    stack: str | None = None
+    if alive:
+        frame = frames.get(ident) if ident is not None else None
+        stack = (
+            "".join(traceback.format_stack(frame)).rstrip()
+            if frame is not None
+            else "<frame unavailable>"
+        )
+    return {
+        "name": thread.name,
+        "ident": ident,
+        "alive": alive,
+        "join_elapsed_s": join_elapsed_s,
+        "stack": stack,
+    }
+
+
+def _format_thread_join_diagnostics(
+    threads: dict[str, threading.Thread | None],
+    *,
+    events: dict[str, threading.Event],
+    results: dict[str, object],
+    join_elapsed_s: dict[str, float],
+    snapshots: dict[str, dict[str, object]] | None = None,
+) -> str:
+    """Format thread stacks and barrier/result state when a bounded race join leaves a thread alive (agent-harness#1976)."""
+    lines = [
+        "terminal-seal race threads remained alive after bounded joins:",
+        "  events=" + ", ".join(f"{name}={ev.is_set()}" for name, ev in events.items()),
+        "  results=" + ", ".join(f"{k}={v!r}" for k, v in sorted(results.items())),
+    ]
+    for label, thread in threads.items():
+        if thread is None:
+            lines.append(f"  {label}: not started")
+            continue
+        snap = (
+            snapshots[label]
+            if snapshots is not None and label in snapshots
+            else _capture_thread_snapshot(thread, join_elapsed_s=join_elapsed_s.get(label))
+        )
+        elapsed = snap["join_elapsed_s"]
+        elapsed_str = f"{elapsed:.3f}s" if isinstance(elapsed, (int, float)) else "n/a"
+        lines.append(
+            f"  {label} (name={snap['name']!r}, ident={snap['ident']}, "
+            f"alive={snap['alive']}, join_elapsed={elapsed_str})"
+        )
+        if snap["alive"]:
+            stack = snap["stack"]
+            if stack == "<frame unavailable>" or not stack:
+                lines.append("    stack: <frame unavailable>")
+            else:
+                lines.append("    stack:\n" + textwrap.indent(str(stack), "      "))
+    return "\n".join(lines)
+
+
+def _join_race_threads_or_fail(
+    threads: dict[str, threading.Thread | None],
+    started: set[str],
+    *,
+    timeout_s: float,
+    events: dict[str, threading.Event],
+    results: dict[str, object],
+    pending_exc: BaseException | None,
+) -> None:
+    """Join started race threads, capturing each timed-out worker's stack immediately before joining the next.
+
+    When ``pending_exc`` is set (for example, a barrier assertion failed) and any
+    started worker remains alive after its bounded join, raise an AssertionError
+    combining both the pending failure and the stack report so the diagnostics
+    are never hidden by the propagating failure or lost while joining a later
+    worker (agent-harness#1976).
+    """
+    join_elapsed_s: dict[str, float] = {}
+    snapshots: dict[str, dict[str, object]] = {}
+    survivors: list[str] = []
+    for label, thread in threads.items():
+        if thread is None or label not in started:
+            continue
+        t0 = time.monotonic()
+        thread.join(timeout_s)
+        elapsed = time.monotonic() - t0
+        join_elapsed_s[label] = elapsed
+        snap = _capture_thread_snapshot(thread, join_elapsed_s=elapsed)
+        snapshots[label] = snap
+        if snap["alive"]:
+            survivors.append(label)
+    if not survivors:
+        return
+    report = _format_thread_join_diagnostics(
+        {label: (thread if label in started else None) for label, thread in threads.items()},
+        events=events,
+        results=results,
+        join_elapsed_s=join_elapsed_s,
+        snapshots=snapshots,
+    )
+    if pending_exc is not None:
+        raise AssertionError(f"{pending_exc}\n\n{report}") from pending_exc
+    raise AssertionError(report)
+
+
 @_requires_fabpub
 def test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_after_possible_provider_effect(
     tmp_path, request
@@ -2036,13 +2148,19 @@ def test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_aft
     )
     entered_seal = threading.Event()
     release_seal = threading.Event()
+    seal_hold_released = threading.Event()
+    seal_hold_timed_out = threading.Event()
     contender_lock_attempt = threading.Event()
     original_seal = evidence_module.seal_adapter_start_owner
     original_flock = fcntl.flock
 
     def held_seal(*args, **kwargs):
-        entered_seal.set()
-        assert release_seal.wait(5), "test did not release the held owner seal"
+        if threading.current_thread().name == "fabpub-owner" and not entered_seal.is_set():
+            entered_seal.set()
+            if release_seal.wait(_SEAL_RACE_TIMEOUT_S):
+                seal_hold_released.set()
+            else:
+                seal_hold_timed_out.set()
         return original_seal(*args, **kwargs)
 
     def observed_flock(fd, operation):
@@ -2053,8 +2171,6 @@ def test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_aft
             contender_lock_attempt.set()
         return original_flock(fd, operation)
 
-    evidence_module.seal_adapter_start_owner = held_seal
-    fcntl.flock = observed_flock
     race_results: dict[str, object] = {}
 
     def execute_a():
@@ -2065,51 +2181,82 @@ def test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_aft
         except Exception as exc:
             race_results["a_error"] = exc
 
-    thread_a = threading.Thread(target=execute_a, daemon=True)
-    thread_b = None
-    thread_a.start()
+    thread_a = threading.Thread(target=execute_a, name="fabpub-owner", daemon=True)
+    thread_b: threading.Thread | None = None
+    started_threads: set[str] = set()
+    pending_exc: BaseException | None = None
+
+    evidence_module.seal_adapter_start_owner = held_seal
     try:
-        assert entered_seal.wait(5), "train A never reached the production owner-seal seam"
-
-        race_b = _next_authorized_transaction(
-            tmp_path,
-            race_repo,
-            name="terminal-seal-race-b",
-            branch="feat/terminal-seal-race-b",
-            relative_path="race-b.py",
-        )
-
-        def execute_b():
+        fcntl.flock = observed_flock
+        try:
             try:
-                race_results["b"] = _service(race_root, _CountingAdapter()).execute(
-                    _publish_transaction_request(
-                        race_identity, "feat/terminal-seal-race-b", race_b, race_repo
-                    )
+                thread_a.start()
+                started_threads.add("thread_a")
+                assert entered_seal.wait(_SEAL_RACE_TIMEOUT_S), (
+                    "train A never reached the production owner-seal seam"
                 )
-            except Exception as exc:  # captured so the parent can assert the exact outcome
-                race_results["b_error"] = exc
 
-        thread_b = threading.Thread(
-            target=execute_b, name="fabpub-contender", daemon=True
-        )
-        thread_b.start()
-        assert contender_lock_attempt.wait(5), (
-            "train B never attempted the contested repository evidence lock"
-        )
-        thread_b.join(0.25)
-        assert thread_b.is_alive(), (
-            "a contender reached the repository lock but did not wait for the "
-            "terminal-evidence/owner-seal decision"
-        )
+                race_b = _next_authorized_transaction(
+                    tmp_path,
+                    race_repo,
+                    name="terminal-seal-race-b",
+                    branch="feat/terminal-seal-race-b",
+                    relative_path="race-b.py",
+                )
+
+                def execute_b():
+                    try:
+                        race_results["b"] = _service(race_root, _CountingAdapter()).execute(
+                            _publish_transaction_request(
+                                race_identity, "feat/terminal-seal-race-b", race_b, race_repo
+                            )
+                        )
+                    except Exception as exc:  # captured so the parent can assert the exact outcome
+                        race_results["b_error"] = exc
+
+                thread_b = threading.Thread(
+                    target=execute_b, name="fabpub-contender", daemon=True
+                )
+                thread_b.start()
+                started_threads.add("thread_b")
+                assert contender_lock_attempt.wait(_SEAL_RACE_TIMEOUT_S), (
+                    "train B never attempted the contested repository evidence lock"
+                )
+                thread_b.join(0.25)
+                assert thread_b.is_alive(), (
+                    "a contender reached the repository lock but did not wait for the "
+                    "terminal-evidence/owner-seal decision"
+                )
+            except BaseException as exc:
+                pending_exc = exc
+                raise
+            finally:
+                release_seal.set()
+                _join_race_threads_or_fail(
+                    {"thread_a": thread_a, "thread_b": thread_b},
+                    started_threads,
+                    timeout_s=_SEAL_RACE_TIMEOUT_S,
+                    events={
+                        "entered_seal": entered_seal,
+                        "release_seal": release_seal,
+                        "seal_hold_released": seal_hold_released,
+                        "seal_hold_timed_out": seal_hold_timed_out,
+                        "contender_lock_attempt": contender_lock_attempt,
+                    },
+                    results=race_results,
+                    pending_exc=pending_exc,
+                )
+        finally:
+            fcntl.flock = original_flock
     finally:
-        release_seal.set()
-        thread_a.join(5)
-        if thread_b is not None:
-            thread_b.join(5)
         evidence_module.seal_adapter_start_owner = original_seal
-        fcntl.flock = original_flock
     assert thread_b is not None
     assert not thread_a.is_alive() and not thread_b.is_alive()
+    assert not seal_hold_timed_out.is_set(), (
+        "held owner seal timed out waiting for test release before completing"
+    )
+    assert seal_hold_released.is_set(), "held owner seal was never released cleanly"
     assert "a_error" not in race_results, race_results.get("a_error")
     assert "b_error" not in race_results, race_results.get("b_error")
     assert race_results["a"].accepted and race_results["b"].accepted
