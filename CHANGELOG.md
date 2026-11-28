@@ -259,6 +259,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   steady state so the pipe never blocks or grows unbounded) so intermittent proxy start
   failures surface their cause instead of an opaque `EgressLayerUnavailable`
   (agent-harness#2034).
+- Reject backend refusal codes in `sandbox_placement.register_backend` that collide with
+  `seat_jail.NOTICES`, `seat_route_contract.OD10_CLASSES`, or the closed leg-detail
+  vocabulary by sharing `leg_detail_vocabulary.RESERVED_DETAIL_VOCABULARY` between
+  `panel_invoker` and `sandbox_placement` without importing `panel_invoker`
+  (agent-harness#1501).
 - Recompute the shipped `model_policy_rule` from the post-flip executor (`"claude"`) inside
   `profiles.resolve_execution_policy` when `_claude_model_needs_claude_executor` flips
   `pi -> claude` for an operator-pinned Claude model and Claude is the final policy executor,
