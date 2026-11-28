@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import contextlib
-import functools
 import hashlib
 import inspect
 import json
@@ -207,16 +206,6 @@ def _run_accepts_pass_fds(run_callable) -> bool:
     return False
 
 
-def _is_real_subprocess_run(run_callable) -> bool:
-    target = run_callable
-    while isinstance(target, functools.partial):
-        target = target.func
-    return (
-        getattr(target, "__module__", None) == "subprocess"
-        and getattr(target, "__name__", None) == "run"
-    )
-
-
 def _resolve_fd_cwd(worktree_fd: int) -> Path | None:
     """Return a kernel descriptor-backed directory path for ``worktree_fd``, or ``None``."""
     for base in ("/proc/self/fd", "/dev/fd"):
@@ -244,11 +233,8 @@ class _GuardedEffectHandle:
         self.require_fd_cwd = require_fd_cwd
         self._revalidate = revalidate
 
-    def _fd_cwd(self, run_callable) -> Path | None:
-        if self.worktree_fd is None or self.worktree_fd < 0:
-            return None
-        must_bind = self.require_fd_cwd or _is_real_subprocess_run(run_callable)
-        if not must_bind:
+    def _fd_cwd(self, _run_callable=None) -> Path | None:
+        if self.worktree_fd is None or self.worktree_fd < 0 or not self.require_fd_cwd:
             return None
         fd_cwd = _resolve_fd_cwd(self.worktree_fd)
         if fd_cwd is None:
@@ -271,7 +257,14 @@ class _GuardedEffectHandle:
         return ["git", "-C", str(self.repo_path), *git_args], {}
 
     def run_kwargs(self, run_callable) -> dict:
-        if self.lock_fd is not None and os.name != "nt" and _run_accepts_pass_fds(run_callable):
+        if self.lock_fd is not None and os.name != "nt":
+            if not _run_accepts_pass_fds(run_callable):
+                from .live import WriterGenerationBlocked
+
+                raise WriterGenerationBlocked(
+                    f"runner {run_callable!r} does not accept pass_fds; "
+                    "refusing inactive publication without child lock inheritance"
+                )
             return {"pass_fds": (self.lock_fd,)}
         return {}
 
@@ -383,6 +376,7 @@ class GitHubBrokerAdapter:
                 yield _GuardedEffectHandle(
                     snapshot.worktree,
                     worktree_fd=wt_fd,
+                    require_fd_cwd=os.name != "nt",
                     revalidate=_revalidate_active,
                 )
             return

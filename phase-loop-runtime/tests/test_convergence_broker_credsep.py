@@ -1919,6 +1919,19 @@ def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681
     monkeypatch.undo()
     _disable_fabpub_marker_1681(monkeypatch)
 
+    # (3d) An inactive runner that does not accept pass_fds cannot inherit the cutover
+    # lock fd into provider child processes, so inactive publication fails closed before push.
+    no_pass_fds_calls: list[list[str]] = []
+    inner_fake = _FakeRun(_base_responses())
+
+    def _no_pass_fds_runner(args, capture_output=False, text=False, check=False, cwd=None, env=None):
+        no_pass_fds_calls.append(list(args))
+        return inner_fake(args, capture_output=capture_output, text=text, check=check, cwd=cwd, env=env)
+
+    with pytest.raises(live.WriterGenerationBlocked, match="pass_fds"):
+        GitHubBrokerAdapter(real_repo, run=_no_pass_fds_runner).execute(_request())
+    assert not any("push" in call or "create" in call for call in no_pass_fds_calls)
+
     # (4) Swapping the resolved checkout directory between git push and gh pr create
     # also fails closed before gh pr create runs.
     repo_c = _init_git_repo_1681(tmp_path / "repo-c")
@@ -1943,7 +1956,8 @@ def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink test")
-def test_active_reused_adapter_refuses_retargeted_symlink_repository_1681(tmp_path):
+def test_active_reused_adapter_refuses_retargeted_symlink_repository_1681(tmp_path, monkeypatch):
+    from phase_loop_runtime.convergence.broker import credsep as credsep_mod
     from phase_loop_runtime.convergence.broker import live
 
     repo_a = _init_git_repo_1681(tmp_path / "active-repo-a")
@@ -1958,14 +1972,37 @@ def test_active_reused_adapter_refuses_retargeted_symlink_repository_1681(tmp_pa
     link = tmp_path / "active-wt-link"
     link.symlink_to(repo_a)
     try:
+        # Active publication with an ordinary custom wrapper runner still binds
+        # git push, git log, and gh pr create via descriptor-backed cwd.
         run_first = _FakeRun(_base_responses() + [
             (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
             (("list",), json.dumps([_same_repo_pr()]), 0),
         ])
-        adapter = GitHubBrokerAdapter(link, run=run_first, generation_lease=lease_a)
+        wrapper_cwds: list[tuple[list[str], str]] = []
+
+        def _custom_wrapper(args, **kwargs):
+            if "push" in args or "log" in args or args[:3] == ["gh", "pr", "create"]:
+                wrapper_cwds.append((list(args), str(kwargs.get("cwd", ""))))
+            return run_first(args, **kwargs)
+
+        adapter = GitHubBrokerAdapter(link, run=_custom_wrapper, generation_lease=lease_a)
         result, evidence = adapter.execute(_request())
         assert evidence.terminal_state == "effect_terminal_observed"
         assert result is not None
+        assert len(wrapper_cwds) == 3
+        assert all(
+            cwd.startswith(("/proc/self/fd/", "/dev/fd/")) and "-C" not in cmd
+            for cmd, cwd in wrapper_cwds
+        ), wrapper_cwds
+
+        # Active publication also fails closed when descriptor-backed cwd is unavailable.
+        monkeypatch.setattr(credsep_mod, "_resolve_fd_cwd", lambda _fd: None)
+        run_no_fd = _FakeRun(_base_responses())
+        adapter.run = run_no_fd
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            adapter.execute(_request())
+        assert not any("push" in call or "create" in call for call in run_no_fd.calls)
+        monkeypatch.undo()
 
         # Retarget the symlink to activated repo_b: the reused adapter MUST NOT
         # authorize repo_b using repo_a's cached _generation_root or lease.
