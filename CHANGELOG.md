@@ -39,6 +39,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the two drifted `## Contents` bullets in `claude-plan-detailed/references/closeout-reflection-handoff.md`
   and `claude-plan-phase/references/lane-templates.md` with regenerated skill bundles
   (agent-harness#1688).
+- Pin `harness_mapping.gemini_default_model`'s canonical base-id regex against registered
+  Gemini display aliases (`"Gemini 3.1 Pro"`, `"Gemini 4 Argon"`) and make
+  `test_configured_board_seat_wins_over_local_defaults` non-vacuous by exercising
+  `load_boards(..., env=...)` with a non-default preference across non-review presets
+  (`brainstorm`, `general`) in `test_gemini_model_preference_1604.py`
+  (agent-harness#1722).
 - Add a sanctioned `replan` lifecycle transition (`REPLAN_TRANSITION = "replan"`) to
   `phase_loop_runtime.plan_manifest.update_lifecycle` for phase entries from
   `imported`/`committed` (preserving `status = "committed"`, validating and merging new

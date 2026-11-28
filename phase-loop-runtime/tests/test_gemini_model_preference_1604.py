@@ -72,17 +72,38 @@ def test_excluded_seat_names_the_effective_local_model(monkeypatch):
     assert next(s for s in report.excluded if s.vendor == "gemini").seat_key.startswith("gemini:gemini-3.8-flash:")
 
 
-def test_configured_board_seat_wins_over_local_defaults(tmp_path):
+def test_configured_board_seat_wins_over_local_defaults(tmp_path, monkeypatch):
+    # agent-harness#1722: use a non-default env preference (distinct from both the
+    # shipped default and the custom board's explicit seat) and set a conflicting
+    # process env var so load_boards' env= plumbing and preset-rewrite loop are
+    # genuinely exercised on non-review presets too.
+    monkeypatch.setenv("PHASE_LOOP_GEMINI_MODEL", "not-a-model")
     config = tmp_path / "boards.toml"
     config.write_text('default_board = "custom"\n[[boards]]\nname = "custom"\npurpose = "review"\n'
-                      '[[boards.seats]]\nmodel = "gemini-3.8-flash"\neffort = "low"\nharness = "gemini"\n')
-    result = load_boards(config, env={"PHASE_LOOP_GEMINI_MODEL": "gemini-4-argon"},
+                      '[[boards.seats]]\nmodel = "gemini-4-argon"\neffort = "low"\nharness = "gemini"\n')
+    result = load_boards(config, env={"PHASE_LOOP_GEMINI_MODEL": "gemini-3.8-flash"},
                          is_available=lambda _: True, auth_ok=lambda _: True)
-    assert result.get().seats[0] == Seat(model="gemini-3.8-flash", effort="low", harness="gemini")
-    assert next(s for s in result.get("default").seats if s.harness == "gemini").model == "gemini-4-argon"
+    assert result.get().seats[0] == Seat(model="gemini-4-argon", effort="low", harness="gemini")
+    assert next(s for s in result.get("default").seats if s.harness == "gemini").model == "gemini-3.8-flash"
+    for preset_name in ("brainstorm", "general"):
+        gemini_seats = [s for s in result.get(preset_name).seats if s.harness == "gemini"]
+        assert gemini_seats, preset_name
+        assert all(s.model == "gemini-3.8-flash" for s in gemini_seats), (preset_name, gemini_seats)
 
 
-@pytest.mark.parametrize("value", ["", "gpt-6-astra", "gemini-4-argon-high", "gemini-5-argon"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "gpt-6-astra",
+        "gemini-4-argon-high",
+        "gemini-5-argon",
+        # agent-harness#1722: registered Gemini display names must be rejected by
+        # the canonical base-id regex (_AGY_BASE_GEMINI), not just registry lookup.
+        "Gemini 3.1 Pro",
+        "Gemini 4 Argon",
+    ],
+)
 def test_invalid_local_preference_fails_before_board_probes(monkeypatch, value):
     monkeypatch.setenv("PHASE_LOOP_GEMINI_MODEL", value)
     calls = []
