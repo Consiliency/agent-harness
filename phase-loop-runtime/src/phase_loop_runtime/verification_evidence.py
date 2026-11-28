@@ -1502,6 +1502,18 @@ def execute_proofgate_mutation_manifest(
     return aggregate
 
 
+def _os_error_finding(label: str, exc: OSError) -> str:
+    """Format an OSError without embedding absolute host paths in findings.
+
+    The structured ``artifact_path`` / ``log_path`` fields carry the path (subject
+    to repo-containment relativization in closeout construction).
+    """
+    reason = exc.strerror or type(exc).__name__
+    if exc.errno is not None:
+        return f"cannot read {label}: [Errno {exc.errno}] {reason}"
+    return f"cannot read {label}: {reason}"
+
+
 def validate_verification_artifact(path: Path) -> VerificationArtifactValidation:
     artifact_path = Path(path)
     log_path = artifact_path.parent / LOG_NAME
@@ -1515,7 +1527,7 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
             code="malformed_artifact",
             artifact_path=str(artifact_path),
             log_path=str(log_path),
-            findings=(str(exc),),
+            findings=(_os_error_finding(ARTIFACT_NAME, exc),),
         )
     if artifact_size > MAX_ARTIFACT_BYTES:
         return VerificationArtifactValidation(
@@ -1543,7 +1555,7 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
             code="malformed_artifact",
             artifact_path=str(artifact_path),
             log_path=str(log_path),
-            findings=(str(exc),),
+            findings=(_os_error_finding(ARTIFACT_NAME, exc) if isinstance(exc, OSError) else str(exc),),
         )
     try:
         log_bytes = log_path.read_bytes()
@@ -1554,7 +1566,7 @@ def validate_verification_artifact(path: Path) -> VerificationArtifactValidation
             artifact_path=str(artifact_path),
             log_path=str(log_path),
             exit_summary=_exit_summary(result),
-            findings=(str(exc),),
+            findings=(_os_error_finding(LOG_NAME, exc),),
         )
     actual_log_sha256 = hashlib.sha256(log_bytes).hexdigest()
     if actual_log_sha256 != result.log_sha256:
