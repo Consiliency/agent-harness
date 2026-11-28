@@ -1032,28 +1032,36 @@ def require_current_generation(
     _require_active_generation_root(store_root)
 
 
-_WRITER_LOCK_DEPTH: dict[tuple[str, int], int] = {}
+_WRITER_LOCK_DEPTH: dict[tuple[str, int], list] = {}
 _WRITER_LOCK_GUARD = threading.Lock()
 
 
 @contextlib.contextmanager
-def _register_held_writer_locks(namespace_roots: Iterable[Path]):
-    """Track writer locks already held by this thread so same-thread onboarding re-enters."""
+def _register_held_writer_locks(namespace_roots_and_fds: Iterable[tuple[Path, int]]):
+    """Track writer locks already held by this thread so same-thread calls re-enter."""
     tid = threading.get_ident()
-    keys = tuple(sorted({(str(Path(root).resolve()), tid) for root in namespace_roots}))
+    entries = tuple(
+        sorted(
+            {(str(Path(root).resolve()), tid): fd for root, fd in namespace_roots_and_fds}.items()
+        )
+    )
     with _WRITER_LOCK_GUARD:
-        for key in keys:
-            _WRITER_LOCK_DEPTH[key] = _WRITER_LOCK_DEPTH.get(key, 0) + 1
+        for key, fd in entries:
+            existing = _WRITER_LOCK_DEPTH.get(key)
+            if existing is not None:
+                existing[0] += 1
+            else:
+                _WRITER_LOCK_DEPTH[key] = [1, fd]
     try:
         yield
     finally:
         with _WRITER_LOCK_GUARD:
-            for key in keys:
-                depth = _WRITER_LOCK_DEPTH.get(key, 0) - 1
-                if depth <= 0:
-                    _WRITER_LOCK_DEPTH.pop(key, None)
-                else:
-                    _WRITER_LOCK_DEPTH[key] = depth
+            for key, _fd in entries:
+                existing = _WRITER_LOCK_DEPTH.get(key)
+                if existing is not None:
+                    existing[0] -= 1
+                    if existing[0] <= 0:
+                        _WRITER_LOCK_DEPTH.pop(key, None)
 
 
 def _lstat_verified_absent(path: Path) -> os.stat_result | None:
@@ -1088,6 +1096,8 @@ def _hold_writer_locks(
     Re-entrant on the same thread (e.g. ``bootstrap_zero_history_authority`` or
     ``run_train_generation_leases`` calling ``onboard_zero_legacy_repository``),
     while enforcing OS-level exclusive ``flock`` across threads and processes.
+    Yields ``{resolved_namespace_root: lock_fd}`` so callers may pass the open
+    lock descriptor to provider child processes via ``pass_fds``.
     """
     import errno
 
@@ -1096,23 +1106,29 @@ def _hold_writer_locks(
 
     tid = threading.get_ident()
     ordered = sorted({Path(root).resolve() for root in namespace_roots}, key=str)
+    held_fds: dict[Path, int] = {}
     with contextlib.ExitStack() as stack:
         for root in ordered:
             key = (str(root), tid)
             with _WRITER_LOCK_GUARD:
-                if _WRITER_LOCK_DEPTH.get(key, 0) > 0:
-                    _WRITER_LOCK_DEPTH[key] += 1
+                existing = _WRITER_LOCK_DEPTH.get(key)
+                if existing is not None and existing[0] > 0:
+                    existing[0] += 1
+                    reentered_fd = existing[1]
                     reentered = True
                 else:
+                    reentered_fd = -1
                     reentered = False
             if reentered:
+                held_fds[root] = reentered_fd
+
                 def _decrement(k=key) -> None:
                     with _WRITER_LOCK_GUARD:
-                        depth = _WRITER_LOCK_DEPTH.get(k, 0) - 1
-                        if depth <= 0:
-                            _WRITER_LOCK_DEPTH.pop(k, None)
-                        else:
-                            _WRITER_LOCK_DEPTH[k] = depth
+                        entry = _WRITER_LOCK_DEPTH.get(k)
+                        if entry is not None:
+                            entry[0] -= 1
+                            if entry[0] <= 0:
+                                _WRITER_LOCK_DEPTH.pop(k, None)
 
                 stack.callback(_decrement)
                 continue
@@ -1173,19 +1189,20 @@ def _hold_writer_locks(
                 raise error_cls(
                     f"cannot lock the writer exclusion lock {path}: {error}"
                 ) from error
+            held_fds[root] = descriptor
             with _WRITER_LOCK_GUARD:
-                _WRITER_LOCK_DEPTH[key] = _WRITER_LOCK_DEPTH.get(key, 0) + 1
+                _WRITER_LOCK_DEPTH[key] = [1, descriptor]
 
             def _release_depth(k=key) -> None:
                 with _WRITER_LOCK_GUARD:
-                    depth = _WRITER_LOCK_DEPTH.get(k, 0) - 1
-                    if depth <= 0:
-                        _WRITER_LOCK_DEPTH.pop(k, None)
-                    else:
-                        _WRITER_LOCK_DEPTH[k] = depth
+                    entry = _WRITER_LOCK_DEPTH.get(k)
+                    if entry is not None:
+                        entry[0] -= 1
+                        if entry[0] <= 0:
+                            _WRITER_LOCK_DEPTH.pop(k, None)
 
             stack.callback(_release_depth)
-        yield
+        yield held_fds
 
 
 def require_namespace_unactivated_when_inactive(
@@ -1282,25 +1299,73 @@ def require_namespace_unactivated_when_inactive(
         )
 
 
+def verify_guarded_worktree_binding(
+    snapshot: RepositorySnapshot, expected_dev_ino: tuple[int, int]
+) -> None:
+    """Verify ``snapshot.worktree`` still names the exact directory and repository identity.
+
+    agent-harness#1681: rejects symlink retargeting or directory replacement
+    after the namespace exclusion lock was acquired.
+    """
+    try:
+        _require_no_ancestor_symlink(snapshot.worktree)
+    except LegacyCutoverConflict as error:
+        raise WriterGenerationBlocked(
+            f"guarded worktree {snapshot.worktree} gained a symlink component: {error}"
+        ) from error
+    current_stat = _lstat_verified_absent(snapshot.worktree)
+    if (
+        current_stat is None
+        or not stat.S_ISDIR(current_stat.st_mode)
+        or (current_stat.st_dev, current_stat.st_ino) != expected_dev_ino
+    ):
+        raise WriterGenerationBlocked(
+            f"guarded worktree {snapshot.worktree} changed after lock acquisition; "
+            "refusing to run provider effect against an unguarded checkout"
+        )
+    current = try_repository_snapshot(snapshot.worktree)
+    if (
+        current is None
+        or current.common_dir != snapshot.common_dir
+        or current.identity != snapshot.identity
+    ):
+        raise WriterGenerationBlocked(
+            f"guarded worktree {snapshot.worktree} no longer binds repository "
+            f"{snapshot.identity}; refusing to run provider effect"
+        )
+
+
 @contextlib.contextmanager
 def inactive_effect_exclusion(snapshot: RepositorySnapshot):
     """Hold cutover writer exclusion across an inactive repository effect.
 
     agent-harness#1681: checks the namespace before creating any lock file so
     already-activated or unreadable namespaces fail closed with zero disk
-    writes, holds ``RUN_TRAIN_WRITER_LOCK`` across the entire ``git push`` and
-    ``gh pr create`` window to exclude concurrent cutover/bootstrap/onboarding,
-    and re-checks the namespace under the lock to close the check-then-lock
-    window.
+    writes, serializes competing inactive publishers with a blocking
+    ``RUN_TRAIN_WRITER_LOCK`` (cutover/bootstrap/onboarding take the same lock
+    non-blockingly and refuse while an inactive effect is in flight, preventing
+    deadlock while avoiding spurious legacy-store poisoning on ordinary
+    publisher contention), re-checks the namespace and worktree identity under
+    the lock, and yields ``(lock_fd, worktree_dev_ino)`` so the adapter passes
+    ``lock_fd`` to provider child processes via ``pass_fds`` — keeping the
+    kernel ``flock`` held until any surviving child process tree exits.
     """
     require_namespace_unactivated_when_inactive(snapshot)
+    wt_stat = _lstat_verified_absent(snapshot.worktree)
+    if wt_stat is None or not stat.S_ISDIR(wt_stat.st_mode):
+        raise WriterGenerationBlocked(
+            f"guarded worktree {snapshot.worktree} is not a regular directory"
+        )
+    expected_dev_ino = (wt_stat.st_dev, wt_stat.st_ino)
+    resolved_root = snapshot.namespace_root.resolve()
     with _hold_writer_locks(
-        (snapshot.namespace_root,),
-        blocking=False,
+        (resolved_root,),
+        blocking=True,
         error_cls=WriterGenerationBlocked,
-    ):
+    ) as held_fds:
+        verify_guarded_worktree_binding(snapshot, expected_dev_ino)
         require_namespace_unactivated_when_inactive(snapshot)
-        yield
+        yield held_fds[resolved_root], expected_dev_ino
 
 
 def _require_active_generation_root(root: Path) -> None:
@@ -3813,6 +3878,7 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
         else "re-run the zero-history probe"
     )
     with contextlib.ExitStack() as stack:
+        held_pairs: list[tuple[Path, int]] = []
         for root in sorted(rows, key=str):
             path = root / RUN_TRAIN_WRITER_LOCK
             row = rows[root]
@@ -3874,7 +3940,8 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
                 raise LegacyCutoverConflict(
                     f"cannot lock the run-train writer lock {path}: {error}"
                 ) from error
-        with _register_held_writer_locks(rows):
+            held_pairs.append((root, descriptor))
+        with _register_held_writer_locks(held_pairs):
             yield frozenset(rows)
 
 

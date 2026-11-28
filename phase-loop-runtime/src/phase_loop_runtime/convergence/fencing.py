@@ -51,6 +51,7 @@ def run_train_generation_leases(worktrees):
         leases = []
         paths = tuple(sorted({Path(worktree).resolve() for worktree in worktrees}, key=str))
         namespace_roots = {repository_namespace_root(path).resolve() for path in paths}
+        held_pairs = []
         for namespace_root in sorted(namespace_roots, key=str):
             namespace_root.mkdir(parents=True, exist_ok=True)
             writer_lock = stack.enter_context((namespace_root / RUN_TRAIN_WRITER_LOCK).open("a+"))
@@ -58,7 +59,8 @@ def run_train_generation_leases(worktrees):
                 acquire_exclusive(writer_lock)
             else:
                 fcntl.flock(writer_lock, fcntl.LOCK_EX)
-        stack.enter_context(_register_held_writer_locks(namespace_roots))
+            held_pairs.append((namespace_root, writer_lock.fileno()))
+        stack.enter_context(_register_held_writer_locks(held_pairs))
         for path in paths:
             latch = WriterGenerationLatch.open(path)
             snapshot = latch.read()

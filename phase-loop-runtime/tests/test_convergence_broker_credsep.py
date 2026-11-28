@@ -1611,19 +1611,47 @@ def test_inactive_capability_coordinates_with_cutover_and_fences_pr_create_1681(
     lock_path = snapshot.namespace_root / live.RUN_TRAIN_WRITER_LOCK
     _disable_fabpub_marker_1681(monkeypatch)
 
-    # (1) If cutover/bootstrap already holds RUN_TRAIN_WRITER_LOCK, an inactive publish
-    # refuses before git push or gh pr create.
-    snapshot.namespace_root.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+") as held:
-        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    # (1) If cutover holds RUN_TRAIN_WRITER_LOCK while activating the repo, an inactive
+    # publish waits for cutover to release the lock and then immediately fails closed
+    # under the lock before git push or gh pr create.
+    cutover_holding = threading.Event()
+    cutover_release = threading.Event()
+
+    def hold_cutover_and_activate() -> None:
+        snapshot.namespace_root.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            cutover_holding.set()
+            cutover_release.wait(timeout=5)
+            latch = live.WriterGenerationLatch.open(repo)
+            latch.begin_draining()
+            latch.mark_armed()
+            latch.activate()
+
+    cutover_thread = threading.Thread(target=hold_cutover_and_activate)
+    cutover_thread.start()
+    assert cutover_holding.wait(timeout=5)
+    # Release cutover slightly after the adapter blocks on the lock.
+    threading.Timer(0.1, cutover_release.set).start()
+    try:
         run_blocked = _FakeRun(_base_responses())
         with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
             GitHubBrokerAdapter(repo, run=run_blocked).execute(_request())
         assert not any("push" in call or "create" in call for call in run_blocked.calls)
+    finally:
+        cutover_release.set()
+        cutover_thread.join(timeout=5)
+
+    # Clean up the activation latch from scenario (1) by using a fresh unactivated repo
+    # for scenarios (2) and (3).
+    repo = _init_git_repo_1681(tmp_path / "coord-repo-2")
+    snapshot = live.repository_snapshot(repo)
+    lock_path = snapshot.namespace_root / live.RUN_TRAIN_WRITER_LOCK
 
     # (2) While an inactive publish is mid-push, RUN_TRAIN_WRITER_LOCK is held exclusively
-    # (blocking concurrent bootstrap/cutover from another thread), AND after a clean
-    # inactive publish the residue stays clean for zero-history bootstrap probing.
+    # (blocking concurrent bootstrap/cutover from another thread), pass_fds carries the
+    # lock fd into both git push and gh pr create, AND after a clean inactive publish the
+    # residue stays clean for zero-history bootstrap probing.
     monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
     monkeypatch.delenv(live.FABPUB_LEGACY_ROOTS_ENV, raising=False)
     monkeypatch.delenv(live.FABPUB_CUTOVER_MANIFEST_ENV, raising=False)
@@ -1636,10 +1664,12 @@ def test_inactive_capability_coordinates_with_cutover_and_fences_pr_create_1681(
     )
     lock_observed_held = []
     bootstrap_errors = []
+    observed_pass_fds = {}
 
     class _ObservingRun(_FakeRun):
         def __call__(self, args, **kwargs):
             if "push" in args:
+                observed_pass_fds["push"] = kwargs.get("pass_fds")
                 # Verify from a separate thread (distinct lock owner & open file description)
                 # that cutover exclusion is active during git push and blocks bootstrap apply.
                 def probe_cutover() -> None:
@@ -1660,6 +1690,8 @@ def test_inactive_capability_coordinates_with_cutover_and_fences_pr_create_1681(
                 t = threading.Thread(target=probe_cutover)
                 t.start()
                 t.join(timeout=10)
+            elif "create" in args:
+                observed_pass_fds["create"] = kwargs.get("pass_fds")
             return super().__call__(args, **kwargs)
 
     run_clean = _ObservingRun(_base_responses() + [
@@ -1670,6 +1702,8 @@ def test_inactive_capability_coordinates_with_cutover_and_fences_pr_create_1681(
     assert evidence.terminal_state == "effect_terminal_observed"
     assert result is not None
     assert lock_observed_held == [True], "RUN_TRAIN_WRITER_LOCK must be held during git push"
+    assert observed_pass_fds["push"] and len(observed_pass_fds["push"]) == 1
+    assert observed_pass_fds["create"] == observed_pass_fds["push"]
     assert len(bootstrap_errors) == 1 and isinstance(bootstrap_errors[0], live.LegacyCutoverConflict), (
         f"bootstrap apply must refuse while inactive publish holds writer lock; got {bootstrap_errors!r}"
     )
@@ -1705,3 +1739,220 @@ def test_inactive_capability_coordinates_with_cutover_and_fences_pr_create_1681(
     assert not any("create" in call for call in run_raced.calls), (
         "gh pr create must not run after namespace activation during git push"
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink and flock test")
+def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo_a = _init_git_repo_1681(tmp_path / "repo-a")
+    repo_b = _init_git_repo_1681(tmp_path / "repo-b")
+    latch_b = live.WriterGenerationLatch.open(repo_b)
+    latch_b.begin_draining()
+    latch_b.mark_armed()
+    latch_b.activate()
+    link = tmp_path / "wt-link"
+    link.symlink_to(repo_a)
+    _disable_fabpub_marker_1681(monkeypatch)
+
+    seen_push_targets = []
+    seen_create_cwds = []
+
+    class _RetargetingRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            if "get-url" in args:
+                # Retarget the symlink at self.repo_path to activated repo_b right
+                # before the effect guard / push runs.
+                link.unlink()
+                link.symlink_to(repo_b)
+            if "push" in args:
+                seen_push_targets.append(args[2])
+            if "create" in args:
+                seen_create_cwds.append(Path(kwargs["cwd"]))
+            return super().__call__(args, **kwargs)
+
+    run = _RetargetingRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(link, run=run).execute(_request())
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None
+    assert seen_push_targets == [str(repo_a.resolve())]
+    assert seen_create_cwds == [repo_a.resolve()]
+
+    # Swapping the resolved checkout directory itself between git push and gh pr create
+    # must fail closed before gh pr create runs.
+    repo_c = _init_git_repo_1681(tmp_path / "repo-c")
+    repo_c_backup = tmp_path / "repo-c-backup"
+
+    class _SwapDirDuringPushRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            response = super().__call__(args, **kwargs)
+            if "push" in args:
+                repo_c.rename(repo_c_backup)
+                repo_c.symlink_to(repo_b)
+            return response
+
+    run_swap = _SwapDirDuringPushRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
+    ])
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(repo_c, run=run_swap).execute(_request())
+    assert any("push" in call for call in run_swap.calls)
+    assert not any("create" in call for call in run_swap.calls)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock test")
+def test_inactive_concurrent_publishers_serialize_without_poisoning_legacy_store_1681(
+    tmp_path, monkeypatch
+):
+    import threading
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    from phase_loop_runtime.convergence.broker.verbs import BrokerService
+
+    repo = _init_git_repo_1681(tmp_path / "serial-repo")
+    store_root = tmp_path / "legacy-store"
+    store_root.mkdir()
+    _disable_fabpub_marker_1681(monkeypatch)
+
+    first_in_push = threading.Event()
+    release_first = threading.Event()
+    active_pushes = []
+    overlap_detected = []
+    state_lock = threading.Lock()
+
+    def make_runner(pause_on_push: bool):
+        class _SerialRun(_FakeRun):
+            def __call__(self, args, **kwargs):
+                if "push" in args:
+                    with state_lock:
+                        if active_pushes:
+                            overlap_detected.append(True)
+                        active_pushes.append(1)
+                    try:
+                        if pause_on_push:
+                            first_in_push.set()
+                            release_first.wait(timeout=10)
+                        return super().__call__(args, **kwargs)
+                    finally:
+                        with state_lock:
+                            active_pushes.pop()
+                return super().__call__(args, **kwargs)
+
+        return _SerialRun(_base_responses() + [
+            (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+            (("list",), json.dumps([_same_repo_pr()]), 0),
+        ])
+
+    admission = LinearizableAdmissionStore(store_root)
+    evidence = BrokerEvidenceStore(store_root)
+    results = {}
+
+    def run_pub(name: str, epoch: int, key: str, pause: bool) -> None:
+        svc = BrokerService(admission, evidence, GitHubBrokerAdapter(repo, run=make_runner(pause)))
+        adm = AdmissionRequest(f"attempt-{epoch}", epoch, "fence", "digest", "predicate", "scope", key)
+        req = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, adm, "repo", _BRANCH, _HEAD, ("a.py",))
+        results[name] = svc.execute(req)
+
+    t1 = threading.Thread(target=run_pub, args=("first", 1, "k-1", True))
+    t2 = threading.Thread(target=run_pub, args=("second", 2, "k-2", False))
+    t1.start()
+    assert first_in_push.wait(timeout=5)
+    t2.start()
+    threading.Timer(0.15, release_first.set).start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert not overlap_detected, "concurrent inactive publishes must serialize on RUN_TRAIN_WRITER_LOCK"
+    assert results["first"].accepted is True
+    assert results["second"].accepted is True
+    assert results["first"].evidence.terminal_state == "effect_terminal_observed"
+    assert results["second"].evidence.terminal_state == "effect_terminal_observed"
+    assert evidence.epoch_blocked is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX SIGKILL + pass_fds flock test")
+def test_inactive_lock_survives_adapter_sigkill_until_provider_child_exits_1681(tmp_path):
+    import fcntl
+    import signal
+    import subprocess
+    import sys
+    import time
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "sigkill-repo")
+    snapshot = live.repository_snapshot(repo)
+    lock_path = snapshot.namespace_root / live.RUN_TRAIN_WRITER_LOCK
+    child_ready = tmp_path / "child-ready"
+    child_release = tmp_path / "child-release"
+
+    adapter_script = f"""
+import os, subprocess, sys
+from pathlib import Path
+from phase_loop_runtime.convergence.broker import live
+
+repo = Path({str(repo)!r})
+snapshot = live.repository_snapshot(repo)
+child_code = (
+    "import os, time; "
+    "from pathlib import Path; "
+    "Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='ascii'); "
+    "deadline = time.monotonic() + 15; "
+    "\\nwhile not Path({str(child_release)!r}).exists() and time.monotonic() < deadline: time.sleep(0.02)\\n"
+)
+with live.inactive_effect_exclusion(snapshot) as (lock_fd, _dev_ino):
+    subprocess.run([sys.executable, "-c", child_code], pass_fds=(lock_fd,), check=True)
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    adapter_proc = subprocess.Popen([sys.executable, "-c", adapter_script], env=env)
+    child_pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if child_ready.exists():
+                text = child_ready.read_text(encoding="ascii").strip()
+                if text:
+                    child_pid = int(text)
+                    break
+            time.sleep(0.02)
+        assert child_pid is not None, "provider child did not start"
+
+        # SIGKILL the adapter parent while the provider child is still running.
+        os.kill(adapter_proc.pid, signal.SIGKILL)
+        adapter_proc.wait(timeout=5)
+
+        # Kernel flock MUST remain held by the surviving child process.
+        with lock_path.open("a+") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        # Release the child and verify the lock clears once the child exits.
+        child_release.write_text("done\n", encoding="ascii")
+        deadline = time.monotonic() + 10
+        unlocked = False
+        while time.monotonic() < deadline:
+            with lock_path.open("a+") as contender:
+                try:
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    time.sleep(0.02)
+                else:
+                    unlocked = True
+                    break
+        assert unlocked, "lock did not release after surviving provider child exited"
+    finally:
+        child_release.write_text("done\n", encoding="ascii")
+        if adapter_proc.poll() is None:
+            adapter_proc.kill()
+            adapter_proc.wait(timeout=5)
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass

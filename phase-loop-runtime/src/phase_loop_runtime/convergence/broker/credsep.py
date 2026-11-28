@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -193,6 +194,42 @@ def _parse_go_strconv_quote(text: str, start: int) -> tuple[str, int] | None:
     return None
 
 
+def _run_accepts_pass_fds(run_callable) -> bool:
+    """True when ``run_callable`` accepts ``pass_fds`` (e.g. ``subprocess.run`` or ``**kwargs``)."""
+    try:
+        sig = inspect.signature(run_callable)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD or param.name == "pass_fds":
+            return True
+    return False
+
+
+class _GuardedEffectHandle:
+    """Bound repository path, inherited lock fd, and revalidation hook for an effect."""
+
+    def __init__(
+        self,
+        repo_path: Path,
+        *,
+        lock_fd: int | None = None,
+        revalidate=None,
+    ) -> None:
+        self.repo_path = repo_path
+        self.lock_fd = lock_fd
+        self._revalidate = revalidate
+
+    def run_kwargs(self, run_callable) -> dict:
+        if self.lock_fd is not None and os.name != "nt" and _run_accepts_pass_fds(run_callable):
+            return {"pass_fds": (self.lock_fd,)}
+        return {}
+
+    def revalidate_before_effect(self) -> None:
+        if self._revalidate is not None:
+            self._revalidate()
+
+
 class GitHubBrokerAdapter:
     def __init__(
         self,
@@ -243,35 +280,64 @@ class GitHubBrokerAdapter:
         require_current_generation(root, self.generation_lease, strict=True)
 
     @contextlib.contextmanager
-    def _generation_effect_guard(self):
+    def _generation_effect_guard(self, entry_snapshot=None):
         """Coordinate the provider-effect window with FABPUB cutover/activation.
 
-        When active, enforces the generation fence on entry.  When inactive,
-        holds ``RUN_TRAIN_WRITER_LOCK`` across both ``git push`` and
-        ``gh pr create`` (after verifying the namespace is unactivated both
-        before and under the lock) so cutover/bootstrap/onboarding cannot
-        activate concurrently with an unfenced publisher effect
+        When active, enforces the generation fence on entry and pins the
+        resolved worktree path.  When inactive, holds ``RUN_TRAIN_WRITER_LOCK``
+        across both ``git push`` and ``gh pr create`` (verifying both the
+        namespace and the guarded worktree binding before and under the lock),
+        passes the open lock fd to provider child processes via ``pass_fds`` so
+        surviving children keep the kernel ``flock`` until exit, and binds both
+        commands to ``snapshot.worktree`` rather than an unresolved symlink
         (agent-harness#1681).
         """
         from .live import (
             LegacyCutoverConflict,
+            WriterGenerationBlocked,
             fabpub_capability_active,
             inactive_effect_exclusion,
+            require_namespace_unactivated_when_inactive,
             try_repository_snapshot,
+            verify_guarded_worktree_binding,
         )
 
         if fabpub_capability_active():
             self._revalidate_generation_before_effect()
-            yield
+            target_repo = entry_snapshot.worktree if entry_snapshot is not None else self.repo_path
+            yield _GuardedEffectHandle(
+                target_repo,
+                revalidate=self._revalidate_generation_before_effect,
+            )
             return
-        snapshot = try_repository_snapshot(self.repo_path)
+        snapshot = (
+            entry_snapshot
+            if entry_snapshot is not None
+            else try_repository_snapshot(self.repo_path)
+        )
         if snapshot is None:
             if self.generation_lease is _UNDECLARED_GENERATION:
-                yield
+                yield _GuardedEffectHandle(
+                    self.repo_path,
+                    revalidate=self._revalidate_generation_before_effect,
+                )
                 return
             raise LegacyCutoverConflict(f"{self.repo_path} is not a Git repository")
-        with inactive_effect_exclusion(snapshot):
-            yield
+        with inactive_effect_exclusion(snapshot) as (lock_fd, expected_dev_ino):
+            def _revalidate_guarded() -> None:
+                if fabpub_capability_active():
+                    raise WriterGenerationBlocked(
+                        "FABPUB capability became active during an inactive publisher effect; "
+                        "refusing to continue unfenced"
+                    )
+                verify_guarded_worktree_binding(snapshot, expected_dev_ino)
+                require_namespace_unactivated_when_inactive(snapshot)
+
+            yield _GuardedEffectHandle(
+                snapshot.worktree,
+                lock_fd=lock_fd,
+                revalidate=_revalidate_guarded,
+            )
 
     def _acquire_service_generation_lease(self, store_root: Path):
         """Bridge an admitted BrokerService compatibility call without leaking a lease."""
@@ -299,10 +365,11 @@ class GitHubBrokerAdapter:
         finally:
             if self.generation_lease is lease:
                 self.generation_lease = _UNDECLARED_GENERATION
-    def _output(self, *args: str) -> str:
-        return self.run(["git", "-C", str(self.repo_path), *args], capture_output=True, text=True, check=True).stdout.strip()
-    def _origin_url(self) -> str:
-        return resolve_git_origin_url(self.repo_path, run=self.run)
+    def _output(self, *args: str, repo_path: Path | None = None) -> str:
+        target = self.repo_path if repo_path is None else repo_path
+        return self.run(["git", "-C", str(target), *args], capture_output=True, text=True, check=True).stdout.strip()
+    def _origin_url(self, repo_path: Path | None = None) -> str:
+        return resolve_git_origin_url(self.repo_path if repo_path is None else repo_path, run=self.run)
     def _origin_repo(self) -> str:
         return self._slug_for(self._origin_url())
     def _slug_for(self, url: str) -> str:
@@ -379,7 +446,7 @@ class GitHubBrokerAdapter:
             return False
         return url == f"https://{host}/{owner}/{repo}/pull/{number}"
 
-    def _branch_diff_paths(self, base: str, head_sha: str):
+    def _branch_diff_paths(self, base: str, head_sha: str, repo_path: Path | None = None):
         # agent-harness#202: the broker's OWN re-derivation of what the branch changed vs
         # its declared base — `origin/<base>...head_sha` (three-dot: changes on the branch
         # since its merge-base), the SAME derivation the #201 coordinator used. The broker
@@ -413,8 +480,9 @@ class GitHubBrokerAdapter:
         # newline translation, and no crash on invalid UTF-8. The coordinator's
         # `_prebuilt_owned_paths` (train_runner.py) MUST use this identical bytes-capture +
         # `os.fsdecode` policy so the two derivations stay byte-identical.
+        target = self.repo_path if repo_path is None else repo_path
         completed = self.run(
-            ["git", "-C", str(self.repo_path), "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...{head_sha}"],
+            ["git", "-C", str(target), "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...{head_sha}"],
             capture_output=True,
         )
         if completed.returncode:
@@ -456,12 +524,20 @@ class GitHubBrokerAdapter:
         return False
 
     def execute(self, request: BrokerRequest):
+        from .live import fabpub_capability_active, try_repository_snapshot
+
         # A caller which explicitly supplied no generation authority is stale
         # under an ACTIVE repository and fails before even the branch/head
         # probe, hence before every push or gh provider command.
         if self.generation_lease is None or self.generation_lease is _UNDECLARED_GENERATION:
             self._revalidate_generation_before_effect()
-        if self._output("branch", "--show-current") != request.branch or self._output("rev-parse", "HEAD") != request.head_sha: raise ValueError("branch/head mismatch")
+        # Pin a real repository's resolved worktree once so a retargeted
+        # symlink at ``self.repo_path`` cannot redirect pre-flight reads or
+        # provider commands to a different checkout (agent-harness#1681).
+        fabpub_capability_active()
+        entry_snapshot = try_repository_snapshot(self.repo_path)
+        bound_repo = entry_snapshot.worktree if entry_snapshot is not None else self.repo_path
+        if self._output("branch", "--show-current", repo_path=bound_repo) != request.branch or self._output("rev-parse", "HEAD", repo_path=bound_repo) != request.head_sha: raise ValueError("branch/head mismatch")
         # agent-harness#202 (non-blocking hardening from the #201 panel): reconcile the
         # admitted owned_paths against the branch's ACTUAL content. This gates the FIRST
         # execution for a (repo, branch, head_sha) triple; BrokerService replays a recorded
@@ -499,7 +575,7 @@ class GitHubBrokerAdapter:
             # computed against an ungoverned base.
             if self._base_invalid(request.base, request.branch):
                 return self._scope_rejected(request, "owned-scope-invalid-base")
-            branch_diff = self._branch_diff_paths(request.base, request.head_sha)
+            branch_diff = self._branch_diff_paths(request.base, request.head_sha, repo_path=bound_repo)
             if branch_diff is None:
                 return self._scope_rejected(request, "owned-scope-diff-failed")
             uncovered = sorted(p for p in branch_diff if not self._covered_by_owned(p, request.owned_paths))
@@ -509,7 +585,7 @@ class GitHubBrokerAdapter:
                 # Nothing to publish vs base — whether or not owned_paths claims changes,
                 # an empty diff must never reach push/PR-create. Fail closed.
                 return self._scope_rejected(request, "owned-scope-empty-diff")
-        origin_url = self._origin_url()          # ONE canonical url, used explicitly everywhere
+        origin_url = self._origin_url(repo_path=bound_repo)  # ONE canonical url, used explicitly everywhere
         origin_repo = self._slug_for(origin_url) # validate allow-list + derive the gh slug from the SAME url
         ref = build_non_force_branch_ref(request.branch)
         # Push + ls-remote target the EXPLICIT validated url, never the `origin` alias,
@@ -520,8 +596,10 @@ class GitHubBrokerAdapter:
         # push (concurrent writer in the same workspace); pinning the source side means the
         # push can only ever publish the validated commit, never whatever the ref points to
         # by the time this runs.
-        with self._generation_effect_guard():
-            pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True)
+        with self._generation_effect_guard(entry_snapshot=entry_snapshot) as effect_guard:
+            effect_repo = effect_guard.repo_path
+            effect_kwargs = effect_guard.run_kwargs(self.run)
+            pushed = self.run(["git", "-C", str(effect_repo), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True, **effect_kwargs)
             if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
             # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
             # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
@@ -532,11 +610,11 @@ class GitHubBrokerAdapter:
             # against the repo DEFAULT branch, which for a non-default `request.base` (e.g.
             # `release/2.0`) would open a PR whose real diff (vs the repo default) was never the
             # diff this adapter scope-checked (vs request.base).
-            title = self._output("log", "-1", "--format=%s") or request.branch
+            title = self._output("log", "-1", "--format=%s", repo_path=effect_repo) or request.branch
             args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
             if request.draft: args.append("--draft")
-            self._revalidate_generation_before_effect()
-            created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
+            effect_guard.revalidate_before_effect()
+            created = self.run(args, cwd=effect_repo, capture_output=True, text=True, **effect_kwargs)
         # An exact branch may already have an open PR (for example after a prior
         # process pushed and created it but died before recording terminal evidence).
         # `gh pr create` reports that condition as a non-zero exit. Reconcile only
@@ -552,12 +630,12 @@ class GitHubBrokerAdapter:
         # historical cause or visibility SLA. Push/create are never repeated, and
         # the existing owner/lease remains held for the entire observation window.
         for round_index in range(1, 4):
-            remote = self.run(["git", "-C", str(self.repo_path), "ls-remote", origin_url, ref], capture_output=True, text=True)
+            remote = self.run(["git", "-C", str(effect_repo), "ls-remote", origin_url, ref], capture_output=True, text=True)
             if remote.returncode: return self._ambiguous(request, "remote-read-failed")
             remote_sha = remote.stdout.split("\t", 1)[0].strip() if remote.stdout.strip() else ""
             if not remote_sha: return self._ambiguous(request, "remote-branch-absent")
             if remote_sha != request.head_sha: return self._ambiguous(request, "remote-head-mismatch")
-            listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--state", "open", "--json", "url,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository"], cwd=self.repo_path, capture_output=True, text=True)
+            listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--state", "open", "--json", "url,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository"], cwd=effect_repo, capture_output=True, text=True)
             if listed.returncode: return self._ambiguous(request, "pr-read-failed")
             if not isinstance(listed.stdout, str):
                 return self._ambiguous(request, "pr-read-unparsable")
