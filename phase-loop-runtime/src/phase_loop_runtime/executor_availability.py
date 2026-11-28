@@ -21,12 +21,10 @@ import json
 import os
 import shlex
 import shutil
-import stat
 import subprocess
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 # Executor -> availability-probe CLI binary. Mirrors the advisor-board harness
@@ -144,18 +142,36 @@ def _typed_refusal_code(exc: BaseException) -> str | None:
     return message if message in NOTICES else None
 
 
+def _reject_json_constant(_value: str) -> object:
+    raise ValueError("non-standard JSON constant")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
 def _claude_status_fields(stdout: str) -> tuple[bool | None, str | None]:
     """Closed boolean ``loggedIn`` and allowlisted ``authMethod`` from ``claude auth status``.
 
-    Requires a parsed top-level JSON object with a strict boolean ``loggedIn`` field;
-    malformed or truncated JSON never opens the gate, and email, orgId, orgName, tokens,
-    and raw stdout are never returned (agent-harness#1585).
+    Requires a strict RFC 8259 JSON object (rejecting ``NaN``/``Infinity`` constants and
+    duplicate object keys) with a strict boolean ``loggedIn`` field; malformed, ambiguous,
+    or truncated JSON never opens the gate, and email, orgId, orgName, tokens, and raw
+    stdout are never returned (agent-harness#1585).
     """
     text = (stdout or "").strip()
     if not text:
         return None, None
     try:
-        payload = json.loads(text)
+        payload = json.loads(
+            text,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
     except (ValueError, TypeError):
         return None, None
     if not isinstance(payload, dict):
@@ -211,38 +227,6 @@ def _classify_probe_stderr(stderr: str) -> tuple[str, int]:
     return "unclassified", byte_count
 
 
-def _prune_probe_diagnostics(root: Path, *, keep: int = _PROBE_DIAG_KEEP, exclude: Path | None = None) -> None:
-    """Bound ``probe-*.json`` retention under ``root`` without touching sibling records."""
-    if keep < 1:
-        return
-    try:
-        uid = os.getuid()
-        candidates: list[tuple[int, str, Path]] = []
-        with os.scandir(root) as entries:
-            for entry in entries:
-                if not (entry.name.startswith("probe-") and entry.name.endswith(".json")):
-                    continue
-                path = Path(entry.path)
-                if exclude is not None and path == exclude:
-                    continue
-                try:
-                    info = entry.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != uid:
-                    continue
-                candidates.append((info.st_mtime_ns, entry.name, path))
-        allowed_older = max(keep - (1 if exclude is not None else 0), 0)
-        candidates.sort(reverse=True)
-        for _mtime, _name, old_path in candidates[allowed_older:]:
-            try:
-                old_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-    except OSError:
-        pass
-
-
 def _record_probe_diagnostic(
     *,
     executor: str,
@@ -284,8 +268,12 @@ def _record_probe_diagnostic(
             "exception": exception,
             "code": code,
         }
-        written = write_private_record(f"probe-{uuid.uuid4().hex}.json", record)
-        _prune_probe_diagnostics(written.parent, keep=_PROBE_DIAG_KEEP, exclude=written)
+        write_private_record(
+            f"probe-{uuid.uuid4().hex}.json",
+            record,
+            prune_prefix="probe-",
+            keep=_PROBE_DIAG_KEEP,
+        )
     except Exception:
         pass
 

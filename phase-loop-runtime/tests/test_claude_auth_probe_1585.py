@@ -145,6 +145,55 @@ def test_malformed_or_truncated_stdout_never_opens_auth_gate_on_first_or_retry_a
     assert not any(r["outcome"] == "recovered_on_retry" for r in records)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"loggedIn": true, "extra": NaN}',
+        '{"loggedIn": true, "extra": Infinity}',
+        '{"loggedIn": false, "loggedIn": true}',
+        '{"loggedIn": true, "nested": {"k": 1, "k": 2}}',
+    ],
+)
+def test_nonstandard_constants_and_duplicate_keys_never_open_auth_gate(
+    tmp_path, monkeypatch, payload,
+):
+    """Round 2 P1 regression: reject NaN/Infinity constants and duplicate JSON keys on
+    both the first attempt and a retry attempt, never emitting `recovered_on_retry`."""
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+
+    def first_attempt(probe: str):
+        if probe == "claude auth status":
+            return _completed(0, stdout=payload)
+        return _completed(0)
+
+    assert ea.auth_ok_for("claude", _CLAUDE_PROBES, runner=first_attempt, sleep=lambda _s: None) is False
+    assert ea.auth_refusal_for("claude", _CLAUDE_PROBES) == ea.ProbeRefusal(
+        "not_logged_in", "claude auth status"
+    )
+
+    ea.clear_auth_cache()
+    calls = 0
+
+    def retry_attempt(probe: str):
+        nonlocal calls
+        if probe == "claude auth status":
+            calls += 1
+            if calls == 1:
+                return _completed(1, stderr="transient failure")
+            return _completed(0, stdout=payload)
+        return _completed(0)
+
+    assert ea.auth_ok_for("claude", _CLAUDE_PROBES, runner=retry_attempt, sleep=lambda _s: None) is False
+    assert ea.auth_refusal_for("claude", _CLAUDE_PROBES) == ea.ProbeRefusal(
+        "not_logged_in", "claude auth status"
+    )
+    records = [json.loads(p.read_text(encoding="utf-8")) for p in _probe_records(state)]
+    assert len(records) == 2
+    assert all(r["outcome"] == "not_logged_in" for r in records)
+    assert not any(r["outcome"] == "recovered_on_retry" for r in records)
+
+
 def test_claude_auth_status_persistent_nonzero_exit_fails_closed_and_retains_diag(
     tmp_path, monkeypatch,
 ):
@@ -266,6 +315,54 @@ def test_probe_diagnostics_retention_is_bounded_and_preserves_leg_records(tmp_pa
         )
     assert sibling.is_file(), "sibling leg-*.json record must never be pruned"
     assert len(_probe_records(state)) == 3
+
+
+def test_probe_diagnostics_pruning_uses_verified_directory_fd_and_skips_symlinks(
+    tmp_path, monkeypatch,
+):
+    """Round 2 P2 regression: pruning scans and unlinks relative to `write_private_record`'s
+    verified `dir_fd`, and never unlinks a symlink named `probe-*.json`."""
+    import os
+    from phase_loop_runtime import president_adapter as pa
+
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setattr(ea, "_PROBE_DIAG_KEEP", 2)
+
+    unlink_calls: list[tuple[str, int | None]] = []
+    real_unlink = os.unlink
+
+    def spy_unlink(path, *, dir_fd=None):
+        unlink_calls.append((str(path), dir_fd))
+        return real_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pa.os, "unlink", spy_unlink)
+
+    first = pa.write_private_record("probe-first.json", {"schema": "auth_probe_diag.v1"})
+    target = tmp_path / "outside.json"
+    target.write_text("{}", encoding="utf-8")
+    symlink = first.parent / "probe-symlink.json"
+    symlink.symlink_to(target)
+
+    for idx in range(3):
+        ea._record_probe_diagnostic(
+            executor="claude",
+            probe="claude auth status",
+            outcome="nonzero_exit",
+            attempts=2,
+            first_returncode=1,
+            final_returncode=1,
+            final_stderr=f"lock busy {idx}",
+        )
+
+    assert unlink_calls, "expected pruning to unlink older probe records"
+    assert all(
+        "/" not in name and isinstance(dir_fd, int) and dir_fd >= 0
+        for name, dir_fd in unlink_calls
+    )
+    assert symlink.is_symlink() and target.is_file()
+    regular_probes = [p for p in _probe_records(state) if not p.is_symlink()]
+    assert len(regular_probes) == 2
 
 
 def test_healthy_claude_probe_does_not_retry_or_write_diagnostic(tmp_path, monkeypatch):
