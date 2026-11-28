@@ -1526,6 +1526,25 @@ class TestArmCliFlags(unittest.TestCase):
                 [("paths", "missing_path", "origin/mian")],
             )
 
+    def test_directory_only_gitignore_rule_accepts_unsuffixed_generated_dir(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    ".gitignore": ".venv/\n",
+                    "CONTRIBUTING.md": (
+                        "Populate `phase-loop-runtime/.venv`, not "
+                        "`phase-loop-runtime/does-not-exist`.\n"
+                    ),
+                },
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            found = edc.check_repo(repo, entry_docs=("CONTRIBUTING.md",))
+            self.assertEqual(
+                [(f.arm, f.code, f.token) for f in found],
+                [("paths", "missing_path", "phase-loop-runtime/does-not-exist")],
+            )
+
     def test_gh_workflow_run_ref_is_exempt_without_exempting_install_ref(self):
         with TemporaryDirectory() as tmp:
             repo = build_repo(

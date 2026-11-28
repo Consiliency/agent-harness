@@ -303,13 +303,24 @@ class RepoContext:
     def is_ignored(self, rel: str) -> bool:
         """True when the repo's own gitignore declares ``rel`` an artifact.
 
-        The discriminator for runtime-created paths (`.phase-loop/state.json`)
-        is the repository's own configuration, not a hardcoded list: if git
-        says the path is ignored, the repo has already declared it generated
-        rather than tracked, so documenting it is correct even though it is
-        absent from a clean checkout.
+        The discriminator for runtime-created paths (`.phase-loop/state.json`,
+        `phase-loop-runtime/.venv`) is the repository's own configuration, not
+        a hardcoded list: if git says the path is ignored, the repo has already
+        declared it generated rather than tracked, so documenting it is correct
+        even though it is absent from a clean checkout. Trailing-slash rules
+        such as `.venv/` only match a non-existent path in `git check-ignore`
+        when queried with a trailing `/`, so check both forms.
         """
-        return self._git("check-ignore", "-q", "--", rel) is not None
+        cleaned = rel.rstrip("/")
+        if not cleaned:
+            return False
+        return (
+            self._git("check-ignore", "-q", "--", rel) is not None
+            or (
+                not rel.endswith("/")
+                and self._git("check-ignore", "-q", "--", cleaned + "/") is not None
+            )
+        )
 
     def is_remote_tracking_ref(self, ref: str) -> bool:
         """True when ``ref`` resolves to a real ``refs/remotes/<ref>`` in git.
