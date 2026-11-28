@@ -553,6 +553,21 @@ class SkillsCanonParityTest(unittest.TestCase):
                     )
                     self.assertFalse(ok, f"expected extracted {expected_rel!r} to be rejected")
 
+            # Explicit destinations with spaces or balanced parens must be extracted as
+            # complete tokens so parity fails when the actual target is missing even if
+            # a prefix file (`references/foo`) exists (agent-harness#1649).
+            (active / "references" / "foo").write_text("prefix only\n", encoding="utf-8")
+            for snippet, expected_rel in (
+                ("[doc](<references/foo bar.md>)", "references/foo bar.md"),
+                ("[doc](references/foo(bar).md)", "references/foo(bar).md"),
+            ):
+                with self.subTest(complete_dest=snippet):
+                    self.assertEqual(iter_skill_aux_links(snippet), [(expected_rel, "")])
+                    ok, _ = self._linked_file_ships_directly(
+                        packaged, "claude-plan-phase", expected_rel, ""
+                    )
+                    self.assertFalse(ok, f"expected missing {expected_rel!r} to be rejected")
+
     def test_harness_only_references_do_not_leak_into_other_harnesses(self):
         """A reference only Claude's SKILL.md links ships in the claude overlay, not
         the shared base, so codex/gemini/opencode installs do not carry it."""
@@ -639,6 +654,9 @@ class SkillsCanonParityTest(unittest.TestCase):
                         "notes.txt",
                         "UPPER.MD",
                         "LICENSE",
+                        "foo",
+                        "foo bar.md",
+                        "foo(bar).md",
                     ):
                         (refs / name).write_text(f"{name}\n", encoding="utf-8")
                     body += (
@@ -648,7 +666,8 @@ class SkillsCanonParityTest(unittest.TestCase):
                         "`references/parent-dir.md`, `references/dot-seg.md`, "
                         "`references/double-slash.md`, `references/dot-rel.md`, "
                         "`references/self-owned.md`, `references/notes.txt`, "
-                        "`references/UPPER.MD`, and `references/LICENSE`.\n"
+                        "`references/UPPER.MD`, `references/LICENSE`, `references/foo`, "
+                        "`references/foo bar.md`, and `references/foo(bar).md`.\n"
                     )
                 elif harness == "gemini":
                     body += (
@@ -667,6 +686,7 @@ class SkillsCanonParityTest(unittest.TestCase):
                         "Read [dot relative](./references/dot-rel.md#top).\n"
                         "Read [self](references/self-owned.md#sec \"Own\") from the installed `gemini-plan-phase` directory.\n"
                         "Read `references/notes.txt`, `references/UPPER.MD`, and [license](references/LICENSE).\n"
+                        "Read [spaced](<references/foo bar.md>) and [parens](references/foo(bar).md).\n"
                     )
                 (skill / "SKILL.md").write_text(body, encoding="utf-8")
 
@@ -685,6 +705,8 @@ class SkillsCanonParityTest(unittest.TestCase):
                     ("references/cross-skill.md", "gemini-execute-detailed"),
                     ("references/cross-title.md", "gemini-execute-detailed"),
                     ("references/dot-rel.md", ""),
+                    ("references/foo bar.md", ""),
+                    ("references/foo(bar).md", ""),
                     ("references/notes.txt", ""),
                     ("references/self-owned.md", "gemini-plan-phase"),
                     ("references/suffixed.md+draft", ""),
@@ -699,6 +721,8 @@ class SkillsCanonParityTest(unittest.TestCase):
                     "references/LICENSE",
                     "references/UPPER.MD",
                     "references/dot-rel.md",
+                    "references/foo bar.md",
+                    "references/foo(bar).md",
                     "references/notes.txt",
                     "references/self-owned.md",
                     "references/suffixed.md+draft",
@@ -720,11 +744,12 @@ class SkillsCanonParityTest(unittest.TestCase):
                 "parent-dir.md",
                 "dot-seg.md",
                 "double-slash.md",
+                "foo",
             ):
                 with self.subTest(harness_only=harness_only):
                     self.assertFalse((skill_out / "references" / harness_only).exists())
                     self.assertTrue((skill_out / "_overrides" / "claude" / "references" / harness_only).is_file())
-            for shared in ("dot-rel.md", "self-owned.md", "notes.txt", "UPPER.MD", "LICENSE"):
+            for shared in ("dot-rel.md", "self-owned.md", "notes.txt", "UPPER.MD", "LICENSE", "foo bar.md", "foo(bar).md"):
                 with self.subTest(shared=shared):
                     self.assertTrue((skill_out / "references" / shared).is_file())
                     self.assertFalse((skill_out / "_overrides" / "claude" / "references" / shared).exists())

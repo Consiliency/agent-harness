@@ -28,28 +28,244 @@ HARNESS_AUX_SUBDIRS: tuple[str, ...] = ("references",)
 # Shared link grammar for `references/` and `assets/` links in a SKILL.md
 # (agent-harness#1649). Used by both `build_bundle` (references placement) and
 # `test_skills_canon_parity` (installed-bundle verification) so placement and
-# parity checks always agree. Leading `./` / `../` segments are captured so
-# parity rejects escaping or mixed-dot links (`.././references/../SKILL.md`)
-# while `canonical_direct_aux_path` keeps them ineligible for shared placement.
+# parity checks always agree. Explicit Markdown inline destinations (`[doc](...)`
+# including `<...>` with spaces and balanced `(...)` in filenames) and inline
+# code spans (`` `...` ``) are parsed as complete tokens before bare prose
+# scanning, so a partial filename prefix can never match inside an explicit link.
+# Leading `./` / `../` segments are captured so parity rejects escaping or
+# mixed-dot links (`.././references/../SKILL.md`) while
+# `canonical_direct_aux_path` keeps them ineligible for shared placement.
+_AUX_TARGET_PREFIX_RE = re.compile(r"^(?:\.\.?/)*(?:references|assets)/")
+_INSTALLED_OWNER_FOLLOW_RE = re.compile(r"[ \t\r\n]+from the installed `([\w-]+)` directory")
 SKILL_AUX_LINK_RE = re.compile(
     r"(?<![\w./+@~%-])((?:\.\.?/)*(?:references|assets)/[\w./+@~%-]*[\w+@~%-])"
     r"(?![\w/+@~%*<-]|\.[A-Za-z0-9_+@~%-])"
     r"(?:#[^\s`'\"<>()\[\]]+)?"
-    r"(?:`|>?(?:\s+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^()\n]*\)))?\))?"
     r"(?:\s+from the installed `([\w-]+)` directory)?"
 )
+
+
+def _normalize_aux_target(raw: str) -> str | None:
+    target = raw.split("#", 1)[0].strip()
+    if not target or not _AUX_TARGET_PREFIX_RE.match(target):
+        return None
+    if target.endswith("/") or any(ch in target for ch in ("*", "<", ">", "\r", "\n")):
+        return None
+    # Strip a single benign leading `./` (`./references/a.md` -> `references/a.md`)
+    # while keeping escaping or mixed-dot prefixes (`.././references/...`,
+    # `./../references/...`, `././references/...`) intact for parity rejection.
+    if target.startswith(("./references/", "./assets/")):
+        target = target[2:]
+    return target
+
+
+def _skip_inline_ws(text: str, pos: int) -> int:
+    n = len(text)
+    while pos < n and text[pos] in " \t\r\n":
+        pos += 1
+    return pos
+
+
+def _find_inline_code_close(text: str, start: int) -> tuple[int, int] | None:
+    """Given ``text[start] == '`'``, return ``(content_start, end_after_ticks)`` or ``None``."""
+    n = len(text)
+    run_end = start
+    while run_end < n and text[run_end] == "`":
+        run_end += 1
+    run_len = run_end - start
+    line_start = text.rfind("\n", 0, start) + 1
+    if run_len >= 3 and text[line_start:start].strip() == "":
+        return None
+    ticks = "`" * run_len
+    close = text.find(ticks, run_end)
+    while close != -1 and (
+        (close > 0 and text[close - 1] == "`")
+        or (close + run_len < n and text[close + run_len] == "`")
+    ):
+        close = text.find(ticks, close + 1)
+    if close == -1 or "\n" in text[run_end:close] or "\x00" in text[run_end:close]:
+        return None
+    return run_end, close + run_len
+
+
+def _find_matching_bracket(text: str, start: int) -> int | None:
+    n = len(text)
+    depth = 1
+    pos = start + 1
+    while pos < n:
+        ch = text[pos]
+        if ch == "\\" and pos + 1 < n:
+            pos += 2
+            continue
+        if ch == "\n" and pos + 1 < n and text[pos + 1] == "\n":
+            return None
+        if ch == "`":
+            span = _find_inline_code_close(text, pos)
+            if span is not None:
+                pos = span[1]
+                continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return pos
+        pos += 1
+    return None
+
+
+def _parse_inline_dest(text: str, open_paren: int) -> tuple[str, int] | None:
+    n = len(text)
+    pos = _skip_inline_ws(text, open_paren + 1)
+    if pos >= n:
+        return None
+    if text[pos] == "<":
+        pos += 1
+        start = pos
+        while pos < n and text[pos] not in ">\n<":
+            if text[pos] == "\\" and pos + 1 < n and text[pos + 1] != "\n":
+                pos += 2
+            else:
+                pos += 1
+        if pos >= n or text[pos] != ">":
+            return None
+        dest = text[start:pos]
+        pos += 1
+    else:
+        start = pos
+        depth = 0
+        while pos < n:
+            ch = text[pos]
+            if ch in " \t\r\n":
+                break
+            if ch == "\\" and pos + 1 < n and text[pos + 1] != "\n":
+                pos += 2
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+            pos += 1
+        if depth != 0 or pos == start:
+            return None
+        dest = text[start:pos]
+    ws_start = pos
+    pos = _skip_inline_ws(text, pos)
+    if pos < n and text[pos] == ")":
+        return dest, pos + 1
+    if pos == ws_start or pos >= n:
+        return None
+    quote = text[pos]
+    if quote in ("\"", "'"):
+        pos += 1
+        while pos < n and text[pos] != quote:
+            if text[pos] == "\\" and pos + 1 < n:
+                pos += 2
+            elif text[pos] == "\n":
+                return None
+            else:
+                pos += 1
+        if pos >= n:
+            return None
+        pos += 1
+    elif quote == "(":
+        pos += 1
+        while pos < n and text[pos] != ")":
+            if text[pos] == "\\" and pos + 1 < n:
+                pos += 2
+            elif text[pos] in "(\n":
+                return None
+            else:
+                pos += 1
+        if pos >= n:
+            return None
+        pos += 1
+    else:
+        return None
+    pos = _skip_inline_ws(text, pos)
+    if pos >= n or text[pos] != ")":
+        return None
+    return dest, pos + 1
 
 
 def iter_skill_aux_links(text: str) -> list[tuple[str, str]]:
     """Return sorted unique `(rel_path, owner)` pairs for `references/` and `assets/` links."""
     links: set[tuple[str, str]] = set()
-    for rel, owner in SKILL_AUX_LINK_RE.findall(text):
-        # Strip a single benign leading `./` (`./references/a.md` -> `references/a.md`)
-        # while keeping escaping or mixed-dot prefixes (`.././references/...`,
-        # `./../references/...`, `././references/...`) intact for parity rejection.
-        if rel.startswith(("./references/", "./assets/")):
-            rel = rel[2:]
-        links.add((rel, owner))
+    chars = list(text)
+    n = len(text)
+
+    # Pass 1: explicit Markdown inline links `[label](dest [title])`, skipping
+    # inline code spans so a `[` inside backticks cannot start a link.
+    i = 0
+    while i < n:
+        if text[i] == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if text[i] == "`":
+            span = _find_inline_code_close(text, i)
+            if span is not None:
+                i = span[1]
+                continue
+            run_end = i
+            while run_end < n and text[run_end] == "`":
+                run_end += 1
+            i = run_end
+            continue
+        if text[i] == "[":
+            close_bracket = _find_matching_bracket(text, i)
+            if close_bracket is not None and close_bracket + 1 < n and text[close_bracket + 1] == "(":
+                parsed = _parse_inline_dest(text, close_bracket + 1)
+                if parsed is not None:
+                    dest, end = parsed
+                    owner_m = _INSTALLED_OWNER_FOLLOW_RE.match(text, end)
+                    owner = owner_m.group(1) if owner_m else ""
+                    rel = _normalize_aux_target(dest)
+                    if rel is not None:
+                        links.add((rel, owner))
+                    for k in range(i, end):
+                        chars[k] = "\x00"
+                    i = end
+                    continue
+        i += 1
+
+    masked = "".join(chars)
+
+    # Pass 2: explicit inline code spans `` `...` `` as complete tokens.
+    chars = list(masked)
+    i = 0
+    while i < n:
+        if masked[i] == "`":
+            span = _find_inline_code_close(masked, i)
+            if span is not None:
+                content_start, end = span
+                run_len = content_start - i
+                content = masked[content_start : end - run_len]
+                owner_m = _INSTALLED_OWNER_FOLLOW_RE.match(masked, end)
+                owner = owner_m.group(1) if owner_m else ""
+                rel = _normalize_aux_target(content)
+                if rel is not None:
+                    links.add((rel, owner))
+                for k in range(i, end):
+                    chars[k] = "\x00"
+                i = end
+                continue
+            run_end = i
+            while run_end < n and masked[run_end] == "`":
+                run_end += 1
+            i = run_end
+            continue
+        i += 1
+
+    masked = "".join(chars)
+
+    # Pass 3: remaining bare prose paths outside explicit Markdown/code tokens.
+    for rel, owner in SKILL_AUX_LINK_RE.findall(masked):
+        norm = _normalize_aux_target(rel)
+        if norm is not None:
+            links.add((norm, owner))
+
     return sorted(links)
 
 
