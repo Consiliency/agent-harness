@@ -507,19 +507,30 @@ def _jailed_route(leg, **_k):
     (True, ["gemini"]),                       # jailed Claude and Codex seats read their brief
     (False, ["claude", "gemini", "codex"]),   # a jail that cannot be qualified: the seats run sealed
 ])
-def test_a_jailed_claude_seat_is_not_marked_unreadable(monkeypatch, qualified, unreadable):
-    from phase_loop_runtime import seat_jail_autoqualify as aq
+def test_a_jailed_claude_seat_is_not_marked_unreadable(tmp_path, monkeypatch, qualified, unreadable):
+    import dataclasses
+
+    from phase_loop_runtime import seat_jail_autoqualify as aq, seat_profiles
     from test_seat_login_wait_a3_1166 import _route_claude_jailed
 
     _route_claude_jailed(monkeypatch)
+    codex_profile = dataclasses.replace(
+        seat_profiles.profile_for("codex"),
+        credential_present=lambda *_a, **_k: True,
+        preconditions=(),
+        require_projected_runtime=False,
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "codex", codex_profile)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
                         lambda *a, **k: aq.Outcome(aq.QUALIFIED) if qualified
                         else aq.Outcome(aq.FAILED, "falsifiers_failed"))
+    empty_home = str(tmp_path / "no-login-home")
     board = types.SimpleNamespace(seats=[_seat("claude"), _seat("gemini"), _seat("codex")])
     notices = pi._publish_seat_preflight(
         board, pointer_brief=True, mode="review",
         review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
-        base_env={}, stream_dir=None, on_seat_preflight=None)
+        base_env={"HOME": empty_home, "CODEX_HOME": str(tmp_path / "no-codex")},
+        stream_dir=None, on_seat_preflight=None)
     assert [n.leg for n in notices] == unreadable
     assert all(n.code == UNREADABLE for n in notices)
 

@@ -82,7 +82,8 @@ class SeatPreflightNotice:
 
 
 def seat_has_file_access(leg: str, *, staged_tree: bool, brokered: bool,
-                         native_fill: bool, sandbox_usable_by: Callable[..., bool]) -> bool:
+                         native_fill: bool, sandbox_usable_by: Callable[..., bool],
+                         jailed: bool | None = None) -> bool:
     """Does this seat's route let it open files in the staged tree?
 
     A seat deferred to a native fill is reviewed by the host agent, which has file access.
@@ -90,21 +91,28 @@ def seat_has_file_access(leg: str, *, staged_tree: bool, brokered: bool,
     (``sandbox_usable_by``, the invoker's own capability rule)."""
     if native_fill:
         return True
-    return staged_tree and bool(sandbox_usable_by(leg, brokered=brokered))
+    if not staged_tree:
+        return False
+    if jailed is not None:
+        return bool(sandbox_usable_by(leg, brokered=brokered, jailed=jailed))
+    return bool(sandbox_usable_by(leg, brokered=brokered))
 
 
 def pointer_brief_preflight(
     seats: Iterable[object], *, staged_tree: bool,
     brokered: Callable[[str], bool], native_fill: Callable[[object, str], bool],
     sandbox_usable_by: Callable[..., bool],
+    jailed_at_position: Callable[[int, object, str], bool] | None = None,
 ) -> tuple[SeatPreflightNotice, ...]:
     """One notice per seat that cannot open the pointer brief's files, in seat order."""
     notices = []
     for position, seat in enumerate(seats):
         leg = (getattr(seat, "harness", None) or "").lower()
+        jailed = None if jailed_at_position is None else bool(jailed_at_position(position, seat, leg))
         if not seat_has_file_access(leg, staged_tree=staged_tree, brokered=brokered(leg),
                                     native_fill=native_fill(seat, leg),
-                                    sandbox_usable_by=sandbox_usable_by):
+                                    sandbox_usable_by=sandbox_usable_by,
+                                    jailed=jailed):
             notices.append(SeatPreflightNotice(POINTER_BRIEF_UNREADABLE,
                                                str(getattr(seat, "seat_key", "") or leg), leg,
                                                position))

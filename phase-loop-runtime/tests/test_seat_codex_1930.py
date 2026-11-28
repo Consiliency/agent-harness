@@ -133,3 +133,67 @@ def test_jailed_codex_and_non_brokered_research_codex_remain_sandbox_usable(monk
     monkeypatch.setattr(composition, "compose_review_board", lambda *a, **k: full_board)
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
     assert claude_bakeoff.effective_unconfined_co_seats() == ("grok",)
+
+
+def test_pointer_preflight_tracks_codex_jail_decision_per_board_position(tmp_path, monkeypatch):
+    """When two Codex seats share a board and only one jail lease is available, only the
+    unjailed seat gets ``seat_pointer_brief_unreadable``; the jailed seat stays grounded."""
+    import dataclasses
+
+    from phase_loop_runtime import seat_profiles
+    from test_seat_login_wait_a3_1166 import _route_claude_jailed
+
+    _route_claude_jailed(monkeypatch, fake_capacity=False)
+    codex_profile = dataclasses.replace(
+        seat_profiles.profile_for("codex"),
+        credential_present=lambda *_a, **_k: True,
+        preconditions=(),
+        require_projected_runtime=False,
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "codex", codex_profile)
+
+    leased = {"count": 0}
+
+    class OneLease:
+        seat_id = 7
+
+        def release(self):
+            return None
+
+    class SingleSlotCapacity:
+        def try_lease(self):
+            if leased["count"] >= 1:
+                return None
+            leased["count"] += 1
+            return OneLease()
+
+    monkeypatch.setattr(pi._seat_uid, "SeatIdCapacity", SingleSlotCapacity)
+    pi._JAILCORE_ROUTE_CACHE.clear()
+
+    board = SimpleNamespace(
+        seats=[
+            SimpleNamespace(harness="codex", seat_key="codex:a", model="gpt-5.4"),
+            SimpleNamespace(harness="codex", seat_key="codex:b", model="gpt-5.4"),
+        ]
+    )
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    env = {"HOME": str(tmp_path / "no-login-home"), "CODEX_HOME": str(tmp_path / "no-codex")}
+    modes = pi._seat_launch_modes(board, mode="review", review_authorization=auth, base_env=env)
+    assert [m.mode for m in modes] == [sp.MODE_JAILED, sp.MODE_DEGRADED]
+
+    # Reset the single-slot fixture and cache so preflight resolves the exact same one-lease
+    # scenario independently.
+    leased["count"] = 0
+    pi._JAILCORE_ROUTE_CACHE.clear()
+    notices = pi._publish_seat_preflight(
+        board,
+        pointer_brief=True,
+        mode="review",
+        review_authorization=auth,
+        base_env=env,
+        stream_dir=None,
+        on_seat_preflight=None,
+    )
+    assert [(n.position, n.seat_key, n.leg, n.code) for n in notices] == [
+        (1, "codex:b", "codex", sp.POINTER_BRIEF_UNREADABLE),
+    ]
