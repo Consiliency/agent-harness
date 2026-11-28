@@ -119,18 +119,18 @@ If either gate fails, treat every recommendation applied this run as failed for 
 
 Per the plan's archival directive:
 
-1. Collect the reflections cited (via `**Supporting reflections**`) by any recommendation that failed.
+1. Collect the reflections cited (via `**Supporting reflections**`) by any recommendation that failed, plus any consumed reflection whose only themes in the plan were deferred under `## Speculative / low-confidence notes` (whether deferred by rule 1, `convergence`, or `existing-skill-first` — i.e., cited under `## Speculative / low-confidence notes` and not cited by any applied recommendation, mechanism candidate, or rejected theme).
 2. Archive everything else the manifest consumed:
    ```bash
    python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest> \
-     --exclude <path-cited-by-a-failed-recommendation> ...
+     --exclude <path-cited-by-a-failed-or-deferred-only-reflection> ...
    ```
    Run it with `--dry-run` first and check the count. If it refuses, it has moved nothing: drop any `--exclude` for a path the manifest did not consume (that reflection already stays in place), fix any other cause it names, and rerun.
-3. Excluded paths stay in place so the next cycle can reconsider them.
+3. Excluded paths (and any consumed `duplicate_of` copies of those reflections, which `archive --exclude` preserves automatically) stay in place so the next cycle can reconsider them and accumulate independent support.
 
-The manifest decides what is consumed: the admitted reflections of ready skills, reflections excluded with no friction and no proposal (`no_friction_or_proposal`), and duplicates (`duplicate_of`) whose kept twin is also consumed. Repo-specific proposal lines are dropped without discarding generic sibling proposals or usable friction. All other reflections stay in place, including capped or oversized ones and those of skills still below the threshold, so their friction can count in a later pass. An admitted reflection of a ready skill that no surviving recommendation cites is still archived; it has been considered.
+The manifest decides what is consumed: the admitted reflections of ready skills, reflections excluded with no friction and no proposal (`no_friction_or_proposal`), and duplicates (`duplicate_of`) whose kept twin is also consumed. Repo-specific proposal lines are dropped without discarding generic sibling proposals or usable friction. All other reflections stay in place, including capped or oversized ones and those of skills still below the threshold, so their friction can count in a later pass. An admitted reflection of a ready skill whose themes were neither failed nor solely deferred is still archived; it has been considered.
 
-A reflection with only a rejected repo-specific proposal stays in place; it is not consumed as empty.
+A reflection with only a rejected repo-specific (`improvements_repo_specific`) or ledger-only (`improvements_ledger_only`) proposal stays in place; it is not consumed as empty.
 
 ### Step 6 — Commit + push
 

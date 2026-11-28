@@ -247,14 +247,14 @@ reflections_consumed:
 <For each: theme, rejecting gate and supporting reflections.>
 
 ## Speculative / low-confidence notes
-<one-off feedback worth recording but not acting on yet>
+<below-threshold (rule 1), `convergence`-deferred, or `existing-skill-first`-deferred feedback worth recording but not acting on yet, each citing its supporting reflection manifest ids>
 
 ## Contradictions surfaced
 <reflections that disagreed; surface for user judgment>
 
 ## Archival directive for claude-skill-editor
 
-After applying the recommendations above, run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for each reflection that supports a failed recommendation. It moves each file listed under `reflections_consumed` to `<reflections-dir>/archive/<original-filename>`. This prevents re-aggregating the same feedback next cycle. If a specific recommendation fails to apply, leave its supporting reflections in place so the next planning pass can reconsider them.
+After applying the recommendations above, run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for each reflection that supports a failed recommendation or whose only themes in this plan were deferred to `## Speculative / low-confidence notes` (by rule 1, `convergence`, or `existing-skill-first`). It moves each remaining file listed under `reflections_consumed` to `<reflections-dir>/archive/<original-filename>`. This prevents re-aggregating the same feedback next cycle while leaving failed and solely deferred reflections in place so the next planning pass can reconsider them.
 ```
 
 ## Archive convention

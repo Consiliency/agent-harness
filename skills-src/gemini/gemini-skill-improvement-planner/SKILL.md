@@ -107,11 +107,13 @@ reflections_consumed:
 
 ## Speculative / low-confidence notes
 
+<For each deferred item (rule 1, `convergence`, or `existing-skill-first`): one-line observation and supporting reflection manifest ids.>
+
 ## Contradictions surfaced
 
 ## Archival directive for gemini-skill-editor
 
-After the recommendations apply, run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for each reflection that supports a failed recommendation.
+After the recommendations apply, run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for each reflection that supports a failed recommendation or whose only themes in this plan were deferred to `## Speculative / low-confidence notes` (by rule 1, `convergence`, or `existing-skill-first`).
 ```
 
 ## Closeout
