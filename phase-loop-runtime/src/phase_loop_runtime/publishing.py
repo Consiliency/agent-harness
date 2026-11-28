@@ -1518,18 +1518,32 @@ def _observed_after_ambiguity_handoff(
         "owner_nonce": observation.get("owner_nonce"),
         "transaction_id": observation.get("transaction_id"),
     }
-    fields: dict[str, Any] = {
-        "required_disposition": "observed_landed",
-        "forbidden_disposition": "attested_not_landed",
-        "attestation_inputs": inputs,
-        "rotate_requires": (
+    durable = bool(observation.get("durable", True))
+    if durable:
+        rotate_requires = (
             "a reviewed PartitionRotationAttestation.v1 disposing the blocked effect "
             f"observed_landed with observed_head {inputs['observed_head']} and evidence_url "
             f"{inputs['evidence_url']} (the provider reported this effect after the key was "
             "blocked), and a read-only preflight verdict of ready; attested_not_landed is "
             "refused for this key, and a later remote absence is not proof that the effect "
             "did not land"
-        ),
+        )
+    else:
+        rotate_requires = (
+            "a reviewed PartitionRotationAttestation.v1 disposing the blocked effect "
+            f"observed_landed with observed_head {inputs['observed_head']} and evidence_url "
+            f"{inputs['evidence_url']} (the provider reported this effect after the key was "
+            "blocked, but this observation could not be recorded durably so retries and "
+            "rotation preflight will not automatically repeat or enforce it — keep this "
+            "result and never attest attested_not_landed), and a read-only preflight verdict "
+            "of ready; a later remote absence is not proof that the effect did not land"
+        )
+    fields: dict[str, Any] = {
+        "required_disposition": "observed_landed",
+        "forbidden_disposition": "attested_not_landed",
+        "observation_durable": durable,
+        "attestation_inputs": inputs,
+        "rotate_requires": rotate_requires,
     }
     if Path(snapshot.store_root) == Path(snapshot.container):
         # The stdlib builder digests the generation-0 container only.
@@ -1799,7 +1813,32 @@ def _human_publication_handoff(
                 "during the provider call"
             ),
         )
-        if refusal.get("provider_call_made"):
+        if refusal.get("observation_unreadable"):
+            # agent-harness#1701: owner recovery could not read the post-ambiguity
+            # observations side file; refuse retryably before appending any
+            # ambiguity row so a transient read error cannot hide a saved PR URL.
+            from .convergence.broker.evidence import POST_AMBIGUITY_OBSERVATIONS_FILENAME
+
+            handoff.update(
+                next_step_source=(
+                    f"owner recovery could not read {POST_AMBIGUITY_OBSERVATIONS_FILENAME}, so "
+                    "no outcome_ambiguous_blocked row was appended: the unsealed "
+                    "adapter-start owner and its provider_call_in_flight intent stay "
+                    "unchanged so a transient read error cannot hide a saved pull request "
+                    "URL behind unsealed-adapter-start-owner"
+                ),
+                resume=(
+                    "retry once with the same plan and verification artifact after the "
+                    "transient storage/read error clears (or inspect "
+                    f"{POST_AMBIGUITY_OBSERVATIONS_FILENAME} if it remains unreadable)"
+                ),
+                attestation_evidence=(
+                    "no provider call was made on this retry and no terminal was written; "
+                    "do not dispose the key attested_not_landed while "
+                    f"{POST_AMBIGUITY_OBSERVATIONS_FILENAME} is unreadable"
+                ),
+            )
+        elif refusal.get("provider_call_made"):
             # agent-harness#1628: the same stored shape, but the provider WAS
             # entered.  Nothing here supports attested_not_landed by construction.
             # agent-harness#1684: an adapter that returned is not reported as
@@ -1807,14 +1846,34 @@ def _human_publication_handoff(
             execute_returned = refusal.get("execute_returned")
             pr_url = refusal.get("pr_url")
             head_sha = refusal.get("head_sha")
+            terminal_write_fenced = refusal.get("terminal_write_fenced")
+            terminal_state = refusal.get("terminal_state")
+            evidence_reference = refusal.get("evidence_reference")
             if execute_returned:
-                returned = f"PR {pr_url}" if pr_url else "no pull request URL"
-                source = (
-                    f"the provider returned ({returned}) but its terminal record was "
-                    "refused by the generation fence (a DRAINING writer latch or a revoked "
-                    "generation lease), so the outcome is not recorded (provider_call_made "
-                    "true); the fence then refused the outcome_ambiguous_blocked record too"
-                )
+                if pr_url:
+                    returned = f"PR {pr_url}"
+                elif terminal_state == TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN.value:
+                    returned = (
+                        f"no effect ({evidence_reference})"
+                        if evidence_reference
+                        else "no effect"
+                    )
+                else:
+                    returned = "no pull request URL"
+                if terminal_write_fenced is False:
+                    source = (
+                        f"the provider returned ({returned}) but its terminal record could not "
+                        "be recorded, so the outcome is not recorded (provider_call_made true); "
+                        "the generation fence (a DRAINING writer latch or a revoked generation "
+                        "lease) then refused the outcome_ambiguous_blocked record"
+                    )
+                else:
+                    source = (
+                        f"the provider returned ({returned}) but its terminal record was "
+                        "refused by the generation fence (a DRAINING writer latch or a revoked "
+                        "generation lease), so the outcome is not recorded (provider_call_made "
+                        "true); the fence then refused the outcome_ambiguous_blocked record too"
+                    )
             else:
                 failed = (
                     "the adapter failed"
@@ -1867,13 +1926,28 @@ def _human_publication_handoff(
                         ", and its pr_url is the provider's returned pull request, which "
                         "the retry's handoff does not repeat"
                         if pr_url
-                        else " with an unknown outcome"
+                        else (
+                            f", and the provider returned no effect ({evidence_reference})"
+                            if execute_returned
+                            and terminal_state == TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN.value
+                            and evidence_reference
+                            else (
+                                ", and the provider returned no effect"
+                                if execute_returned
+                                and terminal_state == TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN.value
+                                else " with an unknown outcome"
+                            )
+                        )
                     )
                     + "; it is not evidence that the provider was never entered"
                 ),
             )
             if execute_returned:
                 handoff.update(pr_url=pr_url, head_sha=head_sha, branch=refusal.get("branch"))
+                if terminal_state is not None:
+                    handoff["terminal_state"] = terminal_state
+                if evidence_reference is not None:
+                    handoff["evidence_reference"] = evidence_reference
     if next_step == "probe_and_confirm_fabpub_authority":
         inventory = (
             snapshot.common_dir
@@ -2023,6 +2097,17 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
             ),
         ),
         (
+            verbs.PostAmbiguityObservationUnreadable,
+            lambda error: (
+                "retry_once_before_partition_rotation",
+                {
+                    "effect_key": error.effect_key,
+                    "transaction_id": error.transaction_id,
+                    "observation_unreadable": True,
+                },
+            ),
+        ),
+        (
             # agent-harness#1628: the provider WAS entered; the generation fence
             # refused the ambiguity record, so the row is still in flight.
             # agent-harness#1684: whether the adapter returned, and its result.
@@ -2037,6 +2122,9 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
                     "pr_url": error.pr_url,
                     "head_sha": error.head_sha,
                     "branch": error.branch,
+                    "terminal_write_fenced": error.terminal_write_fenced,
+                    "terminal_state": error.terminal_state,
+                    "evidence_reference": error.evidence_reference,
                 },
             ),
         ),

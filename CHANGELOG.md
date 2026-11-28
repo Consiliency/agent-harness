@@ -121,6 +121,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   for `codex`; and run vendor admission gates after host/profile/egress/subject/pass-record
   checks in `seat_admission._base_verdict` with caller `env` threaded into profile checks
   (agent-harness#1950).
+- Preserve the adapter's returned PR URL, head SHA, and terminal outcome in
+  `BrokerService._fresh_publish` when `_record_terminal_and_seal_owner` fails and the
+  fallback `outcome_ambiguous_blocked` record is admitted, recording a durable
+  `PostAmbiguityObservation` so both the initial handoff and retries require
+  `observed_landed` and forbid `attested_not_landed`; also distinguish non-generation
+  terminal write failures (`could not be recorded`) and returned `no_effect_terminal_proven`
+  evidence references on `ProviderEffectGenerationRefused` handoffs (agent-harness#1701).
 - Enforce `grok_tool_surface.bridged_to(prefix, proxy)` inside `_check_context` so
   standalone `verify_launch_context` binds every issued `LaunchContext` mark directly to
   the live namespace holder and proxy pair instead of relying solely on outer board-leg

@@ -796,8 +796,8 @@ def test_post_entry_refusal_is_not_a_provider_entry_refusal():
 class _ReturnThenFence(_CountingAdapter):
     """The provider call succeeds (a PR exists), then the fence fires before the record."""
 
-    def __init__(self, fence) -> None:
-        super().__init__()
+    def __init__(self, fence, **kwargs) -> None:
+        super().__init__(**kwargs)
         self._fence = fence
 
     def execute(self, request):
@@ -870,3 +870,379 @@ def test_execute_returned_then_terminal_refused_keeps_the_pr_url(tmp_path, monke
         _latch(repo).resume_active()
     _retry_promotes_to_rotation(publish, repo, handoff, adapter.calls)
     assert len(adapter.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1701 (F016): returned terminal refused, then ambiguity record
+# admitted; plus QB (non-fence terminal error wording) and QC (no-effect ref).
+# ---------------------------------------------------------------------------
+
+
+def test_terminal_refused_then_ambiguity_record_admitted_keeps_pr_url(tmp_path, monkeypatch):
+    """Probe QA: terminal write is fence-refused while DRAINING, ceremony resumes
+    ACTIVE before the except arm writes outcome_ambiguous_blocked -> durable
+    PostAmbiguityObservation preserves the PR URL and forbids attested_not_landed
+    on both this call and retries."""
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+    original = m.verbs.BrokerService._record_terminal_and_seal_owner
+
+    def wrapped(self, *args, **kwargs):
+        try:
+            return original(self, *args, **kwargs)
+        except m.live.WriterGenerationBlocked:
+            _latch(repo).resume_active()
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "_record_terminal_and_seal_owner", wrapped)
+    first = publish()
+    assert len(adapter.calls) == 1
+    request = adapter.calls[0]
+    pr_url = "https://gh/pr/1"
+
+    assert first["status"] == "publication_blocked", first
+    assert first["reason"] == "effect_observed_after_ambiguity", first
+    assert first["provider_call_made"] is True
+    obs = first["observed_after_ambiguity"]
+    assert obs["durable"] is True
+    assert obs["observed_state"] == "effect_terminal_observed"
+    assert obs["evidence_reference"] == pr_url
+    assert obs["head_sha"] == request.head_sha
+    handoff = first["handoff"]
+    assert handoff["next_step"] == "adjudicate_publication_by_partition_rotation"
+    assert handoff["required_disposition"] == "observed_landed"
+    assert handoff["forbidden_disposition"] == "attested_not_landed"
+    assert handoff["attestation_inputs"]["evidence_url"] == pr_url
+    assert handoff["attestation_inputs"]["observed_head"] == request.head_sha
+    assert pr_url in handoff["rotate_requires"]
+    assert "attested_not_landed is refused" in handoff["rotate_requires"]
+
+    # Retry replays the durable PostAmbiguityObservation and makes no second provider call.
+    retry = publish()
+    assert len(adapter.calls) == 1
+    assert retry["status"] == "publication_blocked", retry
+    assert retry["reason"] == "effect_observed_after_ambiguity", retry
+    assert retry["provider_call_made"] is False
+    retry_handoff = retry["handoff"]
+    assert retry_handoff["required_disposition"] == "observed_landed"
+    assert retry_handoff["forbidden_disposition"] == "attested_not_landed"
+    assert retry_handoff["attestation_inputs"]["evidence_url"] == pr_url
+
+
+def test_non_fence_terminal_error_then_fence_refuses_ambiguity_wording(tmp_path, monkeypatch):
+    """Probe QB: when the terminal write fails for a non-generation reason (ENOSPC)
+    and the fence then refuses the ambiguity record, the wording says the terminal
+    record 'could not be recorded' rather than 'refused by the generation fence'."""
+    import errno
+
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+
+    def enospc(self, *args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(m.verbs.BrokerService, "_record_terminal_and_seal_owner", enospc)
+    first = publish()
+    assert len(adapter.calls) == 1
+    pr_url = "https://gh/pr/1"
+    assert first["status"] == "publication_blocked", first
+    assert first["reason"] == "repository_publication_authority_refused"
+    assert first["pr_url"] == pr_url
+    handoff = first["handoff"]
+    assert handoff["execute_returned"] is True
+    assert handoff["pr_url"] == pr_url
+    source = handoff["next_step_source"]
+    assert f"the provider returned (PR {pr_url}) but its terminal record could not be recorded" in source
+    assert "terminal record was refused by the generation fence" not in source
+    assert "generation fence" in source and "outcome_ambiguous_blocked" in source
+
+
+def test_returned_no_effect_then_fence_carries_evidence_reference(tmp_path, monkeypatch):
+    """Probe QC: a returned no-effect terminal (result=None) is reported as no effect
+    with its evidence_reference rather than 'no pull request URL'."""
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(
+        lambda: _drain(repo_box[0]),
+        terminal_state="no_effect_terminal_proven",
+    )
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+
+    first = publish()
+    assert len(adapter.calls) == 1
+    assert first["status"] == "publication_blocked", first
+    assert first["reason"] == "repository_publication_authority_refused"
+    handoff = first["handoff"]
+    assert handoff["execute_returned"] is True
+    assert handoff["pr_url"] is None
+    assert handoff["terminal_state"] == "no_effect_terminal_proven"
+    assert handoff["evidence_reference"] == "github-observed"
+    source = handoff["next_step_source"]
+    assert "the provider returned (no effect (github-observed))" in source
+    assert "no pull request URL" not in source
+    assert "returned no effect (github-observed)" in handoff["attestation_evidence"]
+    assert "unknown outcome" not in handoff["attestation_evidence"]
+
+
+def test_qa_interruption_before_ambiguity_append_leaves_observation_durable_and_unrotatable(
+    tmp_path, monkeypatch,
+):
+    """Round-2 P1: observation is written BEFORE outcome_ambiguous_blocked under
+    one lock; interrupting right before the ambiguity append leaves the ledger
+    in provider_call_in_flight with the durable observation already on disk, so
+    even after promotion, rotation still refuses attested_not_landed."""
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+
+    original_seal = m.verbs.BrokerService._record_terminal_and_seal_owner
+
+    def wrapped_seal(self, *args, **kwargs):
+        try:
+            return original_seal(self, *args, **kwargs)
+        except m.live.WriterGenerationBlocked:
+            _latch(repo).resume_active()
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "_record_terminal_and_seal_owner", wrapped_seal)
+
+    original_append = m.evidence.BrokerEvidenceStore._append_locked
+
+    class _InterruptedBeforeAmbiguity(BaseException):
+        pass
+
+    def interrupt_on_ambiguity(self, record):
+        if record.state is m.evidence.TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED:
+            raise _InterruptedBeforeAmbiguity("simulated crash after observation write")
+        return original_append(self, record)
+
+    monkeypatch.setattr(m.evidence.BrokerEvidenceStore, "_append_locked", interrupt_on_ambiguity)
+
+    with pytest.raises(_InterruptedBeforeAmbiguity):
+        publish()
+
+    # The ambiguity row was NOT written yet (still provider_call_in_flight), AND
+    # the effect observation IS already durably on disk!
+    assert _evidence_states(repo) == ["provider_call_in_flight"]
+    store_root = _store_root(repo)
+    obs_rows = m.evidence.read_post_ambiguity_observations(store_root)
+    assert obs_rows and obs_rows is not m.evidence.UNREADABLE
+    key = next(iter(obs_rows))
+    assert m.live.post_ambiguity_effect_refusal(store_root, key) is not None
+
+    # Round-3 P2: retry through owner recovery completes the adapter-exception
+    # row referenced by the authenticated observation (not unsealed-adapter-start-owner)
+    # and replays the preserved PR URL on both the recovery retry and later retries.
+    monkeypatch.setattr(m.evidence.BrokerEvidenceStore, "_append_locked", original_append)
+    pr_url = "https://gh/pr/1"
+    for retry in (publish(), publish()):
+        assert len(adapter.calls) == 1
+        assert retry["status"] == "publication_blocked", retry
+        assert retry["reason"] == "effect_observed_after_ambiguity", retry
+        assert retry["provider_call_made"] is False
+        assert retry["observed_after_ambiguity"]["durable"] is True
+        assert retry["observed_after_ambiguity"]["evidence_reference"] == pr_url
+        handoff = retry["handoff"]
+        assert handoff["required_disposition"] == "observed_landed"
+        assert handoff["forbidden_disposition"] == "attested_not_landed"
+        assert handoff["attestation_inputs"]["evidence_url"] == pr_url
+    assert _evidence_states(repo) == ["provider_call_in_flight", "outcome_ambiguous_blocked"]
+    replayed = m.evidence.BrokerEvidenceStore(store_root).replay()[key]
+    assert replayed.evidence_reference == "adapter-exception"
+
+
+@pytest.mark.parametrize("fence_at", ["during_observation", "after_observation"])
+def test_qa_fence_during_observation_or_before_ambiguity_append_refuses_without_appending(
+    tmp_path, monkeypatch, fence_at,
+):
+    """Round-3 P1: WriterGenerationBlocked (an OSError subclass) during the
+    observation write or right before the ambiguity append must propagate rather
+    than being caught by ``except OSError`` and appending under a DRAINING latch."""
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+
+    original_seal = m.verbs.BrokerService._record_terminal_and_seal_owner
+
+    def wrapped_seal(self, *args, **kwargs):
+        try:
+            return original_seal(self, *args, **kwargs)
+        except m.live.WriterGenerationBlocked:
+            _latch(repo).resume_active()
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "_record_terminal_and_seal_owner", wrapped_seal)
+
+    original_obs_append = m.evidence.append_post_ambiguity_observation
+
+    def fenced_obs_append(root, observation, *, authorize=None, lock_held=False):
+        if fence_at == "during_observation":
+            _drain(repo)
+            return original_obs_append(root, observation, authorize=authorize, lock_held=lock_held)
+        out = original_obs_append(root, observation, authorize=authorize, lock_held=lock_held)
+        _drain(repo)
+        return out
+
+    monkeypatch.setattr(m.evidence, "append_post_ambiguity_observation", fenced_obs_append)
+
+    first = publish()
+    pr_url = "https://gh/pr/1"
+    assert len(adapter.calls) == 1
+    assert first["status"] == "publication_blocked", first
+    assert first["reason"] == "repository_publication_authority_refused", first
+    assert first["provider_call_made"] is True
+    assert first["pr_url"] == pr_url
+    assert _evidence_states(repo) == ["provider_call_in_flight"]
+
+    store_root = _store_root(repo)
+    obs_rows = m.evidence.read_post_ambiguity_observations(store_root)
+    if fence_at == "during_observation":
+        assert obs_rows == {}
+    else:
+        assert obs_rows and obs_rows is not m.evidence.UNREADABLE
+        # Once ACTIVE again, retrying through owner recovery completes the
+        # adapter-exception row and surfaces the saved PR URL immediately.
+        _latch(repo).resume_active()
+        retry = publish()
+        assert len(adapter.calls) == 1
+        assert retry["status"] == "publication_blocked", retry
+        assert retry["reason"] == "effect_observed_after_ambiguity", retry
+        assert retry["provider_call_made"] is False
+        assert retry["handoff"]["attestation_inputs"]["evidence_url"] == pr_url
+        assert retry["handoff"]["forbidden_disposition"] == "attested_not_landed"
+
+
+def test_qa_non_durable_observation_preserves_pr_url_and_warns_honestly(tmp_path, monkeypatch):
+    """Round-2 P2: when appending the post-ambiguity observation fails with
+    ENOSPC/EIO, the initial handoff still preserves the PR URL and head SHA,
+    marks observation_durable=False, and states honestly that retries/preflight
+    will not automatically enforce it."""
+    import errno
+
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+
+    original_seal = m.verbs.BrokerService._record_terminal_and_seal_owner
+
+    def wrapped_seal(self, *args, **kwargs):
+        try:
+            return original_seal(self, *args, **kwargs)
+        except m.live.WriterGenerationBlocked:
+            _latch(repo).resume_active()
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "_record_terminal_and_seal_owner", wrapped_seal)
+    monkeypatch.setattr(
+        m.evidence,
+        "append_post_ambiguity_observation",
+        lambda *a, **k: (_ for _ in ()).throw(OSError(errno.ENOSPC, "No space left on device")),
+    )
+
+    first = publish()
+    assert len(adapter.calls) == 1
+    pr_url = "https://gh/pr/1"
+    assert first["status"] == "publication_blocked", first
+    assert first["reason"] == "effect_observed_after_ambiguity", first
+    assert first["observed_after_ambiguity"]["durable"] is False
+    assert first["observed_after_ambiguity"]["evidence_reference"] == pr_url
+    handoff = first["handoff"]
+    assert handoff["observation_durable"] is False
+    assert handoff["attestation_inputs"]["evidence_url"] == pr_url
+    assert "could not be recorded durably" in handoff["rotate_requires"]
+    assert "attested_not_landed is refused for this key" not in handoff["rotate_requires"]
+
+
+def test_qa_transient_unreadable_observation_during_owner_recovery_is_retryable(
+    tmp_path, monkeypatch,
+):
+    """Round-4 P2: a transient EIO when reading post-ambiguity-observations.jsonl
+    during owner recovery must refuse retryably WITHOUT appending
+    unsealed-adapter-start-owner, so the next retry (after read recovery) completes
+    adapter-exception and surfaces the saved PR URL."""
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _ReturnThenFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+
+    original_seal = m.verbs.BrokerService._record_terminal_and_seal_owner
+
+    def wrapped_seal(self, *args, **kwargs):
+        try:
+            return original_seal(self, *args, **kwargs)
+        except m.live.WriterGenerationBlocked:
+            _latch(repo).resume_active()
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "_record_terminal_and_seal_owner", wrapped_seal)
+
+    original_append = m.evidence.BrokerEvidenceStore._append_locked
+
+    class _InterruptedBeforeAmbiguity(BaseException):
+        pass
+
+    def interrupt_on_ambiguity(self, record):
+        if record.state is m.evidence.TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED:
+            raise _InterruptedBeforeAmbiguity("simulated crash after observation write")
+        return original_append(self, record)
+
+    monkeypatch.setattr(m.evidence.BrokerEvidenceStore, "_append_locked", interrupt_on_ambiguity)
+
+    with pytest.raises(_InterruptedBeforeAmbiguity):
+        publish()
+
+    monkeypatch.setattr(m.evidence.BrokerEvidenceStore, "_append_locked", original_append)
+    assert _evidence_states(repo) == ["provider_call_in_flight"]
+
+    # Inject a single transient UNREADABLE (as from EIO) on the recovery read.
+    original_read = m.evidence.read_post_ambiguity_observations
+    injected = {"done": False}
+
+    def transient_unreadable(root):
+        if not injected["done"]:
+            injected["done"] = True
+            return m.evidence.UNREADABLE
+        return original_read(root)
+
+    monkeypatch.setattr(m.evidence, "read_post_ambiguity_observations", transient_unreadable)
+
+    blocked = publish()
+    assert len(adapter.calls) == 1
+    assert blocked["status"] == "publication_blocked", blocked
+    assert blocked["reason"] == "repository_publication_authority_refused", blocked
+    assert blocked["provider_call_made"] is False
+    assert blocked["handoff"]["next_step"] == RETRY_ONCE_STEP, blocked["handoff"]
+    expected_filename = m.evidence.POST_AMBIGUITY_OBSERVATIONS_FILENAME
+    assert expected_filename in blocked["handoff"]["next_step_source"]
+    assert expected_filename in blocked["handoff"]["resume"]
+    assert expected_filename in blocked["handoff"]["attestation_evidence"]
+    # Critically: no ambiguity row was appended while the side file was unreadable.
+    assert _evidence_states(repo) == ["provider_call_in_flight"]
+
+    # Once reads recover, the next retry completes adapter-exception and replays the PR URL.
+    pr_url = "https://gh/pr/1"
+    recovered = publish()
+    assert len(adapter.calls) == 1
+    assert recovered["status"] == "publication_blocked", recovered
+    assert recovered["reason"] == "effect_observed_after_ambiguity", recovered
+    assert recovered["provider_call_made"] is False
+    assert recovered["observed_after_ambiguity"]["durable"] is True
+    assert recovered["observed_after_ambiguity"]["evidence_reference"] == pr_url
+    assert recovered["handoff"]["attestation_inputs"]["evidence_url"] == pr_url
+    assert recovered["handoff"]["forbidden_disposition"] == "attested_not_landed"
+    store_root = _store_root(repo)
+    key = next(iter(original_read(store_root)))
+    assert m.evidence.BrokerEvidenceStore(store_root).replay()[key].evidence_reference == "adapter-exception"
