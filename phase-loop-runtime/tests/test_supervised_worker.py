@@ -1043,7 +1043,7 @@ def test_target_ref_links_refuse_before_capture(worker_case, relative):
 
 
 @pytest.mark.parametrize("header", ["rename from", "rename to", "copy from", "copy to"])
-@pytest.mark.parametrize("path", [".git/config", "../outside", "/absolute"])
+@pytest.mark.parametrize("path", [".git/config", "../outside", '"../outside"', "/absolute"])
 def test_extended_proposal_paths_are_normalized(worker_case, header, path):
     proposal = f"diff --git a/file b/file\n{header} {path}\n".encode()
     worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(proposal) + ")\n")
@@ -1276,3 +1276,188 @@ def test_v2_final_recheck_source_control(v2_operator, monkeypatch, mutated):
         with pytest.raises(AssertionError): assertion()
     else:
         assertion()
+
+
+def test_unified_diff_hunk_line_counts_and_removed_dashes(worker_case):
+    # Consiliency/agent-harness#1960 item 1: removed lines starting with '-- ' (producing
+    # '--- ...' inside a hunk) must not be misparsed as file headers, while headers
+    # immediately after a completed hunk must still be validated.
+    valid = (
+        b"diff --git a/file b/file\n"
+        b"--- a/file\n"
+        b"+++ b/file\n"
+        b"@@ -1,2 +1,2 @@\n"
+        b"--- not-a-header\n"
+        b"\\ No newline at end of file\n"
+        b" ctx\n"
+        b"+++ also-not-a-header\n"
+    )
+    worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(valid) + ")\n")
+    ok = run(worker_case)
+    assert ok.proposal.status == "returned"
+    assert [row.path for row in ok.proposal.baselines] == ["file"]
+
+    trailing_escape = (
+        b"diff --git a/file b/file\n"
+        b"--- a/file\n"
+        b"+++ b/file\n"
+        b"@@ -1 +1 @@\n"
+        b"-old\n"
+        b"+new\n"
+        b"--- /etc/passwd\n"
+        b"+++ b/file\n"
+    )
+    worker_case.envelope["attempt_id"] += "-after-hunk"
+    worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(trailing_escape) + ")\n")
+    assert run(worker_case).proposal.status == "withheld_malformed"
+
+    truncated_hunk = (
+        b"diff --git a/file b/file\n"
+        b"--- a/file\n"
+        b"+++ b/file\n"
+        b"@@ -1,3 +1,1 @@\n"
+        b"-old\n"
+        b"+new\n"
+    )
+    worker_case.envelope["attempt_id"] += "-truncated"
+    worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(truncated_hunk) + ")\n")
+    assert run(worker_case).proposal.status == "withheld_malformed"
+
+
+def test_w1_group_reclaim_kills_same_group_grandchild_holding_stdout(worker_case):
+    # Consiliency/agent-harness#1960 item 3 (W1): same-group grandchild holding stdout open
+    # is killed on leader exit by group reclaim so streams complete well before timeout.
+    import ctypes
+    import signal
+
+    case = worker_case
+    pidfile = case.root / "grandchild.pid"
+    proposal = b"diff --git a/file b/file\n--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new\n"
+    case.executable.write_text(
+        "#!/usr/bin/python3\n"
+        "import os, time\n"
+        "r_fd, w_fd = os.pipe()\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.close(r_fd)\n"
+        f"    open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        "    os.write(w_fd, b'1')\n"
+        "    os.close(w_fd)\n"
+        "    time.sleep(30)\n"
+        "    os._exit(0)\n"
+        "os.close(w_fd)\n"
+        "os.read(r_fd, 1)\n"
+        "os.close(r_fd)\n"
+        f"os.write(1, {proposal!r})\n"
+    )
+    case.executable.chmod(0o700)
+    case.envelope["launch_inputs"]["timeout"] = 5
+
+    library = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    assert library.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0
+    assert library.prctl(36, 1, 0, 0, 0) == 0
+    grandchild_pid = None
+    try:
+        result = run(case)
+        grandchild_pid = int(pidfile.read_text())
+        assert result.state == "finished" and result.termination.reason == "completed"
+        assert result.proposal.status == "returned"
+        # Reap the reparented grandchild killed by process-group SIGKILL; it must already be dead.
+        waited_pid, _status = os.waitpid(grandchild_pid, 0)
+        assert waited_pid == grandchild_pid
+        with pytest.raises(ProcessLookupError):
+            os.kill(grandchild_pid, 0)
+        grandchild_pid = None
+    finally:
+        if grandchild_pid is not None:
+            try:
+                os.kill(grandchild_pid, signal.SIGKILL)
+                os.waitpid(grandchild_pid, 0)
+            except ChildProcessError:
+                pass
+            except ProcessLookupError:
+                pass
+        assert library.prctl(36, previous.value, 0, 0, 0) == 0
+
+
+def test_w4_open_journal_root_refusal_stops_without_side_effects(worker_case, monkeypatch):
+    # Consiliency/agent-harness#1960 item 3 (W4): JournalRefused from open_journal_root.
+    called = []
+    monkeypatch.setattr(rs, "open_journal_root", lambda *a, **k: rs.JournalRefused("synthetic_root_refused"))
+    monkeypatch.setattr(rs, "reserve_attempt", lambda *a, **k: called.append("reserve"))
+    monkeypatch.setattr(rs, "open_writer", lambda *a, **k: called.append("writer"))
+    monkeypatch.setattr(worker, "run_bounded_capture", lambda *a, **k: called.append("spawn"))
+
+    result = run(worker_case)
+    assert result.state == "refused" and result.refusal == "synthetic_root_refused"
+    assert result.worker_invocations == 0 and result.journal_anchor is None and result.journal_complete
+    assert not called
+    assert not (worker_case.state / "evidence").exists()
+    assert not (worker_case.state / "launchers").exists()
+
+
+def test_w10_repeat_cancel_while_attempt_nonterminal(worker_case):
+    # Consiliency/agent-harness#1960 item 3 (W10): repeating cancel_attempt while the
+    # attempt is still nonterminal returns cancel_pending then cancelled once terminal.
+    import time
+
+    case = worker_case
+    case.config.template_path.write_text('["{executable}", "wait"]')
+    process, commands = _start_launcher(case, mode="queued")
+    try:
+        root = _await_state(case, "queued")
+        deadline = time.monotonic() + 5
+        while not (case.root / "ready").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert (case.root / "ready").exists()
+        first = worker.cancel_attempt(
+            state_root=case.state, attempt_id=case.envelope["attempt_id"],
+            launcher_commands=commands, wait_seconds=0.05,
+        )
+        assert first == "cancel_pending"
+        assert projection.attempt_status(root, case.envelope["attempt_id"]).state == "queued"
+        second = worker.cancel_attempt(
+            state_root=case.state, attempt_id=case.envelope["attempt_id"],
+            launcher_commands=commands, wait_seconds=5,
+        )
+        assert second == "cancelled"
+        _finish_launcher(process)
+        record = json.loads((case.root / "result.json").read_bytes())
+        assert record["state"] == "refused" and record["refusal"] == "cancelled_before_start"
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            _finish_launcher(process)
+
+
+def test_w12_first_attempt_evidence_survives_retry(worker_case):
+    # Consiliency/agent-harness#1960 item 3 (W12): first attempt's sealed evidence and
+    # proposal bytes remain intact and resolvable after a retry attempt completes.
+    case = worker_case
+    first = run(case)
+    assert first.state == "finished" and first.proposal.status == "returned"
+    first_dir = case.state / "evidence" / worker._run(first.identity)
+    first_evidence = (first_dir / "evidence.json").read_bytes()
+    first_proposal = (first_dir / "proposal.bin").read_bytes()
+    first_jid = rs.AttemptIdentity(
+        first.identity.assignment_digest, first.identity.envelope_digest,
+        first.identity.run_id, first.identity.attempt_id,
+    )
+    first_ref = rs.Ref("proposal_bytes", first.proposal.proposal_bytes_digest, None)
+
+    case.envelope["attempt_id"] += "-retry"
+    second = run(case)
+    assert second.state == "finished" and second.proposal.status == "returned"
+    assert worker._run(first.identity) != worker._run(second.identity)
+
+    assert (first_dir / "evidence.json").read_bytes() == first_evidence
+    assert (first_dir / "proposal.bin").read_bytes() == first_proposal
+    resolver = worker.evidence_resolver(case.state)
+    assert resolver(first_jid, first_ref) == "present"
+    second_jid = rs.AttemptIdentity(
+        second.identity.assignment_digest, second.identity.envelope_digest,
+        second.identity.run_id, second.identity.attempt_id,
+    )
+    second_ref = rs.Ref("proposal_bytes", second.proposal.proposal_bytes_digest, None)
+    assert resolver(second_jid, second_ref) == "present"
