@@ -98,7 +98,48 @@ def private_record_root() -> Path:
     return state_home() / "agent-harness" / "seat-records"
 
 
-def write_private_record(name: str, record: Mapping[str, object], *, root: Path | None = None) -> Path:
+def _prune_private_records_in_fd(
+    directory: int,
+    *,
+    prefix: str,
+    keep: int,
+    exclude_name: str,
+    uid: int,
+) -> None:
+    """Bound ``<prefix>*.json`` retention relative to an already-verified directory fd."""
+    if keep < 1 or not prefix or "/" in prefix or "\\" in prefix:
+        return
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return
+    candidates: list[tuple[int, str]] = []
+    for entry_name in names:
+        if entry_name == exclude_name or not (entry_name.startswith(prefix) and entry_name.endswith(".json")):
+            continue
+        try:
+            entry_info = os.stat(entry_name, dir_fd=directory, follow_symlinks=False)
+        except OSError:
+            continue
+        if not stat.S_ISREG(entry_info.st_mode) or entry_info.st_uid != uid:
+            continue
+        candidates.append((entry_info.st_mtime_ns, entry_name))
+    candidates.sort(reverse=True)
+    for _mtime, old_name in candidates[keep - 1:]:
+        try:
+            os.unlink(old_name, dir_fd=directory)
+        except OSError:
+            pass
+
+
+def write_private_record(
+    name: str,
+    record: Mapping[str, object],
+    *,
+    root: Path | None = None,
+    prune_prefix: str | None = None,
+    keep: int | None = None,
+) -> Path:
     """Persist a closed-field operator record using descriptor-checked storage."""
     root = private_record_root() if root is None else Path(root)
     if not root.is_absolute() or Path(name).name != name or not name.endswith(".json"):
@@ -137,6 +178,14 @@ def write_private_record(name: str, record: Mapping[str, object], *, root: Path 
             os.fsync(fd)
         finally:
             os.close(fd)
+        if prune_prefix is not None and keep is not None:
+            _prune_private_records_in_fd(
+                directory,
+                prefix=prune_prefix,
+                keep=keep,
+                exclude_name=name,
+                uid=os.getuid(),
+            )
         os.fsync(directory)
     finally:
         os.close(directory)
