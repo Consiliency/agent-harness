@@ -143,7 +143,7 @@
     "claude_route": "claude_channel",
     "claude_route_reason": "explicit_channel",
     "claude_route_warnings": [
-      "session_model_unbound: the claude-channel `send` transport does not bind `--model`; the run inherits the operator's ambient claude session model. `selected_model` records the INTENDED tier model, NOT a launch-bound one (a send cannot rebind an existing session)."
+      "session_model_unbound: the claude-channel `send` transport binds neither `--model` nor `--effort`; the run inherits the operator's ambient claude session model and effort. `selected_model` and the recorded effort fields (`selected_effort`, `requested_effort`, `policy_effort`, `effective_effort`) record the INTENDED tier settings, NOT launch-bound ones (a send cannot rebind an existing session)."
     ],
     "claude_sidecar_url": "http://127.0.0.1:8765",
     "claude_team_policy": {

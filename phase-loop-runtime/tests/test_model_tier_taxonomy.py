@@ -364,11 +364,22 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
 
         # Production-default channel route resolved for an execute action.
         self.assertEqual(spec.claude_route, "claude_channel")
-        # The `send` transport binds NO --model (print/agent_view routes DO).
+        # The `send` transport binds neither --model nor --effort (print/agent_view routes DO).
         self.assertNotIn("--model", spec.command)
-        # Provenance: selected_model is the INTENDED tier model, explicitly stamped unbound.
+        self.assertNotIn("--effort", spec.command)
+        # Provenance: selected_model and recorded effort fields are INTENDED tier settings,
+        # explicitly stamped unbound (agent-harness#1710).
         self.assertEqual(spec.selected_model, "claude-sonnet-5-5")
+        self.assertEqual(spec.selected_effort, "medium")
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, spec.claude_route_warnings)
+        self.assertTrue(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING.startswith("session_model_unbound:"))
+        for token in ("--model", "--effort", "selected_model", "selected_effort",
+                      "requested_effort", "policy_effort", "effective_effort"):
+            self.assertIn(token, _CHANNEL_SESSION_MODEL_UNBOUND_WARNING)
+        spec_json = spec.to_json()
+        for effort_key in ("selected_effort", "requested_effort", "policy_effort", "effective_effort"):
+            self.assertEqual(spec_json.get(effort_key), "medium")
+        self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, spec_json.get("claude_route_warnings", []))
 
         # CR round-6 blocker C: the stamp must reach the DURABLE record (LaunchResult
         # .event_metadata — the EVENT layer), not only the spec. Route through the PRODUCTION
@@ -383,6 +394,9 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
         result = _result_with_spec(base, spec)
         md = result.event_metadata()
         self.assertEqual(md.get("selected_model"), "claude-sonnet-5-5")
+        self.assertEqual(md.get("requested_effort"), "medium")
+        self.assertEqual(md.get("policy_effort"), "medium")
+        self.assertEqual(md.get("effective_effort"), "medium")
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, md.get("claude_route_warnings", []))
 
     def test_channel_run_persisted_launch_json_carries_the_stamp(self):
@@ -427,8 +441,9 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
                 else:
                     os.environ[k] = v
 
-        # The persisted artifact records selected_model AND the route + unbound caveat.
+        # The persisted artifact records selected_model and selected_effort AND the route + unbound caveat.
         self.assertEqual(launch_json.get("selected_model"), "claude-sonnet-5-5")
+        self.assertEqual(launch_json.get("selected_effort"), "medium")
         self.assertEqual(launch_json.get("claude_route"), "claude_channel")
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, launch_json.get("claude_route_warnings", []))
 
