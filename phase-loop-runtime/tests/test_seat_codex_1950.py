@@ -25,7 +25,9 @@ import errno
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -1039,3 +1041,436 @@ def test_run_probe_in_jail_closes_owned_dependency_on_setup_failure_and_keeps_bo
     with pytest.raises(RuntimeError, match="boom during jail build"):
         seat_jail_qualification._run_probe_in_jail("codex", tmp_path / "p2", None, 1, "print(1)")
     assert closed_borrowed == []
+
+
+# ---------------------------------------------------------------------------
+# 7. Round 1 review regression pins (Findings 1-4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", ["output_file", "auth_refresh", "live_stdout", "clean_deadline"])
+def test_exec_jailed_codex_real_liveness_latch_cancel_preserves_containment_readbacks(
+    tmp_path, monkeypatch, case,
+):
+    """Real _run_leg_with_liveness + _ProviderQuiescenceLatch cancel must still read back
+    seat output/auth and report containment refusals before cancelling or raising."""
+    seat = prepare(tmp_path / case, monkeypatch)
+    local_reads(monkeypatch)
+    ready = tmp_path / f"ready-{case}"
+    secret = seat.codex_copy.secrets[0]
+    out_file = seat.seat_dir / "seat-out/panel-codex.txt"
+    auth_file = seat.seat_dir / "seat-home/.codex/auth.json"
+
+    if case == "output_file":
+        body = (
+            f"open({str(out_file)!r}, 'wb').write({secret!r}); "
+            f"open({str(ready)!r}, 'w').write('ok'); "
+            "import time; time.sleep(30)"
+        )
+    elif case == "auth_refresh":
+        body = (
+            f"open({str(auth_file)!r}, 'w').write('{{}}'); "
+            f"open({str(ready)!r}, 'w').write('ok'); "
+            "import time; time.sleep(30)"
+        )
+    elif case == "live_stdout":
+        body = (
+            f"import sys, time; sys.stdout.buffer.write({secret!r} + b'\\n'); sys.stdout.buffer.flush(); "
+            f"open({str(ready)!r}, 'w').write('ok'); "
+            "time.sleep(30)"
+        )
+    else:
+        body = (
+            f"open({str(ready)!r}, 'w').write('ok'); "
+            "import time; time.sleep(30)"
+        )
+
+    def launch(argv, **kwargs):
+        return subprocess.Popen(
+            [sys.executable, "-c", body],
+            stdin=kwargs["stdin"],
+            stdout=kwargs["stdout"],
+            stderr=kwargs["stderr"],
+            start_new_session=True,
+        )
+
+    monkeypatch.setattr(pi, "launch_provider", launch)
+    latch = pi._ProviderQuiescenceLatch()
+
+    def trigger_cancel():
+        deadline = time.monotonic() + 5.0
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if case == "live_stdout":
+            time.sleep(0.05)
+        latch.cancel()
+
+    canceller = threading.Thread(target=trigger_cancel, daemon=True)
+    canceller.start()
+    sink: list[pi._LegFailure] = []
+    try:
+        if case == "clean_deadline":
+            with pytest.raises(pi._ReviewOperationCancelled):
+                pi._exec_jailed_codex_leg(
+                    seat, deadline_s=20, model="gpt-5.4", prompt="review",
+                    broker_evidence={}, failure_detail_sink=sink, quiescence_latch=latch,
+                )
+        else:
+            status, review = pi._exec_jailed_codex_leg(
+                seat, deadline_s=20, model="gpt-5.4", prompt="review",
+                broker_evidence={}, failure_detail_sink=sink, quiescence_latch=latch,
+            )
+            expected = (
+                "codex_seat_token_refreshed_in_jail"
+                if case == "auth_refresh"
+                else "codex_seat_token_in_output"
+            )
+            assert (status, review) == ("DEGRADED", "")
+            assert sink and sink[-1].template == expected
+    finally:
+        canceller.join(timeout=5)
+
+
+def test_default_spawn_bounded_codex_passes_board_cancel_event_to_broker(tmp_path, monkeypatch):
+    """Bounded jailed Codex legs (review_monitor=None) must forward _BOARD_CANCEL to the broker."""
+    monkeypatch.setattr(pi, "_gc_stale_panel_scratch", lambda: None)
+    released = []
+    lease = SimpleNamespace(seat_id=7, release=lambda: released.append(True))
+    route = SimpleNamespace(jailed=True, lease=lease)
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (route, [], None))
+    monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda _: 42)
+    monkeypatch.setattr(
+        pi._seat_egress_proxy, "start_proxy",
+        lambda **k: contextlib.nullcontext(SimpleNamespace(socket="fixture", proxy_url="fixture")),
+    )
+    monkeypatch.setattr(pi._seat_egress_proxy, "egress_evidence", lambda _: {})
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network", lambda **k: contextlib.nullcontext(("fixture",)))
+    monkeypatch.setattr(pi._sandbox_egress, "enforcement_report", lambda **k: {})
+    monkeypatch.setattr(pi._sandbox_egress, "egress_required", lambda: False)
+    monkeypatch.setattr(pi._sandbox_policy, "ensure_staging_space", lambda *a, **k: None)
+    monkeypatch.setattr(pi._sandbox_retention, "mark_as_sandbox", lambda *a, **k: None)
+
+    def staged(repo, review):
+        tree = Path(review) / "pl-panel-stage-fixture"
+        (tree / ".git").mkdir(parents=True)
+        (tree / ".git/phase-loop-source-commit").write_text("c" * 40)
+        return tree
+
+    monkeypatch.setattr(pi._review_stage, "stage_review_tree", staged)
+    monkeypatch.setattr(
+        pi._sandbox_policy, "select_sandbox_root",
+        lambda **k: pi._sandbox_policy.SandboxRootChoice(host=None, path=k["fallback"], fell_back=False, reason=""),
+    )
+    monkeypatch.setattr(pi, "_bind_route_qualification", lambda seat, route: seat)
+    monkeypatch.setattr(pi, "_prepare_jailed_codex", lambda *a, **k: SimpleNamespace(notices=[]))
+    monkeypatch.setattr(pi, "_exec_jailed_codex_leg", lambda *a, **k: ("UNAVAILABLE", ""))
+
+    board_cancel = threading.Event()
+    observed_cancel_events = []
+
+    class FakeBroker:
+        def __init__(self, *args, **kwargs):
+            self.evidence: dict[str, object] = {}
+            self._cancel_event = threading.Event()
+            self._shutdown_disposition: str | None = None
+
+        def run_credentialless_client(self, adapter, *, deadline_s=None, cancel_event=None):
+            observed_cancel_events.append((deadline_s, cancel_event))
+            assert cancel_event is board_cancel
+            board_cancel.set()
+            self._cancel_event = cancel_event
+            self._shutdown_disposition = "operation_cancelled"
+            adapter.cancel()
+            adapter.invoke()
+            self.evidence["broker_failure_disposition"] = "operation_cancelled"
+            raise ValueError("credentialless broker client failed: broker operation cancelled or closed")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pi, "ParentUnixBroker", FakeBroker)
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi._advisor_board_backing, "_revalidate_staged_tree", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pi, "derive_review_leg_authorization",
+        lambda *a, **k: SimpleNamespace(expires_monotonic_ns=time.monotonic_ns() + 10**12),
+    )
+    monkeypatch.setattr(pi, "harden_subscription_model", lambda leg, model, effort=None: model)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda _p: tmp_path)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a: (False, "missing_claude_cli"))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    token = pi._BOARD_CANCEL.set(board_cancel)
+    try:
+        spawned = pi._default_spawn(
+            "codex", "ARTIFACT", mode="review", model="m",
+            review_authorization=SimpleNamespace(staged_tree_sha256="a" * 64),
+            canonical_repo_authority=tmp_path,
+        )
+    finally:
+        pi._BOARD_CANCEL.reset(token)
+
+    assert len(observed_cancel_events) == 1
+    assert observed_cancel_events[0][0] is not None
+    assert observed_cancel_events[0][1] is board_cancel
+    assert spawned[0] == "UNAVAILABLE"
+    assert spawned[1] == ""
+    assert isinstance(spawned[2], pi._LegFailure)
+    assert spawned[2].template == "review_operation_cancelled"
+    assert released == [True]
+
+
+@pytest.mark.parametrize("trigger", ["cancelled", "deadline"])
+def test_await_client_captures_already_exited_abnormal_status_end_to_end(tmp_path, monkeypatch, trigger):
+    """If the client already exited non-zero before cleanup signals it, _await_client must
+    capture exit_status so the broker never assigns a clean typed disposition."""
+    class AlreadyDeadProc:
+        def __init__(self) -> None:
+            self.pid = os.getpid()
+            self.returncode = 2
+            self.stdin = None
+            self.stdout = None
+            self.stderr = None
+
+        def poll(self):
+            return 2
+
+        def communicate(self, *args, **kwargs):
+            return (b"", b"")
+
+    proc = AlreadyDeadProc()
+    wait = advisor_backing._await_client(
+        proc,
+        b"req",
+        failed=lambda: False,
+        cancelled=lambda: trigger == "cancelled",
+        started=0.0,
+        deadline_s=None if trigger == "cancelled" else 1.0,
+        clock=lambda: 100.0,
+        clock_ns=lambda: 123456,
+    )
+    assert wait.exit_status == 2
+    assert wait.exit_ns == 123456
+    assert (wait.cancelled if trigger == "cancelled" else wait.timed_out) is True
+
+    # Also verify end-to-end through run_credentialless_client with the real _await_client.
+    live_cancel = threading.Event()
+    broker = _run_mocked_broker_client(
+        tmp_path,
+        monkeypatch,
+        wait_result=wait,  # replaced below by real _await_client
+        returncode=2,
+        cancel_event=live_cancel if trigger == "cancelled" else None,
+        deadline_s=None if trigger == "cancelled" else 0.05,
+    )
+    real_await = advisor_backing._await_client
+    monkeypatch.undo()  # undo only? No: re-bind cleanly via explicit real_await below.
+    # Re-create fresh broker with real _await_client (not stubbed).
+    broker.close()
+    repo = tmp_path / "e2e-repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("hi\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    stage = tmp_path / "e2e-stage"
+    stage.mkdir()
+    bundle = stage / "review-bundle.md"
+    instructions = stage / "review-instructions.md"
+    bundle.write_text("bundle\n", encoding="utf-8")
+    instructions.write_text("instructions\n", encoding="utf-8")
+    bundle.chmod(0o444)
+    instructions.chmod(0o444)
+    import hashlib
+
+    now_ns = time.monotonic_ns()
+    auth = advisor_backing.ReviewLegAuthorization(
+        operation="op-e2e",
+        purpose="review",
+        input_sha256=hashlib.sha256(bundle.read_bytes()).hexdigest(),
+        instructions_sha256=hashlib.sha256(instructions.read_bytes()).hexdigest(),
+        canonical_repo_sha256=advisor_backing._canonical_repo_digest(repo),
+        broker_contract=advisor_backing.PARENT_UNIX_BROKER_V1,
+        harness="codex",
+        model="gpt-5.4",
+        issued_monotonic_ns=now_ns,
+        expires_monotonic_ns=now_ns + 60_000_000_000,
+        _seal=advisor_backing._AUTHORIZATION_SEAL,
+        monitoring_policy="heartbeat_only" if trigger == "cancelled" else "bounded",
+    )
+    lease = (
+        SimpleNamespace(
+            lock=threading.Lock(), active=True, closed=False, cancel_event=live_cancel,
+        )
+        if trigger == "cancelled"
+        else None
+    )
+    advisor_backing._remember_leg_claim(auth, lease)
+    broker2 = advisor_backing.ParentUnixBroker(
+        authorization=auth,
+        harness="codex",
+        model="gpt-5.4",
+        staged_dir=stage,
+        canonical_repo=repo,
+    )
+
+    class FakeWitness:
+        info_fd = 10
+        block_fd = 11
+
+        def abandon(self):
+            pass
+
+        def complete(self, *args, **kwargs):
+            pass
+
+    from phase_loop_runtime import provider_tree_proof
+
+    monkeypatch.setattr(provider_tree_proof, "BwrapLaunch", FakeWitness)
+    monkeypatch.setattr(advisor_backing.subprocess, "Popen", lambda *a, **k: AlreadyDeadProc())
+    monkeypatch.setattr(pi, "_terminate_process_group", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_tree_quiescent", lambda *a, **k: True)
+    monkeypatch.setattr(broker2, "serve_once", lambda *a, **k: None)
+    base_time = time.monotonic()
+    calls = [0]
+
+    def fake_monotonic():
+        calls[0] += 1
+        return base_time if calls[0] == 1 else base_time + 100.0
+
+    if trigger == "cancelled":
+        def trigger_cancel_await(*args, **kwargs):
+            live_cancel.set()
+            return real_await(*args, **kwargs)
+
+        monkeypatch.setattr(advisor_backing, "_await_client", trigger_cancel_await)
+    else:
+        monkeypatch.setattr(advisor_backing.time, "monotonic", fake_monotonic)
+
+    adapter = advisor_backing._make_broker_inference_adapter(
+        lambda: ("OK", "done"), lambda: None, lambda: True,
+    )
+    try:
+        with pytest.raises(ValueError, match="credentialless broker client failed"):
+            broker2.run_credentialless_client(
+                adapter,
+                deadline_s=None if trigger == "cancelled" else 1.0,
+                cancel_event=live_cancel if trigger == "cancelled" else None,
+            )
+        assert "broker_failure_disposition" not in broker2.evidence
+    finally:
+        broker2.close()
+
+
+@pytest.mark.parametrize("disposition", ["operation_cancelled", "deadline_exceeded"])
+def test_broker_recv_request_frame_distinguishes_local_shutdown_from_peer_truncation(disposition):
+    """Local typed shutdown during recv() raises _BrokerShutdownStop cleanly; peer EOF before
+    local shutdown (including racing with _conn_lock) stays ValueError('truncated broker frame');
+    untyped shutdown exits with OSError."""
+    # 1. Local typed shutdown while server is waiting for request bytes -> _BrokerShutdownStop
+    broker = _make_stub_broker()
+    now_ns = time.monotonic_ns()
+    auth = advisor_backing.ReviewLegAuthorization(
+        operation="op-recv",
+        purpose="review",
+        input_sha256="0" * 64,
+        instructions_sha256="0" * 64,
+        canonical_repo_sha256="0" * 64,
+        broker_contract=advisor_backing.PARENT_UNIX_BROKER_V1,
+        harness="codex",
+        model="gpt-5.4",
+        issued_monotonic_ns=now_ns,
+        expires_monotonic_ns=now_ns + 60_000_000_000,
+        _seal=advisor_backing._AUTHORIZATION_SEAL,
+        monitoring_policy="bounded",
+    )
+    advisor_backing._remember_leg_claim(auth, None)
+    broker.authorization = auth
+
+    server_sock, peer_sock = socket.socketpair()
+    try:
+        broker._connection = server_sock
+
+        def wake():
+            time.sleep(0.05)
+            broker._wake_server(disposition=disposition)
+
+        t = threading.Thread(target=wake, daemon=True)
+        t.start()
+        try:
+            with pytest.raises(advisor_backing._BrokerShutdownStop):
+                broker._recv_request_frame(server_sock, 4096)
+        finally:
+            t.join(timeout=2)
+    finally:
+        server_sock.close()
+        peer_sock.close()
+
+    # 2. Peer closes socket (truncating request) BEFORE local shutdown -> ValueError('truncated broker frame')
+    broker2 = _make_stub_broker()
+    broker2.authorization = auth
+    server_sock2, peer_sock2 = socket.socketpair()
+    try:
+        broker2._connection = server_sock2
+        peer_sock2.close()
+        with pytest.raises(ValueError, match="truncated broker frame"):
+            broker2._recv_request_frame(server_sock2, 4096)
+    finally:
+        server_sock2.close()
+
+    # 3. Peer EOF inside recv() racing with _wake_server(disposition=...) waiting on _conn_lock
+    broker3 = _make_stub_broker()
+    broker3.authorization = auth
+    in_recv = threading.Event()
+    waker_started = threading.Event()
+
+    class RacingTruncatedSocket:
+        def setblocking(self, flag: bool) -> None:
+            pass
+
+        def recv(self, size: int) -> bytes:
+            in_recv.set()
+            assert waker_started.wait(timeout=2)
+            time.sleep(0.05)
+            return b""
+
+        def shutdown(self, how: int) -> None:
+            pass
+
+    conn3 = RacingTruncatedSocket()
+    broker3._connection = conn3
+
+    def wake3():
+        assert in_recv.wait(timeout=2)
+        waker_started.set()
+        broker3._wake_server(disposition=disposition)
+
+    t3 = threading.Thread(target=wake3, daemon=True)
+    t3.start()
+    try:
+        with pytest.raises(ValueError, match="truncated broker frame"):
+            broker3._recv_request_frame(conn3, 4096)
+    finally:
+        t3.join(timeout=2)
+
+    # 4. Untyped shutdown exits with OSError
+    broker4 = _make_stub_broker()
+    broker4.authorization = auth
+    server_sock4, peer_sock4 = socket.socketpair()
+    try:
+        broker4._connection = server_sock4
+
+        def wake4():
+            time.sleep(0.05)
+            broker4._wake_server()
+
+        t4 = threading.Thread(target=wake4, daemon=True)
+        t4.start()
+        try:
+            with pytest.raises(OSError, match="broker stopping"):
+                broker4._recv_request_frame(server_sock4, 4096)
+        finally:
+            t4.join(timeout=2)
+    finally:
+        server_sock4.close()
+        peer_sock4.close()

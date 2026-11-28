@@ -15203,6 +15203,7 @@ def _exec_jailed_codex_leg(
     stdout_guard, stderr_guard = guard(0), guard(1)
     proc = None
     timed_out = False
+    latch_cancelled_exc: _ReviewOperationCancelled | None = None
     timeout_output = b""
     timeout_stderr = b""
     text = observed = b""
@@ -15253,6 +15254,8 @@ def _exec_jailed_codex_leg(
                 quiescence_latch=quiescence_latch, native_run=native_run,
                 **({"review_monitor": review_monitor} if review_monitor is not None else {}),
             )
+        except _ReviewOperationCancelled as exc:
+            latch_cancelled_exc = exc
         except subprocess.TimeoutExpired as exc:
             timed_out = True
             if isinstance(exc.output, bytes):
@@ -15321,6 +15324,8 @@ def _exec_jailed_codex_leg(
         if failure_detail_sink is not None:
             failure_detail_sink.append(_LegFailure(template="review_operation_cancelled"))
         return "UNAVAILABLE", ""
+    if latch_cancelled_exc is not None:
+        raise latch_cancelled_exc
     if timed_out:
         _note_exec_refusal_code("codex leg deadline exceeded")
         if failure_detail_sink is not None:
@@ -21426,10 +21431,15 @@ def _default_spawn(
                 )
                 _note_exec_stage("broker")
                 codex_disposition_result: tuple[str, _LegFailure] | None = None
+                broker_cancel_event = (
+                    review_monitor.cancel
+                    if review_monitor is not None
+                    else (_BOARD_CANCEL.get() if leg == "codex" and jailed else None)
+                )
                 try:
                     response, probe = broker.run_credentialless_client(
                         adapter, deadline_s=None if review_monitor is not None else float(leg_deadline),
-                        **({"cancel_event": review_monitor.cancel} if review_monitor is not None else {}),
+                        **({"cancel_event": broker_cancel_event} if broker_cancel_event is not None else {}),
                     )
                 except ProviderProcessGroupQuiescenceError:
                     raise

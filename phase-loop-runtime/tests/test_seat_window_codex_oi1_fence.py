@@ -336,9 +336,17 @@ def _is_codex_explicit_provider_guard(node: ast.stmt) -> bool:
     if not isinstance(node, ast.If) or node.orelse or len(node.body) != 1:
         return False
     body = node.body[0]
-    if not isinstance(body, ast.Raise) or not isinstance(body.exc, ast.Call):
-        return False
-    if not isinstance(body.exc.func, ast.Name) or body.exc.func.id != "QualificationError":
+    if (
+        not isinstance(body, ast.Raise)
+        or body.cause is not None
+        or not isinstance(body.exc, ast.Call)
+        or not isinstance(body.exc.func, ast.Name)
+        or body.exc.func.id != "QualificationError"
+        or body.exc.keywords
+        or len(body.exc.args) != 1
+        or not isinstance(body.exc.args[0], ast.Constant)
+        or type(body.exc.args[0].value) is not str
+    ):
         return False
     test = node.test
     if not isinstance(test, ast.BoolOp) or not isinstance(test.op, ast.And) or len(test.values) != 2:
@@ -393,3 +401,21 @@ def test_t4_seat_jail_qualification_is_unedited():
     old = subprocess.check_output(["git", "-C", str(REPO), "show", f"{base}:{FROZEN_REDUCER}"])
     assert _without_authorized_amendments((REPO / FROZEN_REDUCER).read_bytes()) == (
         _without_authorized_amendments(old))
+
+
+def test_t4_codex_explicit_provider_guard_rejects_executable_expressions():
+    allowed = ast.parse(
+        'if leg == "codex" and provider is not None:\n'
+        '    raise QualificationError("codex qualification does not accept an explicit provider override")\n'
+    ).body[0]
+    assert _is_codex_explicit_provider_guard(allowed) is True
+
+    for forbidden in (
+        'if leg == "codex" and provider is not None:\n    raise QualificationError(do_work())\n',
+        'if leg == "codex" and provider is not None:\n    raise QualificationError("msg") from other_work()\n',
+        'if leg == "codex" and provider is not None:\n    raise QualificationError(msg="msg")\n',
+        'if leg == "codex" and provider is not None:\n    raise QualificationError("a", "b")\n',
+        'if leg == "codex" and provider is not None:\n    raise QualificationError(123)\n',
+    ):
+        node = ast.parse(forbidden).body[0]
+        assert _is_codex_explicit_provider_guard(node) is False, forbidden

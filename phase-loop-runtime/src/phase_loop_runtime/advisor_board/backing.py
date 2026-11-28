@@ -435,6 +435,10 @@ class _BrokerCancelledError(ValueError):
     """Internal broker cancellation sentinel; subclasses ValueError for callers."""
 
 
+class _BrokerShutdownStop(Exception):
+    """Internal sentinel when a deliberate typed broker shutdown stops frame I/O."""
+
+
 class CredentiallessAdapterFailure(ValueError):
     """The credentialless client failed only because the adapter it served raised, while every
     independent broker check held (agent-harness#1823). The adapter's exception is its
@@ -527,9 +531,15 @@ def _await_client(
                                          elapsed_s=clock() - started, deadline_s=deadline_s)
         if decision == "cancelled":
             wait.cancelled = True
+            rc = proc.poll()
+            if rc is not None:
+                wait.exit_status, wait.exit_ns = rc, clock_ns()
             return wait
         if decision == "deadline":
             wait.timed_out = True
+            rc = proc.poll()
+            if rc is not None:
+                wait.exit_status, wait.exit_ns = rc, clock_ns()
             return wait
         if decision == "failed" and payload is not None:
             return wait  # the client never had its request: its exit cannot follow from it
@@ -834,6 +844,42 @@ class ParentUnixBroker:
             except OSError:
                 pass
 
+    def _recv_request_frame(self, conn: socket.socket, maximum: int) -> bytes:
+        """Read one length-delimited AF_UNIX request atomically with respect to shutdown."""
+        conn.setblocking(False)
+
+        def exact(size: int) -> bytes:
+            chunks: list[bytes] = []
+            remaining = size
+            while remaining:
+                with self._conn_lock:
+                    if self._shutdown_connection is conn:
+                        raise _BrokerShutdownStop()
+                    if self._stopping:
+                        raise OSError("broker stopping during request read")
+                    timeout = (self.authorization.expires_monotonic_ns - time.monotonic_ns()) / 1e9
+                    if timeout <= 0:
+                        raise ValueError("broker authorization expired")
+                    if self._cancel_event.is_set() or not _leg_operation_active(self.authorization):
+                        raise _BrokerCancelledError("broker operation cancelled or closed")
+                    try:
+                        chunk = conn.recv(remaining)
+                    except (BlockingIOError, InterruptedError):
+                        chunk = None
+                if chunk is None:
+                    select.select([conn], [], [], min(0.05, timeout))
+                    continue
+                if not chunk:
+                    raise ValueError("truncated broker frame")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks)
+
+        size = struct.unpack("!I", exact(4))[0]
+        if size > maximum:
+            raise ValueError("broker frame too large")
+        return exact(size)
+
     def _send_response_frame(self, conn: socket.socket, payload: bytes) -> None:
         """Write one broker response frame atomically with respect to deliberate shutdown."""
         frame = struct.pack("!I", len(payload)) + payload
@@ -926,10 +972,16 @@ class ParentUnixBroker:
                 if uid != os.getuid() or gid != os.getgid() or not self._descends_from(pid, expected_pid, expected_start): raise ValueError("broker peer ancestry mismatch")
                 self.evidence.update({"peer_pid": pid, "peer_uid": uid, "peer_gid": gid, "peer_ancestry_verified": True})
                 if time.monotonic_ns() >= self.authorization.expires_monotonic_ns: raise ValueError("broker authorization expired")
-                raw = _recv_frame(conn, _BROKER_MAX_BYTES, admission_check=self._admission_remaining)
+                try:
+                    raw = self._recv_request_frame(conn, _BROKER_MAX_BYTES)
+                except _BrokerShutdownStop:
+                    return
                 data = json.loads(raw)
                 if set(data) != {"schema","operation","nonce","harness","model","purpose","input_sha256"}: raise ValueError("broker request grammar")
                 if self._used or data != {"schema":PARENT_UNIX_BROKER_V1,"operation":self.authorization.operation,"nonce":self.nonce,"harness":self.harness,"model":self.model,"purpose":self.authorization.purpose,"input_sha256":self.authorization.input_sha256}: raise ValueError("broker request binding")
+                with self._conn_lock:
+                    if self._shutdown_connection is conn:
+                        return
                 self._admission_remaining()
                 self._used = True
                 conn.settimeout(None)
