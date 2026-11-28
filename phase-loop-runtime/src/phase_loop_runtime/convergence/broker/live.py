@@ -194,26 +194,54 @@ class SealedWorktreeFallbackWarning(RuntimeWarning):
     """A sealed inventory row's worktree was pruned; its recorded common dir stood in."""
 
 
+def _is_marker_module_absent(error: ModuleNotFoundError) -> bool:
+    """True only when ``FABPUB_MARKER_MODULE`` itself (or its parent package) is missing.
+
+    A ``ModuleNotFoundError`` raised by a missing transitive import inside an
+    existing marker module is a configuration failure, never an absent marker.
+    """
+    missing = error.name
+    if not missing:
+        return True
+    parts = FABPUB_MARKER_MODULE.split(".")
+    marker_chain = {".".join(parts[:i]) for i in range(1, len(parts) + 1)}
+    return missing in marker_chain
+
+
 def fabpub_capability_active() -> bool:
     """Exact activation predicate, mirroring the SL-0 tests-only guard.
 
     An ABSENT marker is the ordinary pre-SL-4 state and means inactive.  A
-    marker that exists but raises on import is a CONFIGURATION FAILURE, never an
-    inactive downgrade: falling back would run the legacy caller-hashed
-    allocator against a repository that has already been migrated and retired.
+    marker that exists but raises on import, fails a transitive import, or
+    reports an unsupported ``FABPUB_CAPABILITY_VERSION`` is a CONFIGURATION
+    FAILURE, never an inactive downgrade: falling back would run the legacy
+    caller-hashed allocator or skip the generation fence against a repository
+    that has already been migrated and retired (agent-harness#1681).
     """
     if os.environ.get(FABPUB_ACTIVATION_ENV) == "1":
         return True
     try:
         module = importlib.import_module(FABPUB_MARKER_MODULE)
-    except ModuleNotFoundError:
-        return False
+    except ModuleNotFoundError as error:
+        if _is_marker_module_absent(error):
+            return False
+        raise FabpubConfigurationError(
+            f"the FABPUB capability marker {FABPUB_MARKER_MODULE} exists but could not "
+            f"be imported: {error}. Refusing to downgrade to the legacy allocator."
+        ) from error
     except Exception as error:
         raise FabpubConfigurationError(
             f"the FABPUB capability marker {FABPUB_MARKER_MODULE} exists but could not "
             f"be imported: {error}. Refusing to downgrade to the legacy allocator."
         ) from error
-    return getattr(module, FABPUB_MARKER_ATTRIBUTE, None) == FABPUB_MARKER_VERSION
+    version = getattr(module, FABPUB_MARKER_ATTRIBUTE, None)
+    if isinstance(version, bool) or version != FABPUB_MARKER_VERSION:
+        raise FabpubConfigurationError(
+            f"the FABPUB capability marker {FABPUB_MARKER_MODULE} reports unsupported "
+            f"{FABPUB_MARKER_ATTRIBUTE}={version!r} (expected {FABPUB_MARKER_VERSION!r}). "
+            "Refusing to downgrade to the legacy allocator."
+        )
+    return True
 
 
 def canonical_bytes(payload: dict) -> bytes:
@@ -918,6 +946,68 @@ def require_current_generation(
         return
     latch.validate_lease(lease, strict=strict, allow_draining=allow_draining)
     _require_active_generation_root(store_root)
+
+
+def require_namespace_unactivated_when_inactive(
+    worktree_or_snapshot: "RepositorySnapshot | Path | str",
+) -> None:
+    """Fail closed when an inactive runtime targets an already-activated namespace.
+
+    agent-harness#1681: unactivated repositories remain compatible when
+    ``fabpub_capability_active()`` is False, but an inactive process may never
+    skip the generation fence on a repository that already carries a FABPUB
+    latch, armed cutover marker, generation directory, or partition receipt.
+    """
+    snapshot = (
+        worktree_or_snapshot
+        if isinstance(worktree_or_snapshot, RepositorySnapshot)
+        else repository_snapshot(worktree_or_snapshot)
+    )
+    for probe_dir in (snapshot.namespace_root, snapshot.container.parent, snapshot.container):
+        if os.path.lexists(probe_dir) and (probe_dir.is_symlink() or not probe_dir.is_dir()):
+            raise WriterGenerationBlocked(
+                f"FABPUB capability is inactive, but {probe_dir} is not a regular directory; "
+                "refusing to run an unfenced publisher effect on a tampered namespace"
+            )
+    latch = WriterGenerationLatch(snapshot.namespace_root)
+    if os.path.lexists(latch.path):
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, but {latch.path} already exists; "
+            "refusing to run an unfenced publisher effect on an activated namespace"
+        )
+    if os.path.lexists(latch.armed_marker):
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, but {latch.armed_marker} already exists; "
+            "refusing to run an unfenced publisher effect on an activated namespace"
+        )
+    container = snapshot.container
+    container_receipt = container / RECEIPT_FILENAME
+    if os.path.lexists(container_receipt):
+        if container_receipt.is_symlink() or not container_receipt.is_file():
+            raise WriterGenerationBlocked(
+                f"FABPUB capability is inactive, but {container_receipt} is not a regular file; "
+                "refusing to run an unfenced publisher effect on an activated namespace"
+            )
+        if load_partition_receipt(container) is not None:
+            raise WriterGenerationBlocked(
+                f"FABPUB capability is inactive, but {container} carries an authenticated "
+                "partition receipt; refusing to run an unfenced publisher effect"
+            )
+    generations = container / GENERATIONS_DIR
+    if os.path.lexists(generations):
+        store_root = snapshot.store_root
+        store_receipt = store_root / RECEIPT_FILENAME
+        if store_receipt != container_receipt and os.path.lexists(store_receipt):
+            if store_receipt.is_symlink() or not store_receipt.is_file():
+                raise WriterGenerationBlocked(
+                    f"FABPUB capability is inactive, but {store_receipt} is not a regular file; "
+                    "refusing to run an unfenced publisher effect on an activated namespace"
+                )
+            load_partition_receipt(store_root)
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, but {generations} already exists; "
+            "refusing to run an unfenced publisher effect on an activated namespace"
+        )
 
 
 def _require_active_generation_root(root: Path) -> None:

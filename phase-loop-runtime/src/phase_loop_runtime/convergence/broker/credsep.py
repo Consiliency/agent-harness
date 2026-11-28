@@ -208,15 +208,19 @@ class GitHubBrokerAdapter:
 
     def _revalidate_generation_before_effect(self) -> None:
         """Fence direct adapter entry immediately before its first mutation."""
-        from .live import fabpub_capability_active, repository_broker_namespace, require_current_generation
+        from .live import (
+            LegacyCutoverConflict,
+            fabpub_capability_active,
+            repository_snapshot,
+            require_current_generation,
+            require_namespace_unactivated_when_inactive,
+        )
 
-        if not fabpub_capability_active():
-            return
-        root = self._generation_root
-        if root is None:
+        active = fabpub_capability_active()
+        if not active:
             try:
-                root = repository_broker_namespace(self.repo_path)
-            except Exception:
+                snapshot = repository_snapshot(self.repo_path)
+            except (LegacyCutoverConflict, OSError):
                 # Unit seams pass a synthetic subprocess runner and a path
                 # that is intentionally not a repository.  They have no
                 # generation namespace to mutate; a declared missing lease,
@@ -224,6 +228,21 @@ class GitHubBrokerAdapter:
                 if self.generation_lease is _UNDECLARED_GENERATION:
                     return
                 raise
+            require_namespace_unactivated_when_inactive(snapshot)
+            return
+        root = self._generation_root
+        if root is None:
+            try:
+                snapshot = repository_snapshot(self.repo_path)
+            except (LegacyCutoverConflict, OSError):
+                # Unit seams pass a synthetic subprocess runner and a path
+                # that is intentionally not a repository.  They have no
+                # generation namespace to mutate; a declared missing lease,
+                # however, remains a fail-closed real-repository error.
+                if self.generation_lease is _UNDECLARED_GENERATION:
+                    return
+                raise
+            root = snapshot.store_root
             self._generation_root = root
         if self.generation_lease is _UNDECLARED_GENERATION:
             raise PermissionError("legacy_writer_after_fabpub_activation")

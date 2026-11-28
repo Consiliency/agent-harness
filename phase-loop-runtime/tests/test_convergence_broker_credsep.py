@@ -1347,3 +1347,190 @@ def test_refresh_readback_that_never_confirms_the_new_head_is_ambiguous_not_a_se
     assert evidence.terminal_state == "outcome_ambiguous_blocked"
     assert evidence.evidence_reference == "pr-head-unconfirmed"
     assert sum(1 for call in run.calls if call[:3] == ["gh", "pr", "create"]) == 1, "never a second create"
+
+
+# --- agent-harness#1681: inactive or version-mismatched FABPUB capability fails
+# closed on an activated namespace instead of publishing unfenced. ---
+
+def _init_git_repo_1681(path: Path) -> Path:
+    import subprocess
+
+    path.mkdir(parents=True, exist_ok=True)
+    for args in (
+        ("init", "-q", "-b", "main"),
+        ("config", "user.name", "FABPUB Test"),
+        ("config", "user.email", "fabpub@example.invalid"),
+    ):
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True, text=True, timeout=60)
+    (path / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "README.md"], check=True, capture_output=True, text=True, timeout=60)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "base"], check=True, capture_output=True, text=True, timeout=60)
+    return path
+
+
+def _disable_fabpub_marker_1681(monkeypatch) -> None:
+    import sys
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.delenv(live.FABPUB_ACTIVATION_ENV, raising=False)
+    monkeypatch.setitem(sys.modules, live.FABPUB_MARKER_MODULE, None)
+
+
+@pytest.mark.parametrize("bad_version", [2, 0, "1", True, None, "<missing>"])
+def test_fabpub_capability_version_mismatch_fails_closed_1681(tmp_path, monkeypatch, bad_version):
+    import sys
+    import types
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.delenv(live.FABPUB_ACTIVATION_ENV, raising=False)
+    fake_marker = types.ModuleType(live.FABPUB_MARKER_MODULE)
+    if bad_version != "<missing>":
+        setattr(fake_marker, live.FABPUB_MARKER_ATTRIBUTE, bad_version)
+    monkeypatch.setitem(sys.modules, live.FABPUB_MARKER_MODULE, fake_marker)
+
+    with pytest.raises(live.FabpubConfigurationError, match="FABPUB_CAPABILITY_VERSION"):
+        live.fabpub_capability_active()
+
+    run = _FakeRun(_base_responses())
+    with pytest.raises(live.FabpubConfigurationError):
+        GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+    assert run.calls == []
+
+
+def test_fabpub_capability_missing_transitive_dependency_fails_closed_1681(monkeypatch):
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.delenv(live.FABPUB_ACTIVATION_ENV, raising=False)
+
+    def raise_transitive(name: str):
+        assert name == live.FABPUB_MARKER_MODULE
+        raise ModuleNotFoundError("No module named 'missing_dep_1681'", name="missing_dep_1681")
+
+    monkeypatch.setattr(live.importlib, "import_module", raise_transitive)
+    with pytest.raises(live.FabpubConfigurationError, match="missing_dep_1681"):
+        live.fabpub_capability_active()
+
+    def raise_marker_absent(name: str):
+        assert name == live.FABPUB_MARKER_MODULE
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    monkeypatch.setattr(live.importlib, "import_module", raise_marker_absent)
+    assert live.fabpub_capability_active() is False
+
+
+@pytest.mark.parametrize("state", ["LEGACY_OPEN", "DRAINING", "ACTIVE"])
+def test_inactive_capability_refuses_repository_with_writer_generation_latch_1681(
+    tmp_path, monkeypatch, state
+):
+    import subprocess
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "repo")
+    linked = tmp_path / "linked-wt"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", "-b", "feat/linked-1681", str(linked)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    latch = live.WriterGenerationLatch.open(repo)
+    if state in ("DRAINING", "ACTIVE"):
+        latch.begin_draining()
+    if state == "ACTIVE":
+        latch.mark_armed()
+        latch.activate()
+
+    _disable_fabpub_marker_1681(monkeypatch)
+    assert live.fabpub_capability_active() is False
+
+    for target in (repo, linked):
+        run = _FakeRun(_base_responses())
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            GitHubBrokerAdapter(target, run=run).execute(_request())
+        assert run.calls == []
+
+    # Even if a caller supplies a non-None lease handle while capability is inactive,
+    # the pre-push fence refuses before any git push or gh pr create runs.
+    run_with_lease = _FakeRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(repo, run=run_with_lease, generation_lease=object()).execute(_request())
+    assert not any("push" in call or "create" in call for call in run_with_lease.calls)
+
+
+def test_inactive_capability_refuses_repository_with_partition_receipt_or_generations_1681(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime.convergence.broker import live
+    from test_convergence_live_enable import _activated_publish_fixture
+
+    worktree, store_root, _publish = _activated_publish_fixture(
+        tmp_path, label="receipt-only-1681", branch=_BRANCH, owned_file="a.py"
+    )
+    latch = live.WriterGenerationLatch.for_store_root(store_root)
+    latch.path.unlink()
+    if latch.armed_marker.exists():
+        latch.armed_marker.unlink()
+
+    _disable_fabpub_marker_1681(monkeypatch)
+    assert live.fabpub_capability_active() is False
+
+    # Authenticated partition receipt without a latch file must still fail closed.
+    run = _FakeRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(worktree, run=run).execute(_request())
+    assert run.calls == []
+
+    # A tampered/corrupt partition receipt also fails closed.
+    receipt_path = store_root / live.RECEIPT_FILENAME
+    receipt_path.write_text("not-json\n", encoding="utf-8")
+    run_tampered = _FakeRun(_base_responses())
+    with pytest.raises(live.LegacyCutoverConflict):
+        GitHubBrokerAdapter(worktree, run=run_tampered).execute(_request())
+    assert run_tampered.calls == []
+
+    # A symlinked partition receipt (even dangling) fails closed.
+    receipt_path.unlink()
+    receipt_path.symlink_to(tmp_path / "missing-receipt.json")
+    run_symlink = _FakeRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(worktree, run=run_symlink).execute(_request())
+    assert run_symlink.calls == []
+
+    # A generations/ directory without latch or container receipt fails closed.
+    receipt_path.unlink()
+    (store_root / live.GENERATIONS_DIR).mkdir()
+    run_gen = _FakeRun(_base_responses())
+    with pytest.raises((live.WriterGenerationBlocked, live.PartitionRoutingRefused)):
+        GitHubBrokerAdapter(worktree, run=run_gen).execute(_request())
+    assert run_gen.calls == []
+
+
+def test_inactive_capability_allows_unactivated_git_repo_and_unit_seam_1681(tmp_path, monkeypatch):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "unactivated-repo")
+    _disable_fabpub_marker_1681(monkeypatch)
+    assert live.fabpub_capability_active() is False
+
+    for target in (repo, tmp_path / "synthetic-not-a-repo"):
+        run = _FakeRun(_base_responses() + [
+            (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+            (("list",), json.dumps([_same_repo_pr()]), 0),
+        ])
+        result, evidence = GitHubBrokerAdapter(target, run=run).execute(_request())
+        assert evidence.terminal_state == "effect_terminal_observed"
+        assert result is not None
+
+
+def test_active_capability_does_not_swallow_broken_generations_routing_refusal_1681(tmp_path):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "broken-gen-repo")
+    snapshot = live.repository_snapshot(repo)
+    (snapshot.container / live.GENERATIONS_DIR).mkdir(parents=True)
+
+    run = _FakeRun(_base_responses())
+    with pytest.raises(live.PartitionRoutingRefused):
+        GitHubBrokerAdapter(repo, run=run).execute(_request())
+    assert run.calls == []
