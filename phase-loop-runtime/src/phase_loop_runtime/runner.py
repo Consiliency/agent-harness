@@ -12,7 +12,7 @@ import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
-from typing import Mapping, NamedTuple, Sequence
+from typing import Callable, Mapping, NamedTuple, Sequence
 
 
 class _DispatchOutcome(NamedTuple):
@@ -2873,10 +2873,30 @@ def run_loop(
                 and dispatch_decision.selected_executor
                 and repeated_repair_failures >= 2
             ):
+                def _effective_repair_executor(candidate: str) -> str:
+                    if candidate == "pi":
+                        _cand_selection = resolve_profile_for_executor(
+                            action=launch_action,
+                            executor="pi",
+                            profile=model_profile,
+                            model=model,
+                            effort=effort,
+                        )
+                        _cand_flipped = claude_model_executor_flip_target(
+                            executor="pi",
+                            model=_cand_selection.model,
+                            plan_policy=plan_execution_policy,
+                            roadmap_policy=roadmap_execution_policy,
+                        )
+                        if _cand_flipped is not None:
+                            return _cand_flipped
+                    return candidate
+
                 pivot_executor = _repair_fallback_candidate(
                     dispatch_decision,
                     operator_fallback_executors=fallback_executors,
                     disabled_executors=disabled_executors,
+                    effective_executor=_effective_repair_executor,
                 )
                 repair_loop_pivot = {
                     "status": "pivoted" if pivot_executor else "blocked",
@@ -3105,6 +3125,15 @@ def run_loop(
                             escalation_record.pop("not_applied_reason", None)
                         else:
                             escalation_record["not_applied_reason"] = escalation_application.not_applied_reason
+                if (
+                    repair_loop_pivot is not None
+                    and repair_loop_pivot.get("status") == "pivoted"
+                    and execution_policy.executor == repair_loop_pivot.get("from_executor")
+                ):
+                    raise ValueError(
+                        f"Repair fallback pivoted away from `{repair_loop_pivot.get('from_executor')}`, "
+                        f"but execution policy resolved back to `{execution_policy.executor}`."
+                    )
                 if execution_policy.executor != resolved_executor:
                     _post_policy_dispatch = resolve_dispatch_decision(
                         action=launch_action,
@@ -3127,8 +3156,12 @@ def run_loop(
                             _post_policy_dispatch.blocked_summary
                             or f"Dispatch policy rejected `{execution_policy.executor}` for `{launch_action}`."
                         )
-                    if _post_policy_dispatch.selected_executor == execution_policy.executor:
-                        dispatch_decision = _post_policy_dispatch
+                    if _post_policy_dispatch.selected_executor != execution_policy.executor:
+                        raise ValueError(
+                            f"Dispatch policy selected `{_post_policy_dispatch.selected_executor}` instead of "
+                            f"execution policy executor `{execution_policy.executor}` for `{launch_action}`."
+                        )
+                    dispatch_decision = _post_policy_dispatch
                 resolved_executor = execution_policy.executor
                 selection = resolve_model_selection_from_policy(
                     profile=selection.profile,
@@ -10579,14 +10612,18 @@ def _repair_fallback_candidate(
     *,
     operator_fallback_executors: tuple[str, ...],
     disabled_executors: tuple[str, ...],
+    effective_executor: Callable[[str], str] | None = None,
 ) -> str | None:
     selected = dispatch_decision.selected_executor
+    effective_selected = effective_executor(selected) if (effective_executor is not None and selected) else selected
     disabled = set(disabled_executors)
     allowed = set(dispatch_decision.allowed_executors)
     for executor in (*operator_fallback_executors, *dispatch_decision.fallback_executors):
         if executor == selected or executor in disabled:
             continue
         if allowed and executor not in allowed:
+            continue
+        if effective_executor is not None and effective_executor(executor) == effective_selected:
             continue
         return executor
     return None

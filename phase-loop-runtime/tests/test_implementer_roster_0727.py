@@ -371,7 +371,8 @@ def test_pi_to_claude_flip_respects_dispatch_restrictions(constraint_kwargs, exp
     assert decision["blocked_reason"] == expected_reason
 
 
-def test_pi_to_claude_flip_governed_repair_blocks_after_repeated_claude_failures(tmp_path):
+@pytest.mark.parametrize("fallback_executors", [(), ("pi",)])
+def test_pi_to_claude_flip_governed_repair_blocks_after_repeated_claude_failures(fallback_executors, tmp_path):
     import subprocess
     from unittest.mock import patch
 
@@ -416,6 +417,7 @@ def test_pi_to_claude_flip_governed_repair_blocks_after_repeated_claude_failures
             phase="CONTRACT",
             executor="pi",
             model="claude-sonnet-5-5",
+            fallback_executors=fallback_executors,
             run_mode="governed",
         )
     assert results == []
@@ -426,6 +428,41 @@ def test_pi_to_claude_flip_governed_repair_blocks_after_repeated_claude_failures
     guard = events[-1]["metadata"]["repair_loop_guard"]
     assert guard["status"] == "blocked"
     assert guard["from_executor"] == "claude"
+
+
+def test_post_policy_dispatch_fails_closed_when_degraded_plan_executor_diverts_to_fallback(tmp_path):
+    import subprocess
+    from unittest.mock import patch
+
+    from phase_loop_runtime import runner
+    from phase_loop_runtime.events import read_events
+    from phase_loop_runtime.state_degradation import record_degradation
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "RUNNER", roadmap)
+    plan.write_text(
+        plan.read_text(encoding="utf-8")
+        + "\n## Execution Policy\n- execute: executor=`claude`\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add claude-pinned plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    record_degradation(repo, "claude", "account_or_billing_setup", "RUNNER", "Claude degraded for test.", 600)
+
+    def must_not_build_launch(request):
+        raise AssertionError(
+            f"degraded plan-pinned Claude must fail closed instead of launching: {request.executor}"
+        )
+
+    with patch("phase_loop_runtime.runner.build_launch_spec", side_effect=must_not_build_launch):
+        snapshot, results = runner.run_loop(repo, roadmap, phase="RUNNER")
+    assert results == []
+    assert snapshot.phases["RUNNER"] == "blocked"
+    events = read_events(repo)
+    assert events and events[-1]["status"] == "blocked"
+    assert events[-1]["blocker"]["blocker_class"] == "contract_bug"
+    assert "instead of execution policy executor `claude`" in events[-1]["blocker"]["blocker_summary"]
 
 
 @pytest.mark.parametrize("action", ["execute", "repair"])
