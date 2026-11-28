@@ -1878,3 +1878,175 @@ def test_gemini_proxy_launch_refusals_render_board_notices(subcode):
     leg = pi.attach_seat_notices(pi.PanelLegResult("gemini", "DEGRADED", "", detail=code), [code])
     notice, = pi.refused_seat_notices([leg])
     assert notice.code == code and notice.why and notice.fix
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1682: Claude PRINT route surfaces ignored stored seat-token override.
+# --------------------------------------------------------------------------------------
+
+def test_seat_profile_carries_ignored_claude_override_notice_to_profile_and_owner_sink(
+    monkeypatch, tmp_path,
+):
+    from phase_loop_runtime import seat_credentials as sc
+
+    _override_bound_elsewhere(monkeypatch, tmp_path)
+    monkeypatch.setattr(sc, "read_login_token", lambda env=None: sc.LoginToken(b"fake-login-A", None))
+    exe = tmp_path / "claude"
+    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.chmod(0o755)
+    env = {"HOME": str(tmp_path), "PATH": str(tmp_path)}
+
+    review_sink: list[str] = []
+    token = pi._SEAT_OWNER_NOTICES.set(review_sink)
+    try:
+        with pi.seat_profile(
+            harness="claude", executable=str(exe), env=env, cwd=tmp_path,
+            role=pi.SeatLaunchRole.PROVIDER_REVIEW,
+        ) as (_provider, profile):
+            assert profile.notices == (_IGNORED,)
+    finally:
+        pi._SEAT_OWNER_NOTICES.reset(token)
+    assert review_sink == [_IGNORED]
+
+    # PROVIDER_ADMIN probes still report profile.notices on the profile object,
+    # without polluting a review leg's owner notice sink.
+    admin_sink: list[str] = []
+    token = pi._SEAT_OWNER_NOTICES.set(admin_sink)
+    try:
+        with pi.seat_profile(
+            harness="claude", executable=str(exe), env=env, cwd=tmp_path,
+            role=pi.SeatLaunchRole.PROVIDER_ADMIN,
+        ) as (_provider, profile):
+            assert profile.notices == (_IGNORED,)
+    finally:
+        pi._SEAT_OWNER_NOTICES.reset(token)
+    assert admin_sink == []
+
+
+@pytest.mark.parametrize("brokered", [True, False])
+def test_claude_print_route_surfaces_ignored_override_notice_through_default_spawn(
+    monkeypatch, tmp_path, brokered,
+):
+    from phase_loop_runtime import seat_credentials as sc
+
+    _override_bound_elsewhere(monkeypatch, tmp_path)
+    monkeypatch.setattr(sc, "read_login_token", lambda env=None: sc.LoginToken(b"fake-login-A", None))
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (None, [], None))
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "ok"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda *a, **k: (True, "ok"))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi._seat_credentials, "login_subscription_proven", lambda env=None: True)
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
+                        lambda **k: contextlib.nullcontext(["nsenter", "-t", "4242", "-U", "--net", "setpriv"]))
+
+    exe = tmp_path / "claude"
+    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(pi.shutil, "which", lambda name, path=None: str(exe) if name == "claude" else None)
+    monkeypatch.setattr(pi, "_seat_provider_source", lambda cmd0, env=None: ("claude", str(exe)))
+    monkeypatch.setattr(pi, "scrub_subscription_env", lambda env=None: {"HOME": str(tmp_path), "PATH": str(tmp_path)})
+
+    result_text = (
+        "All good.\n\nAGREE"
+        if brokered
+        else "All checks reviewed and consistent.\n\nRECOMMENDATION: proceed."
+    )
+    stream_payload = (
+        json.dumps({"type": "system", "subtype": "init", "apiKeySource": "none"}) + "\n"
+        + json.dumps({"type": "result", "subtype": "success", "result": result_text}) + "\n"
+    )
+
+    seen_profile_notices: list[tuple[str, ...]] = []
+
+    def _fake_launch_owned(command, *, role, profile, **kwargs):
+        seen_profile_notices.append(profile.notices)
+        return subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read(); sys.stdout.write(sys.argv[1])", stream_payload],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+    monkeypatch.setattr(pi, "launch_owned", _fake_launch_owned)
+
+    if brokered:
+        monkeypatch.setattr(pi, "ParentUnixBroker", _FakeBroker)
+        monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+        monkeypatch.setattr(pi._advisor_board_backing, "_revalidate_staged_tree", lambda *a, **k: None)
+        monkeypatch.setattr(pi, "derive_review_leg_authorization",
+                            lambda *a, **k: types.SimpleNamespace(expires_monotonic_ns=time.monotonic_ns() + 10**12))
+        monkeypatch.setattr(pi, "harden_subscription_model", lambda leg, model, effort=None: model)
+        monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda _p: tmp_path)
+        monkeypatch.setattr(_FakeBroker, "invoked", 0)
+        spawned = pi._default_spawn(
+            "claude", "ARTIFACT", mode="review", model="claude-opus-4-6",
+            review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+            canonical_repo_authority=tmp_path,
+        )
+    else:
+        spawned = pi._default_spawn(
+            "claude", "ARTIFACT", mode="advisory", model="claude-opus-4-6",
+            repo_dir=tmp_path,
+        )
+
+    assert spawned[0] == "OK", spawned
+    assert seen_profile_notices == [(_IGNORED,)]
+    assert _IGNORED in getattr(spawned, "seat_notices", ())
+    if not brokered:
+        panel = pi.invoke_panel(
+            "ARTIFACT", ("claude",), repo_dir=tmp_path, mode="advisory",
+            models={"claude": "claude-opus-4-6"},
+        )
+        assert len(panel.legs) == 1
+        assert panel.legs[0].status == "OK"
+        assert [n.code for n in panel.legs[0].seat_notices] == [_IGNORED]
+    else:
+        leg = pi.attach_seat_notices(
+            pi.PanelLegResult("claude", spawned[0], spawned[1], seat_key="claude:a"),
+            getattr(spawned, "seat_notices", ()),
+        )
+        assert [n.code for n in leg.seat_notices] == [_IGNORED]
+
+
+@pytest.mark.parametrize("login_left, expected_code", [
+    (None, "claude_seat_token_missing"),
+    (60.0, "claude_seat_login_token_expiring"),
+])
+def test_claude_print_route_refusal_in_seat_profile_keeps_ignored_override_notice(
+    monkeypatch, tmp_path, login_left, expected_code,
+):
+    from phase_loop_runtime import seat_credentials as sc
+
+    _override_bound_elsewhere(monkeypatch, tmp_path)
+    login = None if login_left is None else sc.LoginToken(b"fake-login-A", time.time() + login_left)
+    monkeypatch.setattr(sc, "read_login_token", lambda env=None: login)
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (None, [], None))
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "ok"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda *a, **k: (True, "ok"))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi._seat_credentials, "login_subscription_proven", lambda env=None: True)
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
+                        lambda **k: contextlib.nullcontext(["nsenter", "-t", "4242", "-U", "--net", "setpriv"]))
+
+    exe = tmp_path / "claude"
+    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(pi.shutil, "which", lambda name, path=None: str(exe) if name == "claude" else None)
+    monkeypatch.setattr(pi, "_seat_provider_source", lambda cmd0, env=None: ("claude", str(exe)))
+    monkeypatch.setattr(pi, "scrub_subscription_env", lambda env=None: {"HOME": str(tmp_path), "PATH": str(tmp_path)})
+    monkeypatch.setattr(pi, "ParentUnixBroker", _FakeBroker)
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi._advisor_board_backing, "_revalidate_staged_tree", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "derive_review_leg_authorization",
+                        lambda *a, **k: types.SimpleNamespace(expires_monotonic_ns=time.monotonic_ns() + 10**12))
+    monkeypatch.setattr(pi, "harden_subscription_model", lambda leg, model, effort=None: model)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda _p: tmp_path)
+    monkeypatch.setattr(_FakeBroker, "invoked", 0)
+
+    spawned = pi._default_spawn(
+        "claude", "ARTIFACT", mode="review", model="claude-opus-4-6",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        canonical_repo_authority=tmp_path,
+    )
+    assert spawned[0] == "DEGRADED", spawned
+    assert expected_code in spawned.seat_notices
+    assert _IGNORED in spawned.seat_notices
