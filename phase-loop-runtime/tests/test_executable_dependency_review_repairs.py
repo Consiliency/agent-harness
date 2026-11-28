@@ -177,6 +177,131 @@ def test_run_loop_refuses_before_default_executor_selection(tmp_path, monkeypatc
         fixture.close()
 
 
+@pytest.mark.parametrize('route_env,expected_route,subject_relative,expected_cmd0', [
+    ('channel', 'claude_channel', 'bin/claude-channel', 'claude-channel'),
+    ('agent_view', 'claude_agent_view', 'bin/claude', 'claude'),
+])
+def test_run_loop_review_unwired_claude_route_refuses_before_artifacts(
+    tmp_path, monkeypatch, route_env, expected_route, subject_relative, expected_cmd0,
+):
+    """agent-harness#1784 (N6): phase-path refuse_unwired_executor_spec refuses
+    real review specs built for Claude Channel/Agent View before run_artifacts."""
+    from pathlib import Path
+    from phase_loop_test_utils import make_repo, write_phase_plan
+    from phase_loop_runtime import runner
+    repo_root = Path(__file__).resolve().parents[2]
+    if (repo_root / 'phase-loop-skills').is_dir():
+        monkeypatch.setenv('PHASE_LOOP_RUNNER_REPO_ROOT', str(repo_root))
+    repo = make_repo(tmp_path / 'repo')
+    roadmap = repo / 'specs' / 'phase-plans-v1.md'
+    write_phase_plan(repo, 'RUNNER', roadmap)
+    fixture = build_fixture(tmp_path / 'fixture', provider='claude', subject_relative=subject_relative)
+    try:
+        monkeypatch.setenv('PATH', f"{fixture.subject.parent}{os.pathsep}{os.environ.get('PATH', '')}")
+        monkeypatch.setenv('PHASE_LOOP_CLAUDE_ROUTE', route_env)
+        monkeypatch.setenv('PHASE_LOOP_CHANNEL_SESSION_ID', 'sess-1')
+        monkeypatch.setenv('PHASE_LOOP_CLAUDE_CHANNEL_URL', 'http://127.0.0.1:4123')
+        with _managed(monkeypatch, fixture):
+            built = []
+            real_build_launch_spec = runner.build_launch_spec
+
+            def record_build_launch_spec(request):
+                spec = real_build_launch_spec(request)
+                built.append(spec)
+                return spec
+
+            monkeypatch.setattr(runner, 'build_launch_spec', record_build_launch_spec)
+            monkeypatch.setattr(runner, 'run_artifacts', _unreached)
+            monkeypatch.setattr(runner, 'run_auth_preflight', _unreached)
+            monkeypatch.setattr(runner, 'launch_with_spec', _unreached)
+            with pytest.raises(ExecutableDependencyError, match='executor transport') as exc_info:
+                runner.run_loop(
+                    repo, roadmap, phase='RUNNER',
+                    executor='claude', product_action_override='review',
+                )
+            assert exc_info.value.code == 'dependency_route_unwired'
+            assert len(built) == 1
+            assert built[0].available is True
+            assert built[0].claude_route == expected_route
+            assert built[0].command[0] == expected_cmd0
+    finally:
+        fixture.close()
+
+
+def test_run_loop_review_command_executor_refuses_subject_mismatch_before_artifacts(tmp_path, monkeypatch):
+    """agent-harness#1784 (N3'/N6): on the main phase path, an available live command
+    review spec reaches refuse_unwired_executor_spec and refuses with subject_mismatch
+    before run_artifacts, whereas a non-review live action refuses earlier with
+    dependency_route_unwired."""
+    from pathlib import Path
+    from phase_loop_test_utils import make_repo, write_phase_plan
+    from phase_loop_runtime import runner
+    repo_root = Path(__file__).resolve().parents[2]
+    if (repo_root / 'phase-loop-skills').is_dir():
+        monkeypatch.setenv('PHASE_LOOP_RUNNER_REPO_ROOT', str(repo_root))
+    repo = make_repo(tmp_path / 'repo')
+    roadmap = repo / 'specs' / 'phase-plans-v1.md'
+    write_phase_plan(repo, 'RUNNER', roadmap)
+    fixture = build_fixture(tmp_path / 'fixture', provider='codex')
+    try:
+        with _managed(monkeypatch, fixture):
+            built = []
+            real_build_launch_spec = runner.build_launch_spec
+
+            def record_build_launch_spec(request):
+                spec = real_build_launch_spec(request)
+                built.append(spec)
+                return spec
+
+            monkeypatch.setattr(runner, 'build_launch_spec', record_build_launch_spec)
+            monkeypatch.setattr(runner, 'run_artifacts', _unreached)
+            monkeypatch.setattr(runner, 'run_auth_preflight', _unreached)
+            monkeypatch.setattr(runner, 'launch_with_spec', _unreached)
+            with pytest.raises(ExecutableDependencyError) as review_exc:
+                runner.run_loop(
+                    repo, roadmap, phase='RUNNER',
+                    executor='command',
+                    command_adapter_name='custom',
+                    command_template='echo {context_file}',
+                    product_action_override='review',
+                )
+            assert review_exc.value.code == 'subject_mismatch'
+            assert len(built) == 1
+            assert built[0].available is True
+            assert built[0].executor == 'command'
+            with pytest.raises(ExecutableDependencyError) as execute_exc:
+                runner.run_loop(
+                    repo, roadmap, phase='RUNNER',
+                    executor='command',
+                    command_adapter_name='custom',
+                    command_template='echo {context_file}',
+                    product_action_override='execute',
+                )
+            assert execute_exc.value.code == 'dependency_route_unwired'
+            assert len(built) == 1
+    finally:
+        fixture.close()
+
+
+def test_refuse_unwired_executor_action_allows_review_and_dry_run_in_required_session(tmp_path, monkeypatch):
+    """agent-harness#1784 (N7): refuse_unwired_executor_action leaves review actions
+    and dry runs untouched in a required session, while refusing non-review live actions."""
+    fixture = build_fixture(tmp_path / 'fixture', provider='codex')
+    try:
+        with _managed(monkeypatch, fixture):
+            assert launcher.refuse_unwired_executor_action('review', dry_run=False) is None
+            assert launcher.refuse_unwired_executor_action('review', dry_run=True) is None
+            assert launcher.refuse_unwired_executor_action('execute', dry_run=True) is None
+            assert launcher.refuse_unwired_executor_action('plan', dry_run=True) is None
+            assert launcher.refuse_unwired_executor_action(None, dry_run=True) is None
+            for action in ('execute', 'plan', None):
+                with pytest.raises(ExecutableDependencyError, match='executor transport') as exc_info:
+                    launcher.refuse_unwired_executor_action(action, dry_run=False)
+                assert exc_info.value.code == 'dependency_route_unwired'
+    finally:
+        fixture.close()
+
+
 def test_delegated_child_refuses_before_artifacts_and_auth_preflight(tmp_path, monkeypatch):
     from phase_loop_runtime import runner
     fixture = build_fixture(tmp_path / 'fixture', provider='codex')
@@ -331,6 +456,28 @@ def test_required_gemini_review_launch_refuses_short_login_without_waiting(tmp_p
                 launcher.launch(['agy', '--original'], log_path=tmp_path / 'out/log',
                                 env={'HOME': str(tmp_path)}, cwd=tmp_path, action='review')
             assert not (tmp_path / 'out').exists()
+    finally:
+        fixture.close()
+
+
+@pytest.mark.parametrize('bound_provider', ['claude', 'codex'])
+def test_await_gemini_login_reports_provider_mismatch_for_other_provider_session(
+    tmp_path, monkeypatch, bound_provider,
+):
+    """agent-harness#1784 (N2): _await_gemini_login names provider='gemini' when
+    looking up the bound dependency so a session requiring another provider fails
+    with subject_mismatch instead of dependency_route_unwired."""
+    fixture = build_fixture(tmp_path / 'fixture', provider=bound_provider)
+    try:
+        with _managed(monkeypatch, fixture):
+            monkeypatch.setattr(panel, '_gemini_login_left_s', lambda _home: 300.0)
+            monkeypatch.setattr(panel, '_gemini_credential_fresh', lambda _home: False)
+            monkeypatch.setattr(panel, '_BOARD_CANCEL', SimpleNamespace(get=_unreached))
+            monkeypatch.setattr(panel, '_gemini_login_sleep', _unreached)
+            monkeypatch.setattr(panel.subprocess, 'Popen', _unreached)
+            with pytest.raises(ExecutableDependencyError, match='provider') as exc_info:
+                panel._await_gemini_login(['agy', '--original'], {'HOME': str(tmp_path)})
+            assert exc_info.value.code == 'subject_mismatch'
     finally:
         fixture.close()
 
