@@ -1991,11 +1991,20 @@ def test_claude_print_route_surfaces_ignored_override_notice_through_default_spa
     assert spawned[0] == "OK", spawned
     assert seen_profile_notices == [(_IGNORED,)]
     assert _IGNORED in getattr(spawned, "seat_notices", ())
-    leg = pi.attach_seat_notices(
-        pi.PanelLegResult("claude", spawned[0], spawned[1], seat_key="claude:a"),
-        getattr(spawned, "seat_notices", ()),
-    )
-    assert [n.code for n in leg.seat_notices] == [_IGNORED]
+    if not brokered:
+        panel = pi.invoke_panel(
+            "ARTIFACT", ("claude",), repo_dir=tmp_path, mode="advisory",
+            models={"claude": "claude-opus-4-6"},
+        )
+        assert len(panel.legs) == 1
+        assert panel.legs[0].status == "OK"
+        assert [n.code for n in panel.legs[0].seat_notices] == [_IGNORED]
+    else:
+        leg = pi.attach_seat_notices(
+            pi.PanelLegResult("claude", spawned[0], spawned[1], seat_key="claude:a"),
+            getattr(spawned, "seat_notices", ()),
+        )
+        assert [n.code for n in leg.seat_notices] == [_IGNORED]
 
 
 @pytest.mark.parametrize("login_left, expected_code", [

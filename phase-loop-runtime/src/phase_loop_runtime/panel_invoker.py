@@ -22693,7 +22693,9 @@ def invoke_panel(
             else _resolve_leg_detail(spawn_detail, stream_dir, leg)
         if status == "UNAVAILABLE" and text_value in _TYPED_UNAVAILABLE_DETAILS:
             detail, text_value = text_value, ""
-        return PanelLegResult(leg=leg, status=status, text=text_value, detail=detail)
+        result = PanelLegResult(leg=leg, status=status, text=text_value, detail=detail)
+        attach_seat_notices(result, getattr(spawned, "seat_notices", ()))
+        return result
 
     results = _run_legs_ordered(
         list(legs),
