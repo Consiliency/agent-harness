@@ -44,7 +44,7 @@ class ContainmentEvidence:
 @dataclass(frozen=True)
 class Precondition:
     name: str
-    check: Callable[[], str | None]
+    check: Callable[..., str | None]
 
 
 @dataclass(frozen=True)
@@ -113,7 +113,7 @@ class JailProfile:
     argv: Callable[[ArgvInputs], Sequence[str]]
     projection: Literal["none", "optional", "required"]
     credential: CredentialDelivery
-    credential_present: Callable[[], bool]
+    credential_present: Callable[..., bool]
     credential_missing_code: str
     preconditions: tuple[Precondition, ...]
     recorded_stop: str | None
@@ -172,6 +172,7 @@ class RouteRequest:
     run_kind: RunKind
     staged_tree_approved: bool
     env: Mapping[str, str]
+    deadline_s: float | None = None
 
 
 @dataclass(frozen=True)

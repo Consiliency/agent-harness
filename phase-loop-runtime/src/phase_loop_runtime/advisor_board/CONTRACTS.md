@@ -1547,7 +1547,15 @@ are recorded on agent-harness#1132.
   The access-token scope ceiling is measured, the refresh token is empty, and an
   observed token change refuses `codex_seat_token_refreshed_in_jail`.
   The admission gate checks subscription login, token margin, scope and CLI shape
-  (`codex_seat_cli_shape`) before delivery. Parent-held JSON evidence must show a
+  (`codex_seat_cli_shape`) before delivery. Route credential checks (`credential_present`
+  and L6 `subscription_login` / `token_margin` / `scope_ceiling`) read from the caller's
+  environment (`RouteRequest.env`) so route pre-check, admission gate and seat setup
+  always resolve the same auth file (agent-harness#1951). Bounded Codex legs tie the
+  token launch margin to `leg_deadline + 300 s` (2100 s for the default 1800 s backstop);
+  heartbeat-only Codex legs have no wall-clock deadline and enforce the 2100 s launch
+  floor (`CODEX_LOGIN_MIN_S`), remaining bounded by the non-refreshing access token's
+  `exp` (failing closed post-run with `codex_seat_token_expiring` if the leg outlives it).
+  Parent-held JSON evidence must show a
   valid completed turn and a successful completed command; unavailable tools give
   `codex_seat_tools_unavailable`, an unknown event gives `codex_seat_unknown_event`,
   and a copied secret in output gives `codex_seat_token_in_output`. Such legs never

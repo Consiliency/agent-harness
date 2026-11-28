@@ -548,7 +548,7 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 | Route | Bounded | Heartbeat-only |
 | --- | --- | --- |
 | Brokered homebrew/subscription Claude (print or TUI route) | Jailed TUI allows up to 20 minutes from submit with a repainting spinner and interrupt footer, within the review deadline | Supported on Linux with bwrap |
-| Brokered homebrew/subscription Codex | Existing behavior | Supported on Linux with bwrap |
+| Brokered homebrew/subscription Codex | Token launch margin tied to `leg_deadline + 300 s` (2100 s for default 1800 s backstop) | Supported on Linux with bwrap; no wall-clock deadline, enforces the 2100 s launch floor (`CODEX_LOGIN_MIN_S`) and remains bounded by the non-refreshing access token's `exp` (`codex_seat_token_expiring` if outlived; agent-harness#1951) |
 | Brokered homebrew/subscription Grok | Existing behavior | Supported on Linux with bwrap |
 | Brokered subscription Gemini / agy | Existing internal print timer | Qualified image and Linux memfd/pidfd support required |
 | Gateway, API-key, capture, research, native host fill | Existing route restrictions | Unsupported |

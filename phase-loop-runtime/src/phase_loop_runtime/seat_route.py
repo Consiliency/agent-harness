@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -240,6 +241,29 @@ def _vendor_identity(leg: str) -> tuple[str | None, str | None]:
     return str(rows[0]["vendor"]), None
 
 
+def _call_route_check(fn, *, env: Mapping[str, str], deadline_s: float | None = None):
+    """Invoke a profile credential check or precondition, forwarding ``env`` and/or
+    ``deadline_s`` only when the callable declares them (preserving 0-arg checks/stubs)."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return fn()
+    kwargs: dict[str, object] = {}
+    env_param = params.get("env")
+    if env_param is not None and env_param.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ):
+        kwargs["env"] = env
+    deadline_param = params.get("deadline_s")
+    if deadline_param is not None and deadline_param.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ):
+        kwargs["deadline_s"] = deadline_s
+    return fn(**kwargs)
+
+
 def _local_failure(
     request: RouteRequest,
     vendor: str,
@@ -471,13 +495,15 @@ def resolve(
         variant, code = profile.variant(request.env)
         if code is not None:
             return _local_failure(request, vendor, code, "L4", also=also)
-    if not profile.credential_present():
+    if not _call_route_check(profile.credential_present, env=request.env):
         return _local_failure(
             request, vendor, profile.credential_missing_code, "L5",
             variant=variant, also=also,
         )
     for precondition in profile.preconditions:
-        code = precondition.check()
+        code = _call_route_check(
+            precondition.check, env=request.env, deadline_s=request.deadline_s,
+        )
         if code is not None:
             return _local_failure(
                 request, vendor, code, "L6", variant=variant, also=also,
