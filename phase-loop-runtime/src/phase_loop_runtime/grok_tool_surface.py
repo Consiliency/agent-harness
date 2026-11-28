@@ -954,11 +954,12 @@ def _check_egress(panel: Any, proxy: object) -> tuple[str, ...]:
 
     Binding that holder to the socket of this proxy (contract §10, BA-3) is
     :func:`bridged_to`, one check shared by both paths:
-    - the measurement: its admission, :func:`verify_measurement_context` and the isolation
-      self-check;
-    - the board leg (``panel_invoker``): its egress setup, its final step before this
-      check, and ``launch_owned``'s final admission of the marked profile.
-    It is not checked here, so a mark from :func:`verify_launch_context` alone is not bound."""
+    - :func:`_check_context` enforces it for both :func:`verify_launch_context` and
+      :func:`verify_measurement_context`, so every issued launch-context mark is bound to
+      the exact live holder and proxy pair (agent-harness#2035);
+    - the measurement also checks it at admission and in the isolation self-check;
+    - the board leg (``panel_invoker``) also checks it at egress setup, in its final step
+      before marking, and in ``launch_owned``'s final admission of the marked profile."""
     from .seat_egress_proxy import SeatEgressProxy
 
     _require(isinstance(proxy, SeatEgressProxy))
@@ -997,14 +998,20 @@ def _check_context(panel: Any, profile: Any, *, cwd, command, role, proxy, jaile
     _check_discovery(mounts, cwd, command)
     prefix = _check_egress(panel, proxy)
     _check_proxy_projection(profile, proxy)
+    # BA-3 (agent-harness#2035): the namespace this launch will enter bridges to this
+    # launch's own proxy. Checked here so verify_launch_context and
+    # verify_measurement_context both bind the holder and proxy pair directly.
+    _require(bridged_to(prefix, proxy))
     return current, cwd, prefix
 
 
 def verify_launch_context(profile: Any, *, env: Mapping[str, str], cwd, role, proxy,
                           jailed: bool = False) -> Any:
     """The final check (§4.4, step 2): every ``grok_seat_context.v1`` condition against the
-    composed ``profile``, the launch ``cwd`` and the proxy this launch owns. Returns the
-    profile marked; any failure is ``grok_tool_surface_unverified``, with no fallback."""
+    composed ``profile``, the launch ``cwd`` and the proxy this launch owns, including
+    :func:`bridged_to` binding between the live namespace holder and ``proxy``
+    (agent-harness#2035). Returns the profile marked; any failure is
+    ``grok_tool_surface_unverified``, with no fallback."""
     from . import panel_invoker as panel
     from .seat_jail import SeatSandboxRefused
 
@@ -1097,12 +1104,10 @@ def verify_measurement_context(profile: Any, *, cwd, command, proxy, sessions: s
 
     try:
         _require(getattr(profile, "grok_launch_context", None) is None)
-        current, _cwd, prefix = _check_context(
+        current, _cwd, _prefix = _check_context(
             panel, profile, cwd=cwd, command=list(command),
             role=panel.SeatLaunchRole.PROVIDER_REVIEW, proxy=proxy, jailed=False,
             sessions=sessions)
-        # BA-3: the namespace this launch will enter bridges to this launch's own proxy.
-        _require(bridged_to(prefix, proxy))
     except Exception as exc:  # noqa: BLE001 - every failure is the one public refusal
         raise SeatSandboxRefused("grok_tool_surface_unverified") from exc
     return current

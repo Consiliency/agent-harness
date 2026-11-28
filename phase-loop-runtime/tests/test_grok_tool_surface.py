@@ -48,6 +48,8 @@ CONTRACT_BINARY = "a3dface51d9bdc71fd121e0481dd02d9b46a721f7a6b892f756480e9666eb
 REFUSED = "grok_tool_surface_unverified"
 #: The real reader, before any fixture stands in for the allow-list lane L2a ships.
 _SHIPPED_ALLOWLIST_DIGEST = gts.egress_allowlist_digest
+#: The real holder/proxy bridge check, before unit fixtures stand in for synthetic holders.
+_REAL_BRIDGED_TO = gts.bridged_to
 
 
 class _Launched(Exception):
@@ -98,8 +100,11 @@ def seat(tmp_path, monkeypatch):
         (home / name).write_text(body)
         (home / name).chmod(0o600)
     monkeypatch.setattr(gts, "egress_allowlist_digest", lambda: ALLOWLIST)
-    # The proxy-only namespace a launch holds: its holder is a stand-in here.
+    # The proxy-only namespace a launch holds: its holder and bridge are stand-ins here
+    # (the real binding is exercised in tests/test_grok_board_leg_frozen_basis.py and
+    # test_verify_launch_context_binds_holder_and_proxy_via_bridged_to).
     monkeypatch.setattr(pi, "_filtered_holder_namespace", lambda: 1)
+    monkeypatch.setattr(gts, "bridged_to", lambda prefix, proxy: True)
     out, tree = tmp_path / "out", tmp_path / "tree"
     out.mkdir()
     tree.mkdir()
@@ -2163,3 +2168,45 @@ def test_the_shipped_catalog_has_evidence_on_the_full_context():
     assert _parity_failures(sample, [aggregate]) == []
     aggregate["routes"][0]["eligible"] = False
     assert _parity_failures(sample, [aggregate]) == [surface["binary_sha256"] + ":review"]
+
+
+def test_verify_launch_context_binds_holder_and_proxy_via_bridged_to(seat, monkeypatch):
+    """Standalone ``verify_launch_context`` binds the mark to the live holder and proxy pair
+    via ``bridged_to`` (agent-harness#2035): an unbridged or crossed pair is refused before
+    any mark is issued."""
+    command = _composed(seat)
+    proxy_a = _proxy(socket="/run/fixture/proxy-a.sock", proxy_url="http://fixture-a")
+    proxy_b = _proxy(socket="/run/fixture/proxy-b.sock", proxy_url="http://fixture-b")
+    prefix_b = ("nsenter", "-t", "4343", "--net", "--")
+
+    with _egress(PREFIX), pi._seat_command_profile(command, env=seat.env, cwd=seat.out) as (_owned, profile):
+        # 1. With the real bridged_to, a stand-in holder/proxy with no registered live bridge refuses.
+        monkeypatch.setattr(gts, "bridged_to", _REAL_BRIDGED_TO)
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused) as real_refusal:
+            _verify(seat, profile, proxy=proxy_a)
+        assert real_refusal.value.code == REFUSED
+
+        # 2. Only the exact bridged (prefix, proxy) pair is marked; crossed pairs refuse.
+        seen: list[tuple[tuple[str, ...], object]] = []
+
+        def exact_bridge(prefix, proxy):
+            seen.append((tuple(prefix), proxy))
+            return tuple(prefix) == PREFIX and proxy is proxy_a
+
+        monkeypatch.setattr(gts, "bridged_to", exact_bridge)
+        marked = _verify(seat, profile, proxy=proxy_a)
+        assert gts.is_issued(marked.grok_launch_context)
+        assert seen == [(PREFIX, proxy_a)]
+
+        seen.clear()
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused) as wrong_proxy:
+            _verify(seat, profile, proxy=proxy_b)
+        assert wrong_proxy.value.code == REFUSED
+        assert seen == [(PREFIX, proxy_b)]
+
+    with _egress(prefix_b), pi._seat_command_profile(command, env=seat.env, cwd=seat.out) as (_owned, profile):
+        seen.clear()
+        with pytest.raises(pi._seat_jail.SeatSandboxRefused) as wrong_prefix:
+            _verify(seat, profile, proxy=proxy_a)
+        assert wrong_prefix.value.code == REFUSED
+        assert seen == [(prefix_b, proxy_a)]
