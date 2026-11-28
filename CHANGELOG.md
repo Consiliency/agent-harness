@@ -8,6 +8,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Added
 
+- Run the 12 repo-local LEGIBLE assumption-probe live arms (`repo_constant`,
+  `roadmap_predicate`, `ast_call_predicate`, and `manifest_behavior`) directly from the
+  source checkout by explicit node ID in `.github/workflows/test.yml` (excluding
+  network/GitHub-auth probes and writing a separate JUnit XML outside the LEGIBLE 64-node
+  attestation) (agent-harness#2024).
 - Add a sanctioned `replan` lifecycle transition (`REPLAN_TRANSITION = "replan"`) to
   `phase_loop_runtime.plan_manifest.update_lifecycle` for phase entries from
   `imported`/`committed` (preserving `status = "committed"`, validating and merging new

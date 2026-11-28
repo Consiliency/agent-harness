@@ -701,6 +701,58 @@ jobs:
           path: ${{ runner.temp }}/junit-py312.xml
           if-no-files-found: error
 
+      - name: Run repo-local LEGIBLE assumption-probe live arms
+        # agent-harness#2024: the standalone step above copies tests/ without .git so
+        # _canonical_repo_ready() is False there. Run only the repo-local assumption
+        # probes directly from the source checkout by explicit node ID, excluding
+        # probes that need GitHub auth or network (github_*, remote_json_field,
+        # reviewtruth_fable_transition, and repo_digest). Keep this step's JUnit
+        # separate from junit-py312.xml and the LEGIBLE 64-node attestation.
+        working-directory: phase-loop-runtime
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
+          PYTHONPATH=src:tests python -c '
+          import test_legible_roadmap_contract as m
+          assert m._canonical_repo_ready(), "expected canonical source checkout for LEGIBLE live probes"
+          '
+          LEGIBLE_LIVE_NODES=(
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A1-PIN-TAG]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A1-PIN-SHA]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A2-LOCAL-VERSION]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A1-CONFORM-UNGATED]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A2-NO-DEPENDENCY]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A3-NO-DEGRADED-GATE]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A3-EC4]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A3-EC14]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A5-SHARED-EPOCH]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A5-RETRACTION]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A4-DISCOVERY]"
+            "tests/test_legible_roadmap_contract.py::test_assumption_probe_mutation_and_positive_control[LEGIBLE-A4-PER-ENTRY]"
+          )
+          PYTHONPATH=src:tests python -m pytest -q \
+            --junitxml="$RUNNER_TEMP/junit-legible-live-probes.xml" \
+            "${LEGIBLE_LIVE_NODES[@]}"
+          python - "$RUNNER_TEMP/junit-legible-live-probes.xml" "${LEGIBLE_LIVE_NODES[@]}" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          junit_path = sys.argv[1]
+          expected = [node.split("::", 1)[1] for node in sys.argv[2:]]
+          root = ET.parse(junit_path).getroot()
+          cases = root.findall(".//testcase")
+          actual = [c.attrib.get("name", "") for c in cases]
+          assert len(actual) == len(expected) and set(actual) == set(expected), (
+              f"LEGIBLE live probe JUnit mismatch: expected={expected}, actual={actual}"
+          )
+          bad = [
+              c.attrib.get("name")
+              for c in cases
+              if c.find("failure") is not None or c.find("error") is not None or c.find("skipped") is not None
+          ]
+          assert not bad, f"unexpected non-passing LEGIBLE live probe cases: {bad}"
+          PY
+
       - name: Wheel smoke — grok status from an installed wheel without the extra
         # GROKROLL §2.2: the built wheel alone, installed into its own environment that
         # cannot see this job's site-packages (which hold the grok-catalog extra), runs the
