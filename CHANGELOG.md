@@ -82,6 +82,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `injection._bundle_sha256` (`skill_bundle_sha256`) alongside `SKILL.md` and
   `references/`, so editing a helper script or asset updates the recorded bundle digest
   (agent-harness#1698).
+- Surface `seat_credential.notices` (such as `claude_seat_override_other_subscription` when a
+  stored seat-token override is ignored) from `panel_invoker.seat_profile` into the leg's
+  `seat_notices` on the Claude print route — matching the jailed route on both brokered and
+  non-brokered launches and on `SeatSandboxRefused` credential refusals (agent-harness#1682).
 - Thread the caller's environment (`RouteRequest.env`) through `seat_route` into Codex's
   `credential_present` and L6 credential preconditions (`seat_codex_credential.present(env)`,
   `seat_profile_codex`) so route pre-check, admission gate, and seat setup always resolve

@@ -5173,6 +5173,9 @@ class SeatProfile:
     #: for the measurement's definitions scan. Held in memory only: never in ``repr``,
     #: evidence, a fingerprint or a record.
     scan_values: tuple[bytes, ...] = field(default=(), repr=False, compare=False)
+    #: agent-harness#1682: typed seat notices from composing this profile (for example
+    #: ``claude_seat_override_other_subscription`` when a stored override was ignored).
+    notices: tuple[str, ...] = ()
 
 
 _OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
@@ -5760,6 +5763,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     keep_fds = set()
     redactions = []
     scan_values: tuple[bytes, ...] = ()
+    profile_notices: tuple[str, ...] = ()
     evidence = {}
     with contextlib.ExitStack() as stack:
         dependency_projection = None
@@ -5854,8 +5858,11 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             try:
                 seat_credential = _seat_credentials.resolve_claude_seat_credential(
                     _seat_credentials.login_margin_s(env=env), env=env)
-            except _seat_jail.SeatSandboxRefused:
+            except _seat_jail.SeatSandboxRefused as exc:
                 if SeatLaunchRole(role) is not SeatLaunchRole.PROVIDER_ADMIN:
+                    sink = _SEAT_OWNER_NOTICES.get()
+                    if sink is not None:
+                        sink.extend(n for n in exc.also if n not in sink)
                     raise
                 seat_credential = None
             if seat_credential is not None:
@@ -5865,6 +5872,13 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 keep_fds.add(token_fd)
                 profile_env[_seat_jail.CLAUDE_TOKEN_FD_ENV] = str(token_fd)
                 redactions.append(seat_credential.token.decode("ascii", errors="replace"))
+                profile_notices = tuple(seat_credential.notices)
+                # agent-harness#1682: carry ignored-override notices into the leg's notices
+                # on the print/owned route just as the jailed route does.
+                if SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW:
+                    sink = _SEAT_OWNER_NOTICES.get()
+                    if sink is not None:
+                        sink.extend(n for n in profile_notices if n not in sink)
             config = {"hasCompletedOnboarding": True, "bypassPermissionsModeAccepted": True,
                       "projects": {str(cwd): {"hasTrustDialogAccepted": True}}}
             data_file(".claude/.claude.json", json.dumps(config).encode())
@@ -6036,6 +6050,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 standalone_projection.digest if standalone_projection is not None else ""
             ),
             scan_values=scan_values,
+            notices=profile_notices,
         )
 
 
@@ -21878,9 +21893,16 @@ def _default_spawn(
             )
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()
-            if claude_sink and result[0] != "OK":
-                return _with_placement((result[0], result[1], claude_sink[-1]))
-            return _with_placement(result)
+            payload = (
+                (result[0], result[1], claude_sink[-1])
+                if claude_sink and result[0] != "OK"
+                else result
+            )
+            if seat_notices:
+                return _with_placement(_BrokeredSpawnResult(
+                    *payload, seat_notices=_dedupe(seat_notices),
+                ))
+            return _with_placement(payload)
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
         rc, review_text, log_text = _exec_leg(
@@ -21957,6 +21979,8 @@ def _default_spawn(
         _note_exec_refusal(exc, failure)
         if isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES:
             seat_notices.append(failure)
+        if isinstance(exc, _seat_jail.SeatSandboxRefused):
+            seat_notices.extend(n for n in exc.also if n not in seat_notices)
         if jailed and leg == "claude":
             # agent-harness#1253 round 2: a jailed Claude seat that fails here (e.g. its
             # namespace) still says when a stored override was ignored -- the decision's
