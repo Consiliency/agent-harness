@@ -483,8 +483,8 @@ def test_consumption_is_ready_admitted_plus_duplicates_and_empty_reports(tmp_pat
 
     assert corpus.ready_skills() == ["plan-phase"]
     newest_busy, oldest_busy = capped[1], capped[0]
-    assert {str(p) for p in (*ready, ready_repo_specific, newest_busy, duplicate, empty, pending_duplicate)} == consumed
-    for left in (oldest_busy, pending, pending_repo_specific):
+    assert {str(p) for p in (*ready, ready_repo_specific, newest_busy, duplicate, empty)} == consumed
+    for left in (oldest_busy, pending, pending_duplicate, pending_repo_specific):
         assert str(left) not in consumed
 
 
@@ -1047,6 +1047,7 @@ def test_editor_prose_states_the_consumption_rule(editor):
     assert "archive with the rest" not in text and "the collector filtered it) is still archived" not in text
     for reason in rc.ARCHIVABLE_EXCLUSIONS:
         assert f"`{reason}`" in text, f"{editor} does not name {reason}"
+    assert "whose kept twin is also consumed" in text, f"{editor} must state that duplicate_of consumption follows its kept twin"
     assert "repo-specific" in text.lower() and "stay in place" in text
 
 
@@ -1101,3 +1102,173 @@ def test_manifest_caps_boilerplate_lines_stripped_at_500_chars(tmp_path):
     assert not direct[4].endswith("…")
     assert "https://example.com/" not in direct[4]
     assert len(direct[4]) <= rc.MAX_MANIFEST_BOILERPLATE_LINE_CHARS
+
+
+def test_collect_deduplicates_aliased_roots_by_resolve(tmp_path):
+    """agent-harness#1657: aliased roots must not double-scan or archive the original file."""
+    root = tmp_path / "skills"
+    original = put(root, "codex-execute-detailed", "h", "b1", "r1", reflection(didnt="Pending evidence."))
+    alias = tmp_path / "skills-alias"
+    alias.symlink_to(root, target_is_directory=True)
+    dot_alias = root / "."
+
+    corpus, boilerplate = rc.collect([root, alias, dot_alias], min_reflections=2)
+    data = rc.manifest(corpus, boilerplate)
+
+    assert corpus.roots == [root]
+    assert [r.path for r in corpus.scanned] == [original]
+    assert corpus.scanned[0].excluded is None
+    assert data["reflections_consumed"] == []
+
+    artifacts = rc.write_corpus(corpus, boilerplate, tmp_path / "out")
+    assert rc.main(["archive", "--manifest", str(artifacts["manifest"]), "--root", str(root), "--root", str(alias)]) == 0
+    assert original.exists(), "aliased root caused the original below-threshold reflection to be archived"
+
+    # When the symlinked root comes first, it is kept as the single canonical scan root
+    # and reflections under it stay in_root and archivable when ready.
+    corpus_alias_first, boilerplate_alias_first = rc.collect([alias, root], min_reflections=1)
+    assert corpus_alias_first.roots == [alias]
+    assert len(corpus_alias_first.scanned) == 1
+    assert corpus_alias_first.scanned[0].in_root is True
+
+    # An unusable path whose lexical resolve() collides with a real root (e.g.
+    # parent/missing/../skills before parent/skills) must not suppress the real root.
+    unusable = tmp_path / "missing" / ".." / "skills"
+    assert not unusable.is_dir() and unusable.resolve() == root.resolve()
+    corpus_unusable_first, _ = rc.collect([unusable, root], min_reflections=1)
+    assert corpus_unusable_first.roots == [root]
+    assert [r.path for r in corpus_unusable_first.scanned] == [original]
+
+    out_alias = rc.write_corpus(corpus_alias_first, boilerplate_alias_first, tmp_path / "out-alias")
+    assert rc.main(["archive", "--manifest", str(out_alias["manifest"]), "--root", str(alias)]) == 0
+    assert not original.exists()
+    assert (original.parent / "archive" / original.name).exists()
+
+
+def test_default_roots_deduplicates_aliased_harness_and_bundle_override(tmp_path, home, monkeypatch):
+    """agent-harness#1657: default_roots() deduplicates symlinked harness/bundle roots while archive() accepts them."""
+    claude_root = home / ".claude" / "skills"
+    codex_root = home / ".codex" / "skills"
+    claude_root.mkdir(parents=True)
+    codex_root.parent.mkdir(parents=True, exist_ok=True)
+    codex_root.symlink_to(claude_root, target_is_directory=True)
+    bundle_alias = tmp_path / "bundle-alias"
+    bundle_alias.symlink_to(claude_root, target_is_directory=True)
+    monkeypatch.setenv("PHASE_LOOP_SKILL_BUNDLE", str(bundle_alias))
+
+    original = put(claude_root, "codex-execute-detailed", "h", "b1", "r1", reflection(didnt="Single reflection."))
+
+    roots = rc.default_roots()
+    resolved_roots = [r.resolve() for r in roots]
+    assert resolved_roots.count(claude_root.resolve()) == 1
+    assert claude_root in roots and codex_root not in roots and bundle_alias not in roots
+
+    corpus, boilerplate = rc.collect(min_reflections=2)
+    assert [r.path for r in corpus.scanned] == [original]
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+    # Configured aliased roots remain valid authorization boundaries for archive().
+    aliased_path = bundle_alias / original.relative_to(claude_root)
+    assert rc.archive([aliased_path], dry_run=True) == [(aliased_path, aliased_path.parent / "archive" / aliased_path.name)]
+
+
+def test_duplicate_is_consumed_only_when_its_kept_twin_is_consumed(tmp_path):
+    """agent-harness#1657: duplicates follow their kept twin's consumption status."""
+    root = tmp_path / "skills"
+    copies = tmp_path / "copies"
+
+    # 1. Ready skill: kept twin admitted & ready -> both consumed.
+    ready_kept = put(root, "codex-plan-phase", "h", "b1", "r1", reflection(didnt="Ready friction 1."))
+    ready_dup = put(copies, "codex-plan-phase", "h", "b1", "r1", reflection(didnt="Ready friction 1.", stamp="2026-10-02T00:00:00Z"))
+    ready_second = put(root, "codex-plan-phase", "h", "b2", "r2", reflection(didnt="Ready friction 2."))
+
+    # 2. Below-threshold skill: kept twin admitted but not ready -> neither consumed.
+    pending_kept = put(root, "codex-execute-detailed", "h", "b1", "r1", reflection(didnt="Pending friction."))
+    pending_dup = put(copies, "codex-execute-detailed", "h", "b1", "r1", reflection(didnt="Pending friction.", stamp="2026-10-02T00:00:00Z"))
+
+    # 3. Empty report (no_friction_or_proposal) on a below-threshold skill: kept twin consumed -> duplicate consumed.
+    empty_kept = put(root, "codex-execute-phase", "h", "b1", "r1", reflection(didnt="", improvements="None."))
+    empty_dup = put(copies, "codex-execute-phase", "h", "b1", "r1", reflection(didnt="", improvements="None.", stamp="2026-10-02T00:00:00Z"))
+
+    # 4. Repo-specific proposal without friction: kept twin retained -> duplicate retained.
+    repo_kept = put(root, "codex-task-contextualizer", "h", "b1", "r1", reflection(didnt="", improvements="Fix other-repo#99."))
+    repo_dup = put(copies, "codex-task-contextualizer", "h", "b1", "r1", reflection(didnt="", improvements="Fix other-repo#99.", stamp="2026-10-02T00:00:00Z"))
+
+    # 5. Per-branch cap exclusion on a ready skill: older capped kept twin retained -> its duplicate retained.
+    capped_kept = put(root, "codex-plan-phase", "h", "busy", "r1", reflection(didnt="Older busy friction.", stamp="2026-10-01T00:00:00Z"))
+    capped_dup = put(copies, "codex-plan-phase", "h", "busy", "r1", reflection(didnt="Older busy friction.", stamp="2026-10-02T00:00:00Z"))
+    capped_newest = put(root, "codex-plan-phase", "h", "busy", "r2", reflection(didnt="Newer busy friction.", stamp="2026-10-03T00:00:00Z"))
+
+    corpus, boilerplate = rc.collect([root, copies], min_reflections=2, per_branch_cap=1)
+    by_path = {r.path: r for r in corpus.scanned}
+    assert (by_path[ready_dup].excluded or "").startswith("duplicate_of:")
+    assert (by_path[pending_dup].excluded or "").startswith("duplicate_of:")
+    assert by_path[empty_kept].excluded == "no_friction_or_proposal"
+    assert (by_path[empty_dup].excluded or "").startswith("duplicate_of:")
+    assert by_path[repo_kept].excluded == "improvements_repo_specific"
+    assert (by_path[repo_dup].excluded or "").startswith("duplicate_of:")
+    assert by_path[capped_kept].excluded == "per_branch_cap:1"
+    assert (by_path[capped_dup].excluded or "").startswith("duplicate_of:")
+
+    consumed = set(rc.manifest(corpus, boilerplate)["reflections_consumed"])
+    expected_consumed = {str(p) for p in (ready_kept, ready_dup, ready_second, capped_newest, empty_kept, empty_dup)}
+    assert consumed == expected_consumed
+    for retained in (pending_kept, pending_dup, repo_kept, repo_dup, capped_kept, capped_dup):
+        assert str(retained) not in consumed
+
+
+def test_duplicate_of_out_of_root_twin_and_dangling_duplicate_are_not_consumed(tmp_path):
+    """agent-harness#1657: if the kept twin leaves its root (not consumed) or is missing, duplicates stay unconsumed."""
+    external = tmp_path / "external"
+    put(external, "codex-plan-phase", "h", "b1", "r1", reflection(didnt="External twin friction."))
+    # Name root_a before root_b so the symlinked skill reflection sorts first and becomes the kept twin.
+    root_a = tmp_path / "a-root"
+    root_b = tmp_path / "b-root"
+    root_a.mkdir()
+    (root_a / "codex-plan-phase").symlink_to(external / "codex-plan-phase", target_is_directory=True)
+    dup_in_b = put(root_b, "codex-plan-phase", "h", "b1", "r1", reflection(didnt="External twin friction."))
+    local_other = put(root_b, "codex-plan-phase", "h", "b2", "r2", reflection(didnt="Second ready friction."))
+
+    corpus, boilerplate = rc.collect([root_a, root_b], min_reflections=2)
+    by_path = {r.path: r for r in corpus.scanned}
+    kept_in_a = root_a / "codex-plan-phase" / "reflections" / "h" / "b1" / "r1.md"
+
+    assert corpus.ready_skills() == ["plan-phase"]
+    assert by_path[kept_in_a].in_root is False
+    assert by_path[dup_in_b].in_root is True
+    assert by_path[dup_in_b].excluded == f"duplicate_of:{by_path[kept_in_a].id}"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == [str(local_other)]
+
+    # Direct Corpus edge cases: transitive duplicate chain follows root twin; malformed/dangling duplicates never consume.
+    def make_ref(rid: str, *, excluded: str | None = None, in_root: bool = True) -> rc.Reflection:
+        return rc.Reflection(
+            path=root_b / "codex-plan-phase" / "reflections" / "h" / "b" / f"{rid}.md",
+            root=root_b,
+            skill="codex-plan-phase",
+            harness="codex",
+            bare_skill="plan-phase",
+            repo_hash="h",
+            branch_slug="b",
+            run_id=rid,
+            timestamp="2026-10-01T00:00:00Z",
+            sections={"didnt": "x"},
+            raw="x",
+            id=rid,
+            excluded=excluded,
+            in_root=in_root,
+        )
+
+    r1 = make_ref("R0001")
+    r2 = make_ref("R0002", excluded="duplicate_of:R0001")
+    r3 = make_ref("R0003", excluded="duplicate_of:R0002")
+    dangling = make_ref("R0004", excluded="duplicate_of:R9999")
+    malformed = make_ref("R0005", excluded="duplicate_of:")
+    bare = make_ref("R0006", excluded="duplicate_of")
+    out_of_root_dup = make_ref("R0007", excluded="duplicate_of:R0001", in_root=False)
+    synthetic = rc.Corpus(
+        roots=[root_b],
+        scanned=[r1, r2, r3, dangling, malformed, bare, out_of_root_dup],
+        out_of_scope=[],
+        min_reflections=1,
+    )
+    assert [r.id for r in rc.consumed(synthetic)] == ["R0001", "R0002", "R0003"]

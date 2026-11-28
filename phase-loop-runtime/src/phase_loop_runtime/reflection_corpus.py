@@ -142,18 +142,53 @@ class Corpus:
         return bool(self.ready_skills())
 
 
-def default_roots() -> list[Path]:
-    """Every harness's installed skill root; reflections land in more than one.
-
-    A ``PHASE_LOOP_SKILL_BUNDLE`` override is where writers put reflections, so it
-    is scanned too.
-    """
+def _configured_default_roots() -> list[Path]:
     roots = [root.expanduser() for root in HARNESS_DEFAULT_SKILL_ROOTS.values()]
     if os.environ.get("PHASE_LOOP_SKILL_BUNDLE"):
         override = resolve_skill_bundle_root()
         if override not in roots:
             roots.append(override)
     return roots
+
+
+def _root_key(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return Path(os.path.abspath(path))
+
+
+def _dedup_roots(roots: Iterable[Path]) -> list[Path]:
+    """Deduplicate scan roots by resolved canonical path, preserving first-seen order.
+
+    When two paths collide on the same resolved key (for example
+    ``parent/missing/../skills`` followed by ``parent/skills``), prefer a
+    traversable directory over an unusable path so a non-existent alias cannot
+    suppress a valid scan root.
+    """
+    deduped: list[Path] = []
+    index_by_key: dict[Path, int] = {}
+    for raw in roots:
+        expanded = Path(raw).expanduser()
+        key = _root_key(expanded)
+        existing = index_by_key.get(key)
+        if existing is not None:
+            if not deduped[existing].is_dir() and expanded.is_dir():
+                deduped[existing] = expanded
+            continue
+        index_by_key[key] = len(deduped)
+        deduped.append(expanded)
+    return deduped
+
+
+def default_roots() -> list[Path]:
+    """Every harness's installed skill root; reflections land in more than one.
+
+    A ``PHASE_LOOP_SKILL_BUNDLE`` override is where writers put reflections, so it
+    is scanned too. Roots that resolve to the same directory are deduplicated so an
+    aliased root is never scanned twice (agent-harness#1657).
+    """
+    return _dedup_roots(_configured_default_roots())
 
 
 def split_skill(skill: str) -> tuple[str, str] | None:
@@ -401,7 +436,7 @@ def collect(
     per_branch_cap: int = DEFAULT_PER_BRANCH_CAP,
     boilerplate_min: int = DEFAULT_BOILERPLATE_MIN,
 ) -> tuple[Corpus, list[str]]:
-    roots = [Path(root).expanduser() for root in (roots if roots is not None else default_roots())]
+    roots = _dedup_roots(roots if roots is not None else default_roots())
     scanned: list[Reflection] = []
     out_of_scope: list[Path] = []
     for root in roots:
@@ -501,28 +536,61 @@ def render_bundle(corpus: Corpus) -> str:
 
 
 # Exclusions whose reflection carries no evidence a later pass could use.
+# ``duplicate_of`` is conditional: a duplicate is consumed only when its kept twin
+# is also consumed in this pass (agent-harness#1657).
 ARCHIVABLE_EXCLUSIONS = ("duplicate_of", "no_friction_or_proposal")
+_UNCONDITIONAL_ARCHIVABLE_EXCLUSIONS = frozenset(ARCHIVABLE_EXCLUSIONS) - {"duplicate_of"}
+
+
+def _duplicate_target_id(excluded: str | None) -> str | None:
+    if not excluded:
+        return None
+    prefix, sep, target = excluded.partition(":")
+    if prefix == "duplicate_of" and sep and target:
+        return target
+    return None
 
 
 def consumed(corpus: Corpus) -> list[Reflection]:
     """Reflections this pass uses up, so the editor may archive them.
 
-    That is the admitted reflections of ready skills (they feed the plan), plus, for
-    any skill, reflections excluded as a duplicate or as having no friction and no
-    proposal. Every other reflection stays in place: admitted ones of a skill below
-    the threshold so evidence can accumulate, and the rest of the excluded ones
-    (a dropped repo-specific proposal with no friction, per-branch cap, oversized)
-    because they may still be evidence.
-    Repo-specific Improvements are removed without dropping usable friction.
-    A reflection whose real location leaves
-    its scan root is never consumed, because ``archive`` would refuse it.
+    That is the admitted reflections of ready skills (they feed the plan),
+    reflections excluded as having no friction and no proposal, and duplicates
+    (``duplicate_of:<id>``) whose kept twin is also consumed in this pass. Every
+    other reflection stays in place: admitted ones of a skill below the threshold
+    (and their duplicates) so evidence can accumulate, duplicates of non-consumed
+    reflections, and the rest of the excluded ones (a dropped repo-specific
+    proposal with no friction, per-branch cap, oversized) because they may still
+    be evidence. Repo-specific Improvements are removed without dropping usable
+    friction. A reflection whose real location leaves its scan root is never
+    consumed, because ``archive`` would refuse it.
     """
     ready = set(corpus.ready_skills())
-    return [
-        r for r in corpus.scanned
-        if r.in_root
-        and ((r.excluded is None and r.bare_skill in ready) or (r.excluded or "").split(":")[0] in ARCHIVABLE_EXCLUSIONS)
-    ]
+    consumed_indices: set[int] = set()
+    consumed_ids: set[str] = set()
+    for idx, reflection in enumerate(corpus.scanned):
+        if not reflection.in_root:
+            continue
+        reason = (reflection.excluded or "").split(":", 1)[0]
+        if (reflection.excluded is None and reflection.bare_skill in ready) or (
+            reason in _UNCONDITIONAL_ARCHIVABLE_EXCLUSIONS
+        ):
+            consumed_indices.add(idx)
+            if reflection.id:
+                consumed_ids.add(reflection.id)
+    changed = True
+    while changed:
+        changed = False
+        for idx, reflection in enumerate(corpus.scanned):
+            if idx in consumed_indices or not reflection.in_root:
+                continue
+            target_id = _duplicate_target_id(reflection.excluded)
+            if target_id is not None and target_id in consumed_ids:
+                consumed_indices.add(idx)
+                if reflection.id:
+                    consumed_ids.add(reflection.id)
+                changed = True
+    return [reflection for idx, reflection in enumerate(corpus.scanned) if idx in consumed_indices]
 
 
 def _cap_manifest_line(text: str) -> str:
@@ -635,7 +703,7 @@ def archive(
     moves, so one out-of-root path moves nothing and raises ``ValueError``. A path
     that no longer exists (already archived) is skipped.
     """
-    allowed = [Path(os.path.abspath(Path(root).expanduser())) for root in [*default_roots(), *(roots or [])]]
+    allowed = [Path(os.path.abspath(Path(root).expanduser())) for root in [*_configured_default_roots(), *(roots or [])]]
     candidates = [Path(os.path.abspath(Path(path).expanduser())) for path in paths]
     refused = [path for path in candidates if not _archivable(path, allowed)]
     if refused:
