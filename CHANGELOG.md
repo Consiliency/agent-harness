@@ -86,6 +86,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Cap each redacted item in `reflection_corpus.manifest(...)["boilerplate_lines_stripped"]`
   at 500 characters plus an ellipsis (`MAX_MANIFEST_BOILERPLATE_LINE_CHARS = 500`), matching
   agent-harness#1622 round 3 (agent-harness#1661).
+- Deduplicate `reflection_corpus` scan roots by `resolve()` in `default_roots()` and
+  `collect()` (so symlinked or aliased roots no longer double-scan or archive the original
+  file), and consume a `duplicate_of:<id>` reflection only when its kept twin is also
+  consumed in the same pass (agent-harness#1657).
 - Add `"codex"` to `panel_invoker._SANDBOX_INCAPABLE_BROKERED_LEGS` so the retained
   sealed non-jailed brokered Codex route (`_brokered_codex_command`, sealed in
   agent-harness#1916) no longer reports `seat_filesystem_unconfined` in launch modes,
