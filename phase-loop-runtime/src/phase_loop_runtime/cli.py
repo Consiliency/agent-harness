@@ -2975,7 +2975,12 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
         return _seat_token_status()
 
     if args.seat_sandbox_action == "qualify":
-        from . import seat_jail_autoqualify, seat_jail_qualification, seat_qualification_entry
+        from . import (
+            seat_jail,
+            seat_jail_autoqualify,
+            seat_jail_qualification,
+            seat_qualification_entry,
+        )
 
         try:
             # The same host lock as a first-use run, so the two never race the store.
@@ -2988,6 +2993,14 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
                 # agent-harness#1357: a missing prerequisite names the literal fix.
                 print("seat-sandbox qualify: fix: "
                       f"{seat_jail_autoqualify.fix_for('prerequisite_missing')}", file=sys.stderr)
+            return 1
+        except seat_jail.SeatSandboxRefused as exc:
+            reason = seat_jail_autoqualify.classify_failure(exc)
+            detail = str(exc)
+            suffix = f": {detail}" if detail and detail != exc.code else ""
+            print(f"seat-sandbox qualify: cannot run: {exc.code}{suffix}", file=sys.stderr)
+            print("seat-sandbox qualify: fix: "
+                  f"{seat_jail_autoqualify.fix_for(reason)}", file=sys.stderr)
             return 1
         except TimeoutError:
             print("seat-sandbox qualify: cannot run: another qualification holds the lock",

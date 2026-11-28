@@ -1351,6 +1351,73 @@ def test_a_jail_qualified_now_says_so_on_every_seat_of_the_board(monkeypatch):
     assert "jailed (qualified now)" in modes[0].render()
 
 
+def test_jailcore_qualification_key_outcome_surfaces_private_dir_refusal_on_mode_line(
+        monkeypatch):
+    # agent-harness#1287: JAILCORE ensure_qualified remembers outcomes under
+    # key_digest(qualification_key), not jail_profile_digest(leg). The mode line must look up
+    # the route's qualification key and display SeatSandboxRefused details + chmod 700 fix.
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+    from phase_loop_runtime.seat_route_contract import key_digest
+
+    _modes(monkeypatch, qualified=True)
+    aq._RECENT.clear()
+    for cached in list(pi._JAILCORE_ROUTE_CACHE.values()):
+        pi._release_seat_route(cached)
+    pi._JAILCORE_ROUTE_CACHE.clear()
+
+    def _ensure(leg, *, qualification_key=None, **_kwargs):
+        assert qualification_key is not None
+        digest = key_digest(qualification_key)
+        assert digest != seat_jail.jail_profile_digest(leg)
+        outcome = aq.Outcome(
+            aq.FAILED,
+            "private_dir_unsafe",
+            exception_class="SeatSandboxRefused",
+            refusal_code="seat_sandbox_refused:identity",
+            refusal_message="private directory owner or mode",
+        )
+        return aq._remember(digest, outcome)
+
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified", _ensure)
+    board = types.SimpleNamespace(seats=[
+        types.SimpleNamespace(harness="claude", seat_key="claude:a", model="m"),
+    ])
+    modes = pi._seat_launch_modes(
+        board, mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64), base_env={})
+    claude = next(m for m in modes if m.leg == "claude")
+    assert (claude.mode, claude.code) == ("degraded", "seat_jail_qualification_failed")
+    assert "reason: private_dir_unsafe (SeatSandboxRefused: private directory owner or mode)" in claude.why
+    assert claude.fix == aq.REASON_FIXES["private_dir_unsafe"]
+    assert "chmod 700 /tmp/phase-loop-<uid>" in claude.fix
+
+
+def test_jailcore_qualification_key_qualified_now_surfaces_on_mode_line(monkeypatch):
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+    from phase_loop_runtime.seat_route_contract import key_digest
+
+    _modes(monkeypatch, qualified=True)
+    aq._RECENT.clear()
+    for cached in list(pi._JAILCORE_ROUTE_CACHE.values()):
+        pi._release_seat_route(cached)
+    pi._JAILCORE_ROUTE_CACHE.clear()
+
+    def _ensure(leg, *, qualification_key=None, **_kwargs):
+        assert qualification_key is not None
+        return aq._remember(key_digest(qualification_key), aq.Outcome(aq.QUALIFIED_NOW))
+
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified", _ensure)
+    board = types.SimpleNamespace(seats=[
+        types.SimpleNamespace(harness="claude", seat_key="claude:a", model="m"),
+    ])
+    modes = pi._seat_launch_modes(
+        board, mode="review",
+        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64), base_env={})
+    claude = next(m for m in modes if m.leg == "claude")
+    assert claude.mode == "jailed" and claude.qualified_now is True
+    assert "jailed (qualified now)" in claude.render()
+
+
 def test_no_login_and_no_override_is_degraded_and_will_not_run(monkeypatch):
     claude = next(
         m for m in _modes(monkeypatch, profile_credential=False) if m.leg == "claude"

@@ -2231,6 +2231,18 @@ def _seat_launch_modes(
                                           ignored)
         return credential[margin]
 
+    def _recent_qualification_outcome(leg: str, resolved: object):
+        qkey = getattr(resolved, "qualification_key", None)
+        if qkey is not None:
+            outcome = _seat_jail_autoqualify.recent_outcome(
+                _seat_route_contract.key_digest(qkey)
+            )
+            if outcome is not None:
+                return outcome
+        if _seat_profiles.profile_for(leg) is not None:
+            return _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
+        return None
+
     sdk_ready: dict[str, object] = {}
     sdk_refused: set[int] = set()
     modes = []
@@ -2293,14 +2305,12 @@ def _seat_launch_modes(
                                          "this route has no file tools", "", None, position))
         elif refusal == "seat_jail_qualification_failed":
             # Plan amendments A2 + A3b: degraded and not run, with the typed reason and its fix.
-            profile = _seat_profiles.profile_for(leg)
-            outcome = (_seat_jail_autoqualify.recent_outcome(
-                _seat_jail.jail_profile_digest(leg)
-            ) if profile is not None else None)
+            outcome = _recent_qualification_outcome(leg, resolved)
             reason = outcome.reason if outcome is not None and outcome.reason else "error"
+            detail = _seat_jail_autoqualify.format_reason(outcome)
             _what, why, _fix = _seat_jail.NOTICES[refusal]
             modes.append(sp.SeatMode(key, leg, sp.MODE_DEGRADED, refusal,
-                                     f"{why}; reason: {reason}",
+                                     f"{why}; reason: {detail}",
                                      _seat_jail_autoqualify.fix_for(reason), None, position))
         elif refusal is not None:
             # agent-harness#1244: every route that is not jailed lands here, sealed codes
@@ -2329,9 +2339,8 @@ def _seat_launch_modes(
                 continue
             kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
                                               else (sp.MODE_JAILED, None, None, None, ()))
-            profile = _seat_profiles.profile_for(leg)
-            if leg not in qualified_now and profile is not None:
-                outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
+            if leg not in qualified_now:
+                outcome = _recent_qualification_outcome(leg, resolved)
                 qualified_now[leg] = (outcome is not None
                                       and outcome.state == _seat_jail_autoqualify.QUALIFIED_NOW)
             qualified_now.setdefault(leg, False)
