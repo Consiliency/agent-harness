@@ -802,9 +802,22 @@ def resolve_execution_policy(
     if model_selection.model is not None and model_selection.model != model_selection.model.strip():
         model_selection = replace(model_selection, model=model_selection.model.strip())
 
+    pre_flip_executor = executor
     policy, source = _merge_policies(plan_policy, roadmap_policy, model_policy_rule)
     if _claude_model_needs_claude_executor(executor, model_selection.model, policy):
         executor = "claude"
+        # agent-harness#1711: when the shipped policy rule was computed for the
+        # pre-flip executor (pi), recompute it for the post-flip executor (claude)
+        # so implementer actions pick up Claude's IMPLEMENTER_EFFORTS entry while
+        # still letting plan/roadmap/operator effort pins, custom rules, and any
+        # higher-priority non-claude policy executor (e.g. grok) win.
+        if (
+            (policy is None or policy.executor in (None, "claude"))
+            and model_policy_rule is not None
+            and model_policy_rule == shipped_model_policy_rule(action, pre_flip_executor)
+        ):
+            model_policy_rule = shipped_model_policy_rule(action, executor)
+            policy, source = _merge_policies(plan_policy, roadmap_policy, model_policy_rule)
     work_unit_kind = (
         (policy.work_unit_kind if policy else None)
         or ACTION_WORK_UNITS[action]
@@ -920,6 +933,31 @@ def _claude_model_needs_claude_executor(
     if policy is not None and policy.executor == "pi" and policy.override_reason:
         return False
     return model.lower().startswith(("claude", "anthropic/claude"))
+
+
+def claude_model_executor_flip_target(
+    *,
+    executor: str,
+    model: str | None,
+    plan_policy: ExecutionPolicyRule | None = None,
+    roadmap_policy: ExecutionPolicyRule | None = None,
+    model_policy_rule: ExecutionPolicyRule | None = None,
+) -> str | None:
+    """Return ``"claude"`` when a ``pi`` dispatch with a Claude model pin flips to Claude.
+
+    Mirrors ``resolve_execution_policy``'s routing rule: flips only when the
+    incoming executor is ``"pi"``, the stripped model id targets Claude, no
+    reasoned ``pi`` policy override blocks the flip, and no higher-priority
+    policy layer pins a different executor (``policy.executor in (None, "claude")``).
+    """
+    if model is None or not model.strip():
+        return None
+    policy, _ = _merge_policies(plan_policy, roadmap_policy, model_policy_rule)
+    if not _claude_model_needs_claude_executor(executor, model.strip(), policy):
+        return None
+    if policy is not None and policy.executor not in (None, "claude"):
+        return None
+    return "claude"
 
 
 def resolve_model_selection_from_policy(
