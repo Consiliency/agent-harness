@@ -19,6 +19,7 @@ product's argv, verbatim.
 
 from __future__ import annotations
 
+import inspect
 import os
 import shutil
 import subprocess
@@ -104,12 +105,22 @@ def _assert_every_named_path_is_bound(argv, *, cwd: Path, root: Path) -> list[tu
     return named
 
 
+def _assert_no_writable_tree_grant(launch_kwargs: dict[str, object]) -> None:
+    """Assert that the real launch boundary call carries no writable-tree grant (agent-harness#1746)."""
+    bad = {
+        key: value
+        for key, value in launch_kwargs.items()
+        if "writable" in key.lower() and value
+    }
+    assert not bad, f"launch unexpectedly requested writable tree grant: {bad}"
+
+
 def _captured_launches(monkeypatch, leg: str, review_dir: Path, out_dir: Path):
-    """The argv and cwd the product hands the launch boundary for a brokered ``leg``."""
-    seen: list[tuple[list[str], Path]] = []
+    """The argv, cwd, and launch kwargs the product hands the launch boundary for a brokered ``leg``."""
+    seen: list[tuple[list[str], Path, dict[str, object]]] = []
 
     def fake_liveness(cmd, **kwargs):
-        seen.append((list(cmd), Path(kwargs["cwd"])))
+        seen.append((list(cmd), Path(kwargs["cwd"]), dict(kwargs)))
         return pi._LegRun(0, "AGREE", "")
 
     monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
@@ -133,18 +144,25 @@ def test_a_brokered_seat_can_see_every_host_path_its_launch_argv_names(tmp_path,
         tree = _staged_tree(stage_root)
         review_dir = tree.parent
     else:
-        tree, review_dir = None, tmp_path / "sealed-review"
+        tree, review_dir = None, stage_root / "sealed-review"
         review_dir.mkdir()
-    out_dir = tmp_path / f"out-{leg}"
-    for argv, cwd in _captured_launches(monkeypatch, leg, review_dir, out_dir):
+    out_dir = stage_root / f"out-{leg}"
+    for argv, cwd, launch_kwargs in _captured_launches(monkeypatch, leg, review_dir, out_dir):
         assert argv[0] == leg
         assert cwd == out_dir
         named = _assert_every_named_path_is_bound(argv, cwd=cwd, root=tmp_path)
+        if spaces:
+            assert " " in str(cwd.relative_to(tmp_path))
+            assert any(" " in str(path.relative_to(tmp_path)) for _flag, path in named), (leg, argv)
+        else:
+            assert " " not in str(cwd.relative_to(tmp_path))
+            assert all(" " not in str(path.relative_to(tmp_path)) for _flag, path in named), (leg, argv)
         if tree is not None and leg != "codex":
             # The instrument's own check: it does find the staged tree in this argv, so a
             # pass above is a statement about that path and not about an empty list.
             assert tree in [path for _flag, path in named], (leg, argv)
         if leg == "grok":
+            _assert_no_writable_tree_grant(launch_kwargs)
             assert argv.count("--cwd") == 1
             assert argv[argv.index("--cwd") + 1] == str(tree if sandboxed else out_dir)
             with pi._seat_command_profile(
@@ -226,6 +244,9 @@ def test_the_launched_seat_finds_every_host_path_its_argv_names(tmp_path, case):
             out, err = process.communicate(timeout=60)
         finally:
             pi._terminate_process_group(process)
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
     assert process.returncode == 0, (case, out, err)
 
 
@@ -242,3 +263,21 @@ def test_the_instrument_reports_a_host_path_named_through_an_unbound_flag(tmp_pa
             _assert_every_named_path_is_bound(argv, cwd=out_dir, root=tmp_path)
     assert _assert_every_named_path_is_bound(
         ["x", "--add-dir", str(tree), "-"], cwd=out_dir, root=tmp_path) == [("--add-dir", tree)]
+
+
+def test_the_launch_grant_observer_rejects_a_writable_tree_request(tmp_path):
+    """Falsifier for the launch-boundary writable-grant check (agent-harness#1746):
+    a mutated leg requesting ``writable_tree`` or ``writable_trees`` fails the assertion,
+    and production ``_run_leg_with_liveness`` exposes no writable-tree parameter."""
+    tree = tmp_path / "review" / TREE
+    tree.mkdir(parents=True)
+    _assert_no_writable_tree_grant({"cwd": tmp_path, "env": {}, "deadline_s": 60.0})
+    _assert_no_writable_tree_grant({"cwd": tmp_path, "writable_tree": None, "writable_trees": ()})
+    for mutated_kwargs in (
+        {"cwd": tmp_path, "writable_tree": tree},
+        {"cwd": tmp_path, "writable_trees": (tree,)},
+    ):
+        with pytest.raises(AssertionError, match="writable tree grant"):
+            _assert_no_writable_tree_grant(mutated_kwargs)
+    params = inspect.signature(pi._run_leg_with_liveness).parameters
+    assert not any("writable" in name.lower() for name in params), sorted(params)
