@@ -12989,7 +12989,9 @@ def board_wide_failure_summary(legs: Sequence[PanelLegResult]) -> str | None:
     if details[0] and not details[0].startswith("unknown failure") and len(set(details)) == 1:
         return f"all {len(legs)} seats failed with {details[0]}"
     if all(detail.startswith("unknown failure") for detail in details):
-        return f"all {len(legs)} seats failed/degraded; inspect retained leg logs"
+        if any("; CLI output: leg-logs/" in detail for detail in details):
+            return f"all {len(legs)} seats failed/degraded; inspect retained leg logs"
+        return f"all {len(legs)} seats failed/degraded"
     return f"all {len(legs)} seats failed/degraded"
 
 

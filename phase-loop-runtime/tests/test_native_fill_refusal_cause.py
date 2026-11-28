@@ -198,6 +198,18 @@ def test_cli_board_wide_unknown_failure_emits_json_summary_and_retains_leg_logs(
     assert all(path.is_file() for path in created_logs), "leg logs must be retained on NativeFillRefusalError"
 
 
+def test_board_wide_unknown_failure_without_retained_logs_omits_log_hint():
+    """P3 regression: when every seat reports `CLI output not retained`, the summary must
+    not tell operators to inspect retained leg logs."""
+    legs = [
+        pi.PanelLegResult(leg="claude", status="DEGRADED", text="", detail=pi._UNKNOWN_DETAIL, seat_key="claude:a"),
+        pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=pi._UNKNOWN_DETAIL, seat_key="codex:b"),
+    ]
+    summary = pi.board_wide_failure_summary(legs)
+    assert summary == "all 2 seats failed/degraded"
+    assert "leg logs" not in summary
+
+
 def test_apply_native_leg_fills_keeps_original_legs_snapshot_when_later_fill_refuses():
     """P2 regression: when an earlier fill binds or degrades tentatively before a later
     fill refuses, `NativeFillRefusalError.legs` and the board-wide summary reflect the
