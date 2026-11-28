@@ -510,7 +510,9 @@ def _jailed_route(leg, **_k):
 def test_a_jailed_claude_seat_is_not_marked_unreadable(tmp_path, monkeypatch, qualified, unreadable):
     import dataclasses
 
-    from phase_loop_runtime import seat_jail_autoqualify as aq, seat_profiles
+    from phase_loop_runtime import (
+        sandbox_egress, seat_egress_proxy, seat_jail_autoqualify as aq, seat_profiles, seat_route,
+    )
     from test_seat_login_wait_a3_1166 import _route_claude_jailed
 
     _route_claude_jailed(monkeypatch)
@@ -521,6 +523,9 @@ def test_a_jailed_claude_seat_is_not_marked_unreadable(tmp_path, monkeypatch, qu
         require_projected_runtime=False,
     )
     monkeypatch.setitem(seat_profiles._REGISTRY, "codex", codex_profile)
+    monkeypatch.setattr(sandbox_egress, "egress_required", lambda: True)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
+    monkeypatch.setattr(seat_route, "_allowlist_digest_for_launch", lambda _profile: "e" * 64)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
                         lambda *a, **k: aq.Outcome(aq.QUALIFIED) if qualified
                         else aq.Outcome(aq.FAILED, "falsifiers_failed"))

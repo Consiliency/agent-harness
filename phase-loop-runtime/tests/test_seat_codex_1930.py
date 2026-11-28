@@ -140,7 +140,7 @@ def test_pointer_preflight_tracks_codex_jail_decision_per_board_position(tmp_pat
     unjailed seat gets ``seat_pointer_brief_unreadable``; the jailed seat stays grounded."""
     import dataclasses
 
-    from phase_loop_runtime import seat_profiles
+    from phase_loop_runtime import sandbox_egress, seat_egress_proxy, seat_profiles, seat_route
     from test_seat_login_wait_a3_1166 import _route_claude_jailed
 
     _route_claude_jailed(monkeypatch, fake_capacity=False)
@@ -151,6 +151,9 @@ def test_pointer_preflight_tracks_codex_jail_decision_per_board_position(tmp_pat
         require_projected_runtime=False,
     )
     monkeypatch.setitem(seat_profiles._REGISTRY, "codex", codex_profile)
+    monkeypatch.setattr(sandbox_egress, "egress_required", lambda: True)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
+    monkeypatch.setattr(seat_route, "_allowlist_digest_for_launch", lambda _profile: "e" * 64)
 
     leased = {"count": 0}
 
