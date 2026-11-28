@@ -5,8 +5,8 @@ adapter runs read this file too: it is not preloaded with the skill.
 
 ## Contents
 
-- Preamble lane archetype (SL-0)
-- Docs-sweep lane template (numeric SL-N)
+- Preamble lane archetype
+- Docs-sweep lane template
 
 ## Preamble lane archetype
 

@@ -5,7 +5,7 @@ Reference for `claude-plan-detailed` (linked from its `SKILL.md`, Step 8).
 ## Contents
 
 - Resolve paths
-- Close-out agent with the FILE 1 reflection and FILE 2 handoff templates
+- Close-out agent
 
 ## Resolve paths
 

@@ -13,6 +13,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   source checkout by explicit node ID in `.github/workflows/test.yml` (excluding
   network/GitHub-auth probes and writing a separate JUnit XML outside the LEGIBLE 64-node
   attestation) (agent-harness#2024).
+- Add a CommonMark-aware mechanical TOC lint (`test_skill_reference_toc_lint_1688.py`, wired
+  into `.github/workflows/skills-parity.yml`) verifying that every `skills-src/`
+  `references/*.md` over 100 lines has a top-level `## Contents` section and that every
+  `## Contents` bullet or `#anchor` link names an existing heading in that file, and align
+  the two drifted `## Contents` bullets in `claude-plan-detailed/references/closeout-reflection-handoff.md`
+  and `claude-plan-phase/references/lane-templates.md` with regenerated skill bundles
+  (agent-harness#1688).
 - Add a sanctioned `replan` lifecycle transition (`REPLAN_TRANSITION = "replan"`) to
   `phase_loop_runtime.plan_manifest.update_lifecycle` for phase entries from
   `imported`/`committed` (preserving `status = "committed"`, validating and merging new
