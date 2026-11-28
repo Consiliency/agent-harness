@@ -62,8 +62,17 @@ goes into the shared bundle when another harness's `SKILL.md` links it by its
 `references/<path>` and ships no copy of its own. Otherwise it goes into
 `_overrides/<harness>/references/` and installs only for that harness. A
 harness-only reference is copied verbatim; it is not neutralized and its
-`<harness>-` tokens are not expanded. Link reference files one level deep from
-`SKILL.md`, and open any reference file over 100 lines with a table of contents.
+`<harness>-` tokens are not expanded. Link every reference file directly from
+`SKILL.md` (one level deep, directly under `references/`, with no nested
+subdirectories and no reference reachable only through another reference).
+Reference-to-reference cross-mentions between sibling files (for example,
+`lane-validation-checklist.md` or `plan-document-template.md` pointing to
+`references/lane-templates.md`) are allowed only when the mentioned target is
+already linked directly from `SKILL.md`, so `SKILL.md` remains the complete
+one-level index for progressive disclosure and bundle placement. Open any
+reference file over 100 lines with a top-level `## Contents` table of contents
+(enforced by `phase-loop-runtime/tests/test_skill_reference_toc_lint_1688.py` in
+`skills-parity.yml`).
 
 ## The bundle pipeline
 
