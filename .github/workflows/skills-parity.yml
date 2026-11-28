@@ -11,21 +11,25 @@ on:
     paths:
       - 'skills-src/**'
       - 'phase-loop-skills/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/skills_bundle/**'
       - 'phase-loop-runtime/src/phase_loop_runtime/build_bundle.py'
       - 'phase-loop-runtime/scripts/regenerate_skills_bundle.py'
       - 'phase-loop-runtime/tests/test_skills_canon_parity.py'
       - 'phase-loop-runtime/tests/test_skill_size_gate.py'
       - 'phase-loop-runtime/tests/test_skill_reference_toc_lint_1688.py'
+      - 'phase-loop-runtime/tests/test_skill_text_invariants_1699.py'
       - '.github/workflows/skills-parity.yml'
   pull_request:
     paths:
       - 'skills-src/**'
       - 'phase-loop-skills/**'
+      - 'phase-loop-runtime/src/phase_loop_runtime/skills_bundle/**'
       - 'phase-loop-runtime/src/phase_loop_runtime/build_bundle.py'
       - 'phase-loop-runtime/scripts/regenerate_skills_bundle.py'
       - 'phase-loop-runtime/tests/test_skills_canon_parity.py'
       - 'phase-loop-runtime/tests/test_skill_size_gate.py'
       - 'phase-loop-runtime/tests/test_skill_reference_toc_lint_1688.py'
+      - 'phase-loop-runtime/tests/test_skill_text_invariants_1699.py'
       - '.github/workflows/skills-parity.yml'
 
 permissions:
@@ -58,6 +62,10 @@ jobs:
       - name: Skill reference TOC lint (agent-harness#1688)
         working-directory: phase-loop-runtime
         run: python -m pytest -q -rs tests/test_skill_reference_toc_lint_1688.py
+
+      - name: Skill text invariants (agent-harness#1699)
+        working-directory: phase-loop-runtime
+        run: python -m pytest -q -rs tests/test_skill_text_invariants_1699.py
 
       - name: Regenerate is a no-op (proves parity is reachable)
         # Belt-and-suspenders: run the documented regenerate against the checkout
