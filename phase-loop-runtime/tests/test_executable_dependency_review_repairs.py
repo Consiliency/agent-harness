@@ -177,10 +177,15 @@ def test_run_loop_refuses_before_default_executor_selection(tmp_path, monkeypatc
         fixture.close()
 
 
-@pytest.mark.parametrize('route', ['claude_channel', 'claude_agent_view'])
-def test_run_loop_review_unwired_claude_route_refuses_before_artifacts(tmp_path, monkeypatch, route):
+@pytest.mark.parametrize('route_env,expected_route,subject_relative,expected_cmd0', [
+    ('channel', 'claude_channel', 'bin/claude-channel', 'claude-channel'),
+    ('agent_view', 'claude_agent_view', 'bin/claude', 'claude'),
+])
+def test_run_loop_review_unwired_claude_route_refuses_before_artifacts(
+    tmp_path, monkeypatch, route_env, expected_route, subject_relative, expected_cmd0,
+):
     """agent-harness#1784 (N6): phase-path refuse_unwired_executor_spec refuses
-    review actions on Claude Channel/Agent View before run_artifacts."""
+    real review specs built for Claude Channel/Agent View before run_artifacts."""
     from pathlib import Path
     from phase_loop_test_utils import make_repo, write_phase_plan
     from phase_loop_runtime import runner
@@ -190,18 +195,22 @@ def test_run_loop_review_unwired_claude_route_refuses_before_artifacts(tmp_path,
     repo = make_repo(tmp_path / 'repo')
     roadmap = repo / 'specs' / 'phase-plans-v1.md'
     write_phase_plan(repo, 'RUNNER', roadmap)
-    fixture = build_fixture(tmp_path / 'fixture', provider='claude')
+    fixture = build_fixture(tmp_path / 'fixture', provider='claude', subject_relative=subject_relative)
     try:
+        monkeypatch.setenv('PATH', f"{fixture.subject.parent}{os.pathsep}{os.environ.get('PATH', '')}")
+        monkeypatch.setenv('PHASE_LOOP_CLAUDE_ROUTE', route_env)
+        monkeypatch.setenv('PHASE_LOOP_CHANNEL_SESSION_ID', 'sess-1')
+        monkeypatch.setenv('PHASE_LOOP_CLAUDE_CHANNEL_URL', 'http://127.0.0.1:4123')
         with _managed(monkeypatch, fixture):
-            spec = SimpleNamespace(
-                available=True,
-                executor='claude',
-                command=[str(fixture.subject), '-p', 'synthetic'],
-                prompt_bundle=SimpleNamespace(product_action='review'),
-                claude_route=route,
-                reason=None,
-            )
-            monkeypatch.setattr(runner, 'build_launch_spec', lambda _request: spec)
+            built = []
+            real_build_launch_spec = runner.build_launch_spec
+
+            def record_build_launch_spec(request):
+                spec = real_build_launch_spec(request)
+                built.append(spec)
+                return spec
+
+            monkeypatch.setattr(runner, 'build_launch_spec', record_build_launch_spec)
             monkeypatch.setattr(runner, 'run_artifacts', _unreached)
             monkeypatch.setattr(runner, 'run_auth_preflight', _unreached)
             monkeypatch.setattr(runner, 'launch_with_spec', _unreached)
@@ -211,14 +220,18 @@ def test_run_loop_review_unwired_claude_route_refuses_before_artifacts(tmp_path,
                     executor='claude', product_action_override='review',
                 )
             assert exc_info.value.code == 'dependency_route_unwired'
+            assert len(built) == 1
+            assert built[0].available is True
+            assert built[0].claude_route == expected_route
+            assert built[0].command[0] == expected_cmd0
     finally:
         fixture.close()
 
 
 def test_run_loop_review_command_executor_refuses_subject_mismatch_before_artifacts(tmp_path, monkeypatch):
-    """agent-harness#1784 (N3'/N6): on the main phase path, a command executor on a
-    review action reaches refuse_unwired_executor_spec and refuses with subject_mismatch
-    before run_artifacts, whereas a non-review action refuses earlier with
+    """agent-harness#1784 (N3'/N6): on the main phase path, an available live command
+    review spec reaches refuse_unwired_executor_spec and refuses with subject_mismatch
+    before run_artifacts, whereas a non-review live action refuses earlier with
     dependency_route_unwired."""
     from pathlib import Path
     from phase_loop_test_utils import make_repo, write_phase_plan
@@ -232,30 +245,40 @@ def test_run_loop_review_command_executor_refuses_subject_mismatch_before_artifa
     fixture = build_fixture(tmp_path / 'fixture', provider='codex')
     try:
         with _managed(monkeypatch, fixture):
-            spec = SimpleNamespace(
-                available=True,
-                executor='command',
-                command=['/bin/echo', 'synthetic'],
-                prompt_bundle=SimpleNamespace(product_action='review'),
-                claude_route=None,
-                reason=None,
-            )
-            monkeypatch.setattr(runner, 'build_launch_spec', lambda _request: spec)
+            built = []
+            real_build_launch_spec = runner.build_launch_spec
+
+            def record_build_launch_spec(request):
+                spec = real_build_launch_spec(request)
+                built.append(spec)
+                return spec
+
+            monkeypatch.setattr(runner, 'build_launch_spec', record_build_launch_spec)
             monkeypatch.setattr(runner, 'run_artifacts', _unreached)
             monkeypatch.setattr(runner, 'run_auth_preflight', _unreached)
             monkeypatch.setattr(runner, 'launch_with_spec', _unreached)
             with pytest.raises(ExecutableDependencyError) as review_exc:
                 runner.run_loop(
                     repo, roadmap, phase='RUNNER',
-                    executor='command', product_action_override='review',
+                    executor='command',
+                    command_adapter_name='custom',
+                    command_template='echo {context_file}',
+                    product_action_override='review',
                 )
             assert review_exc.value.code == 'subject_mismatch'
+            assert len(built) == 1
+            assert built[0].available is True
+            assert built[0].executor == 'command'
             with pytest.raises(ExecutableDependencyError) as execute_exc:
                 runner.run_loop(
                     repo, roadmap, phase='RUNNER',
-                    executor='command', product_action_override='execute',
+                    executor='command',
+                    command_adapter_name='custom',
+                    command_template='echo {context_file}',
+                    product_action_override='execute',
                 )
             assert execute_exc.value.code == 'dependency_route_unwired'
+            assert len(built) == 1
     finally:
         fixture.close()
 
