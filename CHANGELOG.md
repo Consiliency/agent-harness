@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **`skill_bundle_sha256` digest changes across all harnesses and skills
+  (agent-harness#1700; agent-harness#1687; agent-harness#1698).** Adding `"references"`
+  hashing in agent-harness#1687 (shipped in `0.7.27`) — and now `"scripts"` and `"assets"`
+  hashing in agent-harness#1698 — changes the computed `skill_bundle_sha256` for every
+  harness and skill, not only Claude. The digest is recorded in `launch.json` and handoffs
+  and is never compared across upgrades, so nothing breaks; operators diffing launch
+  digests across upgrades should expect every harness and skill digest to change.
+
 ### Added
 
 - Run the 12 repo-local LEGIBLE assumption-probe live arms (`repo_constant`,
