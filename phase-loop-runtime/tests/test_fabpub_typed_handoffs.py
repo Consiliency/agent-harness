@@ -1168,7 +1168,7 @@ def test_qa_non_durable_observation_preserves_pr_url_and_warns_honestly(tmp_path
 def test_qa_transient_unreadable_observation_during_owner_recovery_is_retryable(
     tmp_path, monkeypatch,
 ):
-    """Round-4 P2: a transient EIO when reading post_ambiguity_observations.jsonl
+    """Round-4 P2: a transient EIO when reading post-ambiguity-observations.jsonl
     during owner recovery must refuse retryably WITHOUT appending
     unsealed-adapter-start-owner, so the next retry (after read recovery) completes
     adapter-exception and surfaces the saved PR URL."""
@@ -1225,7 +1225,10 @@ def test_qa_transient_unreadable_observation_during_owner_recovery_is_retryable(
     assert blocked["reason"] == "repository_publication_authority_refused", blocked
     assert blocked["provider_call_made"] is False
     assert blocked["handoff"]["next_step"] == RETRY_ONCE_STEP, blocked["handoff"]
-    assert "post_ambiguity_observations.jsonl" in blocked["handoff"]["next_step_source"]
+    expected_filename = m.evidence.POST_AMBIGUITY_OBSERVATIONS_FILENAME
+    assert expected_filename in blocked["handoff"]["next_step_source"]
+    assert expected_filename in blocked["handoff"]["resume"]
+    assert expected_filename in blocked["handoff"]["attestation_evidence"]
     # Critically: no ambiguity row was appended while the side file was unreadable.
     assert _evidence_states(repo) == ["provider_call_in_flight"]
 

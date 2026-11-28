@@ -1814,12 +1814,14 @@ def _human_publication_handoff(
             ),
         )
         if refusal.get("observation_unreadable"):
-            # agent-harness#1701: owner recovery could not read
-            # post_ambiguity_observations.jsonl; refuse retryably before appending
-            # any ambiguity row so a transient read error cannot hide a saved PR URL.
+            # agent-harness#1701: owner recovery could not read the post-ambiguity
+            # observations side file; refuse retryably before appending any
+            # ambiguity row so a transient read error cannot hide a saved PR URL.
+            from .convergence.broker.evidence import POST_AMBIGUITY_OBSERVATIONS_FILENAME
+
             handoff.update(
                 next_step_source=(
-                    "owner recovery could not read post_ambiguity_observations.jsonl, so "
+                    f"owner recovery could not read {POST_AMBIGUITY_OBSERVATIONS_FILENAME}, so "
                     "no outcome_ambiguous_blocked row was appended: the unsealed "
                     "adapter-start owner and its provider_call_in_flight intent stay "
                     "unchanged so a transient read error cannot hide a saved pull request "
@@ -1828,12 +1830,12 @@ def _human_publication_handoff(
                 resume=(
                     "retry once with the same plan and verification artifact after the "
                     "transient storage/read error clears (or inspect "
-                    "post_ambiguity_observations.jsonl if it remains unreadable)"
+                    f"{POST_AMBIGUITY_OBSERVATIONS_FILENAME} if it remains unreadable)"
                 ),
                 attestation_evidence=(
                     "no provider call was made on this retry and no terminal was written; "
                     "do not dispose the key attested_not_landed while "
-                    "post_ambiguity_observations.jsonl is unreadable"
+                    f"{POST_AMBIGUITY_OBSERVATIONS_FILENAME} is unreadable"
                 ),
             )
         elif refusal.get("provider_call_made"):
