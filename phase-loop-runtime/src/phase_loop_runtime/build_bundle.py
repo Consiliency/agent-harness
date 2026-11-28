@@ -41,7 +41,7 @@ SKILL_AUX_LINK_RE = re.compile(
     r"(?<![\w./+@~%-])((?:\.\.?/)*(?:references|assets)/[\w./+@~%-]*[\w+@~%-])"
     r"(?![\w/+@~%*<-]|\.[A-Za-z0-9_+@~%-])"
     r"(?:#[^\s`'\"<>()\[\]]+)?"
-    r"(?:\s+from the installed `([\w-]+)` directory)?"
+    r"`?(?:\s+from the installed `([\w-]+)` directory)?"
 )
 
 
@@ -232,7 +232,11 @@ def iter_skill_aux_links(text: str) -> list[tuple[str, str]]:
 
     masked = "".join(chars)
 
-    # Pass 2: explicit inline code spans `` `...` `` as complete tokens.
+    # Pass 2: standalone inline code spans whose content begins with an aux path
+    # prefix (e.g. `` `references/foo bar.md` ``, `` `references/foo(bar).md` ``,
+    # `` `references/<file>` ``). Leave non-aux spans (such as skill names in
+    # ``from the installed `<skill>` directory`` and shell command spans like
+    # `` `cat references/foo.md` ``) unmasked for Pass 3.
     chars = list(masked)
     i = 0
     while i < n:
@@ -242,13 +246,14 @@ def iter_skill_aux_links(text: str) -> list[tuple[str, str]]:
                 content_start, end = span
                 run_len = content_start - i
                 content = masked[content_start : end - run_len]
-                owner_m = _INSTALLED_OWNER_FOLLOW_RE.match(masked, end)
-                owner = owner_m.group(1) if owner_m else ""
-                rel = _normalize_aux_target(content)
-                if rel is not None:
-                    links.add((rel, owner))
-                for k in range(i, end):
-                    chars[k] = "\x00"
+                if _AUX_TARGET_PREFIX_RE.match(content.strip()):
+                    owner_m = _INSTALLED_OWNER_FOLLOW_RE.match(masked, end)
+                    owner = owner_m.group(1) if owner_m else ""
+                    rel = _normalize_aux_target(content)
+                    if rel is not None:
+                        links.add((rel, owner))
+                    for k in range(i, end):
+                        chars[k] = "\x00"
                 i = end
                 continue
             run_end = i
