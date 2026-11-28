@@ -404,6 +404,13 @@ def _send_frame(sock: socket.socket, payload: bytes) -> None:
     sock.sendall(struct.pack("!I", len(payload)) + payload)
 
 
+def _poll_socket(sock: socket.socket, mask: int, timeout_s: float) -> None:
+    """Wait up to ``timeout_s`` for ``sock`` readiness using poll() (supports fd >= 1024)."""
+    poller = select.poll()
+    poller.register(sock, mask)
+    poller.poll(max(0, int(math.ceil(timeout_s * 1000))))
+
+
 def start_context_carrying_thread(
     target: "Callable[[], None]", *, daemon: bool
 ) -> threading.Thread:
@@ -844,6 +851,29 @@ class ParentUnixBroker:
             except OSError:
                 pass
 
+    def _accept_connection(self) -> socket.socket:
+        """Accept one client connection without blocking past deliberate shutdown."""
+        self._sock.setblocking(False)
+        while True:
+            with self._conn_lock:
+                if self._stopping:
+                    if self._shutdown_disposition in {"deadline_exceeded", "operation_cancelled"}:
+                        raise _BrokerShutdownStop()
+                    raise OSError("broker stopping during accept")
+                timeout = (self.authorization.expires_monotonic_ns - time.monotonic_ns()) / 1e9
+                if timeout <= 0:
+                    raise ValueError("broker authorization expired")
+                if self._cancel_event.is_set() or not _leg_operation_active(self.authorization):
+                    raise _BrokerCancelledError("broker operation cancelled or closed")
+                try:
+                    conn, _ = self._sock.accept()
+                except (BlockingIOError, InterruptedError):
+                    conn = None
+                if conn is not None:
+                    self._connection = conn
+                    return conn
+            _poll_socket(self._sock, select.POLLIN, min(0.05, timeout))
+
     def _recv_request_frame(self, conn: socket.socket, maximum: int) -> bytes:
         """Read one length-delimited AF_UNIX request atomically with respect to shutdown."""
         conn.setblocking(False)
@@ -867,7 +897,7 @@ class ParentUnixBroker:
                     except (BlockingIOError, InterruptedError):
                         chunk = None
                 if chunk is None:
-                    select.select([conn], [], [], min(0.05, timeout))
+                    _poll_socket(conn, select.POLLIN, min(0.05, timeout))
                     continue
                 if not chunk:
                     raise ValueError("truncated broker frame")
@@ -897,7 +927,7 @@ class ParentUnixBroker:
                 except (BlockingIOError, InterruptedError):
                     written = None
             if written is None:
-                select.select([], [conn], [], 0.05)
+                _poll_socket(conn, select.POLLOUT, 0.05)
                 continue
             if written == 0:
                 raise ConnectionResetError("broker response send returned 0 bytes")
@@ -960,10 +990,10 @@ class ParentUnixBroker:
         expected_pid: int,
         expected_start: int,
     ) -> None:
-        self._sock.settimeout(min(10.0, self._admission_remaining()))
-        conn, _ = self._sock.accept()
-        with self._conn_lock:
-            self._connection = conn
+        try:
+            conn = self._accept_connection()
+        except _BrokerShutdownStop:
+            return
         try:
             with conn:
                 if not hasattr(socket, "SO_PEERCRED"): raise ValueError("peer credentials unavailable")
@@ -1030,7 +1060,11 @@ class ParentUnixBroker:
         self._adapter = adapter
         if cancel_event is not None:
             self._cancel_event = cancel_event
-        self._admission_remaining()
+        try:
+            self._admission_remaining()
+        except _BrokerCancelledError:
+            self.evidence["broker_failure_disposition"] = "operation_cancelled"
+            raise ValueError("broker operation cancelled or closed") from None
         bwrap = Path("/usr/bin/bwrap")
         python = Path("/usr/bin/python3")
         if platform.system() != "Linux" or not bwrap.is_file() or not os.access(bwrap, os.X_OK) or not python.is_file():

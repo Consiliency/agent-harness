@@ -105,7 +105,7 @@ def test_broker_send_response_frame_exits_on_untyped_shutdown(monkeypatch):
 
     conn = BlockingSocket()
     broker._connection = conn
-    monkeypatch.setattr(advisor_backing.select, "select", lambda *a, **k: ([], [], []))
+    monkeypatch.setattr(advisor_backing, "_poll_socket", lambda *a, **k: None)
 
     def wake() -> None:
         assert blocked.wait(timeout=2)
@@ -1225,6 +1225,9 @@ def test_default_spawn_bounded_codex_passes_board_cancel_event_to_broker(tmp_pat
 def test_await_client_captures_already_exited_abnormal_status_end_to_end(tmp_path, monkeypatch, trigger):
     """If the client already exited non-zero before cleanup signals it, _await_client must
     capture exit_status so the broker never assigns a clean typed disposition."""
+    real_await = advisor_backing._await_client
+    assert real_await.__name__ == "_await_client"
+
     class AlreadyDeadProc:
         def __init__(self) -> None:
             self.pid = os.getpid()
@@ -1240,7 +1243,7 @@ def test_await_client_captures_already_exited_abnormal_status_end_to_end(tmp_pat
             return (b"", b"")
 
     proc = AlreadyDeadProc()
-    wait = advisor_backing._await_client(
+    wait = real_await(
         proc,
         b"req",
         failed=lambda: False,
@@ -1256,18 +1259,6 @@ def test_await_client_captures_already_exited_abnormal_status_end_to_end(tmp_pat
 
     # Also verify end-to-end through run_credentialless_client with the real _await_client.
     live_cancel = threading.Event()
-    broker = _run_mocked_broker_client(
-        tmp_path,
-        monkeypatch,
-        wait_result=wait,  # replaced below by real _await_client
-        returncode=2,
-        cancel_event=live_cancel if trigger == "cancelled" else None,
-        deadline_s=None if trigger == "cancelled" else 0.05,
-    )
-    real_await = advisor_backing._await_client
-    monkeypatch.undo()  # undo only? No: re-bind cleanly via explicit real_await below.
-    # Re-create fresh broker with real _await_client (not stubbed).
-    broker.close()
     repo = tmp_path / "e2e-repo"
     repo.mkdir()
     (repo / "README.md").write_text("hi\n", encoding="utf-8")
@@ -1474,3 +1465,203 @@ def test_broker_recv_request_frame_distinguishes_local_shutdown_from_peer_trunca
     finally:
         server_sock4.close()
         peer_sock4.close()
+
+
+# ---------------------------------------------------------------------------
+# 8. Round 2 review regression pins (accept cancel, pre-set board cancel, fd>=1024)
+# ---------------------------------------------------------------------------
+
+
+def test_broker_cancel_before_client_connect_exits_accept_without_quiescence_error(tmp_path, monkeypatch):
+    """Cancelling while serve_once is waiting in accept() must interrupt quickly without
+    timing out the 2s server join or raising ProviderProcessGroupQuiescenceError."""
+    live_cancel = threading.Event()
+    broker = _run_mocked_broker_client(
+        tmp_path,
+        monkeypatch,
+        wait_result=advisor_backing._ClientWait(completed=False, timed_out=False, cancelled=True),
+        serve_fn=None,
+        returncode=-15,
+        cancel_event=live_cancel,
+        deadline_s=5.0,
+    )
+    # Restore the real serve_once (real listening AF_UNIX socket, no client ever connects!).
+    real_serve = advisor_backing.ParentUnixBroker.serve_once
+    monkeypatch.setattr(broker, "serve_once", lambda *a, **k: real_serve(broker, *a, **k))
+
+    def slow_cancel_await(*args, **kwargs):
+        time.sleep(0.08)
+        live_cancel.set()
+        return advisor_backing._ClientWait(completed=False, timed_out=False, cancelled=True)
+
+    monkeypatch.setattr(advisor_backing, "_await_client", slow_cancel_await)
+    adapter = advisor_backing._make_broker_inference_adapter(
+        lambda: ("OK", "done"), lambda: None, lambda: True,
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(ValueError, match="credentialless broker client failed"):
+            broker.run_credentialless_client(adapter, deadline_s=5.0, cancel_event=live_cancel)
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.5, f"accept() waited too long: {elapsed:.2f}s"
+        assert broker.evidence["broker_thread_quiescent"] is True
+        assert broker.evidence["broker_failure_disposition"] == "operation_cancelled"
+    finally:
+        broker.close()
+
+
+def test_preset_bounded_board_cancel_at_broker_entry_yields_unavailable_not_degraded(tmp_path, monkeypatch):
+    """A bounded _BOARD_CANCEL already set before broker.run_credentialless_client starts
+    must yield UNAVAILABLE / review_operation_cancelled, never DEGRADED."""
+    pre_cancel = threading.Event()
+    pre_cancel.set()
+    broker = _run_mocked_broker_client(
+        tmp_path,
+        monkeypatch,
+        wait_result=advisor_backing._ClientWait(completed=False, timed_out=False, cancelled=True),
+        returncode=-15,
+        cancel_event=pre_cancel,
+        deadline_s=5.0,
+    )
+    adapter = advisor_backing._make_broker_inference_adapter(
+        lambda: ("OK", "done"), lambda: None, lambda: True,
+    )
+    try:
+        with pytest.raises(ValueError) as caught:
+            broker.run_credentialless_client(adapter, deadline_s=5.0, cancel_event=pre_cancel)
+        assert type(caught.value) is ValueError
+        assert broker.evidence["broker_failure_disposition"] == "operation_cancelled"
+    finally:
+        broker.close()
+
+    # Now verify through _default_spawn using a broker that raises exactly as above.
+    monkeypatch.setattr(pi, "_gc_stale_panel_scratch", lambda: None)
+    released = []
+    lease = SimpleNamespace(seat_id=7, release=lambda: released.append(True))
+    route = SimpleNamespace(jailed=True, lease=lease)
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (route, [], None))
+    monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda _: 42)
+    monkeypatch.setattr(
+        pi._seat_egress_proxy, "start_proxy",
+        lambda **k: contextlib.nullcontext(SimpleNamespace(socket="fixture", proxy_url="fixture")),
+    )
+    monkeypatch.setattr(pi._seat_egress_proxy, "egress_evidence", lambda _: {})
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network", lambda **k: contextlib.nullcontext(("fixture",)))
+    monkeypatch.setattr(pi._sandbox_egress, "enforcement_report", lambda **k: {})
+    monkeypatch.setattr(pi._sandbox_egress, "egress_required", lambda: False)
+    monkeypatch.setattr(pi._sandbox_policy, "ensure_staging_space", lambda *a, **k: None)
+    monkeypatch.setattr(pi._sandbox_retention, "mark_as_sandbox", lambda *a, **k: None)
+
+    def staged(repo, review):
+        tree = Path(review) / "pl-panel-stage-fixture"
+        (tree / ".git").mkdir(parents=True)
+        (tree / ".git/phase-loop-source-commit").write_text("c" * 40)
+        return tree
+
+    monkeypatch.setattr(pi._review_stage, "stage_review_tree", staged)
+    monkeypatch.setattr(
+        pi._sandbox_policy, "select_sandbox_root",
+        lambda **k: pi._sandbox_policy.SandboxRootChoice(host=None, path=k["fallback"], fell_back=False, reason=""),
+    )
+
+    class PreCancelledBroker:
+        def __init__(self, *args, **kwargs):
+            self.evidence: dict[str, object] = {}
+            self._cancel_event = threading.Event()
+            self._shutdown_disposition: str | None = None
+
+        def run_credentialless_client(self, adapter, *, deadline_s=None, cancel_event=None):
+            assert cancel_event is pre_cancel
+            self.evidence["broker_failure_disposition"] = "operation_cancelled"
+            raise ValueError("broker operation cancelled or closed")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pi, "ParentUnixBroker", PreCancelledBroker)
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi._advisor_board_backing, "_revalidate_staged_tree", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pi, "derive_review_leg_authorization",
+        lambda *a, **k: SimpleNamespace(expires_monotonic_ns=time.monotonic_ns() + 10**12),
+    )
+    monkeypatch.setattr(pi, "harden_subscription_model", lambda leg, model, effort=None: model)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda _p: tmp_path)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a: (False, "missing_claude_cli"))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    token = pi._BOARD_CANCEL.set(pre_cancel)
+    try:
+        spawned = pi._default_spawn(
+            "codex", "ARTIFACT", mode="review", model="m",
+            review_authorization=SimpleNamespace(staged_tree_sha256="a" * 64),
+            canonical_repo_authority=tmp_path,
+        )
+    finally:
+        pi._BOARD_CANCEL.reset(token)
+    assert spawned[0] == "UNAVAILABLE"
+    assert spawned[1] == ""
+    assert isinstance(spawned[2], pi._LegFailure)
+    assert spawned[2].template == "review_operation_cancelled"
+    assert released == [True]
+
+
+def test_broker_frame_io_supports_high_numbered_socket_descriptors():
+    """poll()-based waits in _recv_request_frame and _send_response_frame work when fd >= 1024."""
+    import fcntl
+    import resource
+    import struct
+
+    soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft <= 1030:
+        pytest.skip("RLIMIT_NOFILE too low for fd >= 1024 test")
+
+    broker = _make_stub_broker()
+    now_ns = time.monotonic_ns()
+    auth = advisor_backing.ReviewLegAuthorization(
+        operation="op-highfd",
+        purpose="review",
+        input_sha256="0" * 64,
+        instructions_sha256="0" * 64,
+        canonical_repo_sha256="0" * 64,
+        broker_contract=advisor_backing.PARENT_UNIX_BROKER_V1,
+        harness="codex",
+        model="gpt-5.4",
+        issued_monotonic_ns=now_ns,
+        expires_monotonic_ns=now_ns + 60_000_000_000,
+        _seal=advisor_backing._AUTHORIZATION_SEAL,
+        monitoring_policy="bounded",
+    )
+    advisor_backing._remember_leg_claim(auth, None)
+    broker.authorization = auth
+
+    s1, s2 = socket.socketpair()
+    high_fd = fcntl.fcntl(s1.fileno(), fcntl.F_DUPFD_CLOEXEC, 1024)
+    s1.close()
+    high_sock = socket.socket(fileno=high_fd)
+    try:
+        assert high_sock.fileno() >= 1024
+        broker._connection = high_sock
+        payload = b'{"hello":"highfd"}'
+
+        def delayed_send():
+            time.sleep(0.05)
+            s2.sendall(struct.pack("!I", len(payload)) + payload)
+
+        sender = threading.Thread(target=delayed_send, daemon=True)
+        sender.start()
+        try:
+            received = broker._recv_request_frame(high_sock, 4096)
+        finally:
+            sender.join(timeout=2)
+        assert received == payload
+
+        # Also exercise _send_response_frame on the same fd >= 1024 socket.
+        broker._send_response_frame(high_sock, b'{"status":"OK"}')
+        header = s2.recv(4)
+        size = struct.unpack("!I", header)[0]
+        assert s2.recv(size) == b'{"status":"OK"}'
+    finally:
+        high_sock.close()
+        s2.close()
