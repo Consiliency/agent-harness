@@ -7,8 +7,8 @@ Enforces the agent-harness#1358 reference-index rule across all
    top-level ``## Contents`` section with at least one bullet.
 2. Every bullet inside ``## Contents`` (plain heading text or Markdown anchor
    link ``[label](#slug)``) MUST match an existing non-``Contents`` heading in
-   that file (following CommonMark 0.31.2 block/fence/HTML/Setext rules and
-   GitHub section-link slug allocation).
+   that file (following CommonMark 0.31.2 block/container/fence/HTML/Setext
+   rules and GitHub section-link slug allocation).
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 _THEMATIC_BREAK_RE = re.compile(r"^ {0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
 _TRAILING_HASHES_RE = re.compile(r"(?:^|[ \t]+)#+$")
-_BULLET_ITEM_RE = re.compile(r"^( {0,3})([-*+])([ \t]+)(.+?)[ \t]*$")
-_LIST_START_RE = re.compile(r"^( {0,3})(?:[-*+]|(\d{1,9})[.)])([ \t]+|$)")
+_LIST_START_RE = re.compile(r"^( {0,3})([-*+]|(?:\d{1,9})[.)])([ \t]+|$)")
+_BLOCKQUOTE_RE = re.compile(r"^ {0,3}>(.*)$")
 _ANCHOR_LINK_RE = re.compile(r"^\[([^\]]+)\]\(#([^)]+)\)$")
 _ASCII_WS_SPLIT_RE = re.compile(r"[ \t]+")
 
@@ -53,6 +53,17 @@ _HTML_TYPE6_START = re.compile(
     re.IGNORECASE,
 )
 
+# Inline Markdown stripping patterns for GitHub heading plain-text slugging.
+_INLINE_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_INLINE_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+_INLINE_CODE_RE = re.compile(r"(`+)(.+?)\1")
+_INLINE_STRIKE_RE = re.compile(r"(?<!\\)~~(.+?)(?<!\\)~~")
+_INLINE_STRONG_STAR_RE = re.compile(r"(?<!\\)\*\*(.+?)(?<!\\)\*\*")
+_INLINE_EM_STAR_RE = re.compile(r"(?<!\\)\*(.+?)(?<!\\)\*")
+_INLINE_STRONG_UNDER_RE = re.compile(r"(?<![\\\w])__(.+?)(?<!\\)__(?!\w)")
+_INLINE_EM_UNDER_RE = re.compile(r"(?<![\\\w])_(.+?)(?<!\\)_(?!\w)")
+_BACKSLASH_ESCAPE_RE = re.compile(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])")
+
 
 @dataclass(frozen=True)
 class TocFinding:
@@ -71,7 +82,6 @@ class _Fence:
     length: int
     indent: int
     is_markdown: bool
-    list_prefix: int = 0
 
 
 @dataclass(frozen=True)
@@ -101,9 +111,35 @@ def _commonmark_lines(text: str) -> list[str]:
     return lines
 
 
+def _heading_plain_text(heading: str) -> str:
+    """Render CommonMark inline spans in a heading to plain text for GitHub slugging."""
+    text = _INLINE_LINK_RE.sub(r"\1", heading)
+    text = _INLINE_HTML_TAG_RE.sub("", text)
+    # Protect inline-code spans while stripping emphasis/strikethrough outside them.
+    parts: list[str] = []
+    pos = 0
+    for match in _INLINE_CODE_RE.finditer(text):
+        before = text[pos : match.start()]
+        parts.append(_strip_emphasis(before))
+        parts.append(match.group(2))
+        pos = match.end()
+    parts.append(_strip_emphasis(text[pos:]))
+    return "".join(parts)
+
+
+def _strip_emphasis(fragment: str) -> str:
+    text = _INLINE_STRIKE_RE.sub(r"\1", fragment)
+    text = _INLINE_STRONG_STAR_RE.sub(r"\1", text)
+    text = _INLINE_EM_STAR_RE.sub(r"\1", text)
+    text = _INLINE_STRONG_UNDER_RE.sub(r"\1", text)
+    text = _INLINE_EM_UNDER_RE.sub(r"\1", text)
+    text = _BACKSLASH_ESCAPE_RE.sub(r"\1", text)
+    return text
+
+
 def _github_heading_slug(heading: str) -> str:
     """Compute GitHub-style Markdown anchor slug for a heading title."""
-    cleaned = heading.replace("`", "").strip().lower()
+    cleaned = _heading_plain_text(heading).strip().lower()
     out: list[str] = []
     for ch in cleaned:
         if ch.isalnum() or ch in ("-", "_"):
@@ -119,9 +155,9 @@ def _strip_atx_heading(raw_title: str) -> str:
     return title
 
 
-def _leading_columns(line: str) -> int:
+def _leading_columns(line: str, start_col: int = 0) -> int:
     """Count leading indentation columns (tabs expand to 4-column stops per CommonMark)."""
-    cols = 0
+    cols = start_col
     for ch in line:
         if ch == " ":
             cols += 1
@@ -129,7 +165,28 @@ def _leading_columns(line: str) -> int:
             cols += 4 - (cols % 4)
         else:
             break
-    return cols
+    return cols - start_col
+
+
+def _strip_leading_columns(line: str, max_cols: int, start_col: int = 0) -> str:
+    """Strip up to ``max_cols`` leading whitespace columns, expanding partial tabs to spaces."""
+    cols = start_col
+    idx = 0
+    target = start_col + max_cols
+    while idx < len(line) and cols < target:
+        ch = line[idx]
+        if ch == " ":
+            cols += 1
+            idx += 1
+        elif ch == "\t":
+            tab_end = cols + (4 - (cols % 4))
+            idx += 1
+            if tab_end > target:
+                return (" " * (tab_end - target)) + line[idx:]
+            cols = tab_end
+        else:
+            break
+    return line[idx:]
 
 
 def _strip_leading_spaces(line: str, max_spaces: int) -> str:
@@ -176,22 +233,45 @@ def _html_block_closed(kind: str, line: str) -> bool:
     return False
 
 
-def _parse_document(text: str, *, collect_templates: bool = True) -> _ParsedDoc:
-    """Parse one CommonMark 0.31.2 document using a two-pass fence strategy.
+def _strip_blockquote_marker(line: str) -> str:
+    match = _BLOCKQUOTE_RE.match(line)
+    assert match is not None
+    rest = match.group(1)
+    if rest.startswith(" "):
+        return rest[1:]
+    if rest.startswith("\t"):
+        # Per CommonMark §5.1, a tab after '>' expands to column 4; stripping 1 optional space leaves 2 or 3 spaces.
+        col_after_gt = line.index(">") + 1
+        expanded = 4 - (col_after_gt % 4)
+        return (" " * max(expanded - 1, 0)) + rest[1:]
+    return rest
 
-    Pass 1 tracks a single outer fenced block so inner fence syntax (even an
-    unclosed fence inside a template) can never prevent the outer closing fence
-    from closing the block. When an outer ``markdown``/``md`` fenced block ends,
-    its lines are dedented by the opening fence's indentation (CommonMark §4.5)
-    and parsed in Pass 2 (``collect_templates=False``) for template headings.
+
+def _parse_document(
+    text: str,
+    *,
+    top_level: bool = True,
+    collect_templates: bool = True,
+    collect_nested_bullets: bool = False,
+    line_offset: int = 0,
+) -> _ParsedDoc:
+    """Parse one CommonMark 0.31.2 document using recursive containers and two-pass fences.
+
+    - Outer fenced code blocks are scanned without interpreting inner fence syntax, so an
+      unclosed inner fence inside a Markdown template can never hide outer headings.
+    - Outer ``markdown``/``md`` fenced blocks are dedented by the opening fence's leading
+      spaces (CommonMark §4.5) and parsed in Pass 2 (``collect_templates=False``) for
+      plain template heading titles (never rendered anchor slugs).
+    - Blockquotes and list items recursively invoke ``_parse_document(..., top_level=False)``
+      so fences, HTML comments, Setext headings, and real headings inside containers all
+      follow exact CommonMark rules while never falsely satisfying the top-level
+      ``## Contents`` requirement.
     """
     lines = _commonmark_lines(text)
     outer_fence: _Fence | None = None
     fence_lines: list[str] = []
     html_block: str | None = None
-    list_indent: int | None = None
     in_contents = False
-    contents_list_indent: int | None = None
     para_lines: list[tuple[int, str]] = []
 
     contents_lines: list[int] = []
@@ -203,115 +283,81 @@ def _parse_document(text: str, *, collect_templates: bool = True) -> _ParsedDoc:
         if not collect_templates or not fence.is_markdown:
             return
         dedented = "\n".join(_strip_leading_spaces(item, fence.indent) for item in raw_lines)
-        inner = _parse_document(dedented, collect_templates=False)
+        inner = _parse_document(dedented, top_level=False, collect_templates=False)
         for heading in inner.rendered_headings:
             template_titles.add(heading.title)
 
-    def _record_heading(lineno: int, level: int, title: str, *, top_level: bool) -> None:
-        nonlocal in_contents, contents_list_indent
+    def _record_heading(lineno: int, level: int, title: str) -> None:
+        nonlocal in_contents
         if top_level and level == 2 and title == "Contents":
             contents_lines.append(lineno)
             rendered_headings.append(_Heading(lineno, level, title, is_toc=True))
             in_contents = len(contents_lines) == 1
-            contents_list_indent = None
             return
         if top_level:
             in_contents = False
-            contents_list_indent = None
         if title:
             rendered_headings.append(_Heading(lineno, level, title, is_toc=False))
 
-    for lineno, line in enumerate(lines, start=1):
+    i = 0
+    total = len(lines)
+    while i < total:
+        line = lines[i]
+        lineno = line_offset + i + 1
+
         # 1. Active outer fenced code block (CommonMark §4.5).
         if outer_fence is not None:
-            if outer_fence.list_prefix > 0 and line.strip(" \t") and _leading_columns(line) < outer_fence.list_prefix:
-                _flush_markdown_template(outer_fence, fence_lines)
-                outer_fence = None
-                fence_lines = []
-                list_indent = None
-                contents_list_indent = None
-            else:
-                effective = _strip_leading_spaces(line, outer_fence.list_prefix) if outer_fence.list_prefix else line
-                close_match = _CLOSE_FENCE_RE.match(effective)
-                if close_match:
-                    run = close_match.group(1)
-                    if run[0] == outer_fence.char and len(run) >= outer_fence.length:
-                        _flush_markdown_template(outer_fence, fence_lines)
-                        outer_fence = None
-                        fence_lines = []
-                        continue
-                fence_lines.append(effective)
-                continue
+            close_match = _CLOSE_FENCE_RE.match(line)
+            if close_match:
+                run = close_match.group(1)
+                if run[0] == outer_fence.char and len(run) >= outer_fence.length:
+                    _flush_markdown_template(outer_fence, fence_lines)
+                    outer_fence = None
+                    fence_lines = []
+                    i += 1
+                    continue
+            fence_lines.append(line)
+            i += 1
+            continue
 
         # 2. Active HTML block (CommonMark §4.6).
         if html_block is not None:
             if html_block == "type6":
                 if not line.strip(" \t"):
                     html_block = None
+                i += 1
                 continue
             if _html_block_closed(html_block, line):
                 html_block = None
+            i += 1
             continue
 
-        # 3. Blank line resets paragraph (and keeps loose list context alive).
+        # 3. Blank line closes any open paragraph.
         if not line.strip(" \t"):
             para_lines.clear()
+            i += 1
             continue
 
-        indent = _leading_columns(line)
-
-        # 4. Setext heading underline (CommonMark §4.3) when a top-level paragraph is open.
-        if para_lines and list_indent is None:
+        # 4. Setext heading underline (CommonMark §4.3) when a paragraph is open.
+        if para_lines:
             setext_match = _SETEXT_UNDERLINE_RE.match(line)
             if setext_match:
                 level = 1 if setext_match.group(1)[0] == "=" else 2
                 title = " ".join(part.strip(" \t") for _, part in para_lines)
                 start_line = para_lines[0][0]
                 para_lines.clear()
-                _record_heading(start_line, level, title, top_level=True)
+                _record_heading(start_line, level, title)
+                i += 1
                 continue
 
-        # 5. Track list-item nesting so indented content inside a list item is not top-level.
-        if list_indent is not None:
-            if indent >= list_indent:
-                para_lines.clear()
-                inner_line = _strip_leading_spaces(line, list_indent)
-                # Fenced code block nested inside a list item.
-                nested_fence = _OPEN_FENCE_RE.match(inner_line)
-                if nested_fence:
-                    lead, run, info = nested_fence.group(1), nested_fence.group(2), nested_fence.group(3)
-                    if not (run[0] == "`" and "`" in info):
-                        lang = _fence_language(info)
-                        outer_fence = _Fence(
-                            char=run[0],
-                            length=len(run),
-                            indent=len(lead),
-                            is_markdown=lang in {"markdown", "md"},
-                            list_prefix=list_indent,
-                        )
-                        fence_lines = []
-                        continue
-                # Nested bullet inside ## Contents list is validated too.
-                if in_contents and contents_list_indent is not None:
-                    nested_bullet = _BULLET_ITEM_RE.match(inner_line)
-                    if nested_bullet:
-                        toc_bullets.append((lineno, nested_bullet.group(4).strip(" \t")))
-                        continue
-                # Nested ATX heading inside a list item participates in rendered slugs
-                # (but is NOT a top-level ## Contents heading).
-                nested_atx = _ATX_HEADING_RE.match(inner_line)
-                if nested_atx:
-                    title = _strip_atx_heading(nested_atx.group(2) or "")
-                    _record_heading(lineno, len(nested_atx.group(1)), title, top_level=False)
-                continue
-            list_indent = None
-            contents_list_indent = None
+        indent = _leading_columns(line)
 
-        # 6. Indented code block (CommonMark §4.4): >= 4 columns outside a paragraph/list.
+        # 5. Indented code block (CommonMark §4.4): >= 4 columns outside a paragraph.
         if indent >= 4 and not para_lines:
+            i += 1
             continue
 
-        # 7. Opening fenced code block (does NOT end ## Contents; bullets after the fence still lint).
+        # 6. Opening fenced code block (does NOT end ## Contents; bullets after the fence still lint).
         open_match = _OPEN_FENCE_RE.match(line)
         if open_match:
             lead, run, info = open_match.group(1), open_match.group(2), open_match.group(3)
@@ -325,57 +371,109 @@ def _parse_document(text: str, *, collect_templates: bool = True) -> _ParsedDoc:
                     is_markdown=lang in {"markdown", "md"},
                 )
                 fence_lines = []
+                i += 1
                 continue
 
-        # 8. HTML block start (CommonMark §4.6).
+        # 7. HTML block start (CommonMark §4.6).
         html_kind = _html_block_end_kind(line)
         if html_kind is not None:
             para_lines.clear()
             if html_kind == "type6" or not _html_block_closed(html_kind, line):
                 html_block = html_kind
+            i += 1
             continue
 
-        # 9. Blockquote (CommonMark §5.1): not top-level ## Contents.
-        if re.match(r"^ {0,3}>", line):
+        # 8. Blockquote container (CommonMark §5.1): recurse with top_level=False.
+        if _BLOCKQUOTE_RE.match(line):
             para_lines.clear()
+            quote_start = i
+            quote_lines: list[str] = []
+            while i < total and _BLOCKQUOTE_RE.match(lines[i]):
+                quote_lines.append(_strip_blockquote_marker(lines[i]))
+                i += 1
+            nested = _parse_document(
+                "\n".join(quote_lines),
+                top_level=False,
+                collect_templates=collect_templates,
+                line_offset=line_offset + quote_start,
+            )
+            rendered_headings.extend(nested.rendered_headings)
+            template_titles.update(nested.template_titles)
             continue
 
-        # 10. Top-level ATX heading (CommonMark §4.2).
+        # 9. ATX heading (CommonMark §4.2).
         atx_match = _ATX_HEADING_RE.match(line)
         if atx_match:
             para_lines.clear()
             level = len(atx_match.group(1))
             title = _strip_atx_heading(atx_match.group(2) or "")
-            _record_heading(lineno, level, title, top_level=True)
+            _record_heading(lineno, level, title)
+            i += 1
             continue
 
-        # 11. Thematic break (CommonMark §4.1).
+        # 10. Thematic break (CommonMark §4.1).
         if _THEMATIC_BREAK_RE.match(line):
             para_lines.clear()
+            i += 1
             continue
 
-        # 12. List item start (CommonMark §5.2).
+        # 11. List item container (CommonMark §5.2): collect full item body and recurse.
         list_match = _LIST_START_RE.match(line)
         if list_match:
             para_lines.clear()
-            marker_end = list_match.end()
-            list_indent = marker_end
-            bullet_match = _BULLET_ITEM_RE.match(line)
-            if in_contents and bullet_match:
-                contents_list_indent = marker_end
-                toc_bullets.append((lineno, bullet_match.group(4).strip(" \t")))
-                continue
-            # Handle inline heading on list marker line (e.g. `- ## Contents`):
-            # rendered heading for slug allocation, never a top-level ## Contents.
-            rest = line[marker_end:]
-            inline_atx = _ATX_HEADING_RE.match(rest)
-            if inline_atx:
-                title = _strip_atx_heading(inline_atx.group(2) or "")
-                _record_heading(lineno, len(inline_atx.group(1)), title, top_level=False)
+            item_start = i
+            lead, marker, sep = list_match.group(1), list_match.group(2), list_match.group(3)
+            marker_end_col = len(lead) + len(marker)
+            after_marker = line[marker_end_col:]
+            ws_cols = _leading_columns(after_marker, start_col=marker_end_col)
+            rest_after_ws = after_marker.lstrip(" \t")
+            if not rest_after_ws or ws_cols >= 5:
+                content_indent = marker_end_col + 1
+                first_body_line = _strip_leading_columns(after_marker, 1, start_col=marker_end_col)
+            else:
+                content_indent = marker_end_col + ws_cols
+                first_body_line = rest_after_ws
+
+            is_bullet_item = marker in {"-", "*", "+"}
+            capture_bullet = (in_contents or collect_nested_bullets) and is_bullet_item
+            if capture_bullet and rest_after_ws:
+                toc_bullets.append((lineno, rest_after_ws.strip(" \t")))
+
+            item_lines: list[str] = [first_body_line]
+            i += 1
+            pending_blanks: list[str] = []
+            while i < total:
+                next_line = lines[i]
+                if not next_line.strip(" \t"):
+                    pending_blanks.append("")
+                    i += 1
+                    continue
+                if _leading_columns(next_line) >= content_indent:
+                    item_lines.extend(pending_blanks)
+                    pending_blanks.clear()
+                    item_lines.append(_strip_leading_columns(next_line, content_indent))
+                    i += 1
+                    continue
+                break
+            # Rewind trailing blank lines that were not followed by indented item content.
+            i -= len(pending_blanks)
+
+            nested = _parse_document(
+                "\n".join(item_lines),
+                top_level=False,
+                collect_templates=collect_templates,
+                collect_nested_bullets=capture_bullet,
+                line_offset=line_offset + item_start,
+            )
+            rendered_headings.extend(nested.rendered_headings)
+            template_titles.update(nested.template_titles)
+            if capture_bullet:
+                toc_bullets.extend(nested.toc_bullets)
             continue
 
-        # 13. Ordinary paragraph line (candidate for a following Setext underline).
+        # 12. Ordinary paragraph line (candidate for a following Setext underline).
         para_lines.append((lineno, line))
+        i += 1
 
     # Unclosed trailing markdown fence still parses its inner lines per CommonMark §4.5.
     if outer_fence is not None:
@@ -392,7 +490,7 @@ def _parse_document(text: str, *, collect_templates: bool = True) -> _ParsedDoc:
 
 def reference_toc_findings(text: str, label: str) -> list[TocFinding]:
     """Validate TOC presence (>100 lines) and bullet-to-heading agreement for one file."""
-    doc = _parse_document(text, collect_templates=True)
+    doc = _parse_document(text, top_level=True, collect_templates=True)
     findings: list[TocFinding] = []
 
     if doc.line_count > MAX_UNINDEXED_LINES and not doc.contents_lines:
@@ -454,6 +552,16 @@ def reference_toc_findings(text: str, label: str) -> list[TocFinding]:
                         line=lineno,
                     )
                 )
+            continue
+        if bullet == "Contents":
+            findings.append(
+                TocFinding(
+                    label,
+                    "## Contents plain bullet 'Contents' is self-referential "
+                    "(use an explicit '#contents-1' anchor link if targeting a later heading)",
+                    line=lineno,
+                )
+            )
             continue
         if bullet not in target_titles:
             findings.append(
@@ -556,7 +664,7 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertIn("no bullet items", findings[0].message)
 
-        # 2. Heading inside an HTML comment does not satisfy a TOC bullet or anchor.
+        # 2. Heading inside an HTML comment (top-level or inside a list item) does not satisfy TOC.
         html_comment = (
             "# Ref\n\n"
             "## Contents\n\n"
@@ -567,7 +675,35 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         findings = reference_toc_findings(html_comment, "fixture/html-comment.md")
         self.assertEqual(len(findings), 2)
 
-        # 3. '## Contents' nested inside a list item does not satisfy the >100-line requirement.
+        list_html_comment = (
+            "# Ref\n\n"
+            "## Contents\n\n"
+            "- [Ghost](#ghost)\n\n"
+            "## Body\n\n"
+            "- item\n\n"
+            "  <!--\n"
+            "  ## Ghost\n"
+            "  -->\n"
+        )
+        findings = reference_toc_findings(list_html_comment, "fixture/list-html-comment.md")
+        self.assertEqual(len(findings), 1)
+        self.assertIn("#ghost", findings[0].message)
+
+        # 3. Bash fence opening directly on a list marker (`- ```bash`) hides `# Ghost`.
+        list_inline_fence = (
+            "# Ref\n\n"
+            "## Contents\n\n"
+            "- [Ghost](#ghost)\n\n"
+            "## Body\n\n"
+            "- ```bash\n"
+            "  # Ghost\n"
+            "  ```\n"
+        )
+        findings = reference_toc_findings(list_inline_fence, "fixture/list-inline-fence.md")
+        self.assertEqual(len(findings), 1)
+        self.assertIn("#ghost", findings[0].message)
+
+        # 4. '## Contents' nested inside a list item or blockquote does not satisfy >100-line requirement.
         list_contents = (
             "# Long Ref\n\n"
             "- item\n\n"
@@ -580,7 +716,18 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertIn("without a top-level '## Contents'", findings[0].message)
 
-        # 4. Broken bullet AFTER a fenced block inside ## Contents is still checked.
+        quote_contents = (
+            "# Long Ref\n\n"
+            "> ## Contents\n"
+            "> - Alpha\n\n"
+            "## Alpha\n"
+            + ("body line\n" * 100)
+        )
+        findings = reference_toc_findings(quote_contents, "fixture/quote-contents.md")
+        self.assertEqual(len(findings), 1)
+        self.assertIn("without a top-level '## Contents'", findings[0].message)
+
+        # 5. Broken bullet AFTER a fenced block inside ## Contents is still checked.
         after_fence = (
             "# Ref\n\n"
             "## Contents\n\n"
@@ -593,7 +740,7 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertIn("Broken after fence", findings[0].message)
 
-        # 5. Valid Setext headings (including Setext level-2 Contents) are recognized.
+        # 6. Valid Setext headings (including Setext level-2 Contents) are recognized.
         setext = (
             "Title\n=====\n\n"
             "Contents\n--------\n\n"
@@ -604,7 +751,7 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         )
         self.assertEqual(reference_toc_findings(setext, "fixture/setext.md"), [])
 
-    def test_anchor_slug_allocation_and_template_anchor_separation(self) -> None:
+    def test_anchor_slug_allocation_emphasis_blockquotes_and_template_separation(self) -> None:
         # 1. Heading inside an md template satisfies plain bullet, NEVER #anchor.
         tpl_anchor = (
             "# Ref\n\n"
@@ -619,7 +766,25 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertIn("#example", findings[0].message)
 
-        # 2. ## Foo, ## Foo-1, ## Foo allocates #foo, #foo-1, #foo-2 (skipping collision).
+        # 2. Emphasis markers (`_Real_`, `*Star*`, `**Bold**`) strip cleanly while
+        # intraword underscores (`foo_bar`) are preserved; blockquote headings (`> ## Quoted`) resolve.
+        formatted = (
+            "# Ref\n\n"
+            "## Contents\n\n"
+            "- [Real](#real)\n"
+            "- [Star](#star)\n"
+            "- [Bold](#bold)\n"
+            "- [Snake](#foo_bar)\n"
+            "- [Quoted](#quoted)\n\n"
+            "## _Real_\n\n"
+            "## *Star*\n\n"
+            "## **Bold**\n\n"
+            "## foo_bar\n\n"
+            "> ## Quoted\n"
+        )
+        self.assertEqual(reference_toc_findings(formatted, "fixture/formatted.md"), [])
+
+        # 3. ## Foo, ## Foo-1, ## Foo allocates #foo, #foo-1, #foo-2 (skipping collision).
         dedup = (
             "# Ref\n\n"
             "## Contents\n\n"
@@ -630,17 +795,17 @@ class SkillReferenceTocLintTest(unittest.TestCase):
         )
         self.assertEqual(reference_toc_findings(dedup, "fixture/dedup.md"), [])
 
-        # 3. With a later ### Contents, #contents still points to the TOC (rejected),
-        # while #contents-1 targets the later ### Contents (accepted).
+        # 4. With a later ### Contents, BOTH plain `- Contents` and `#contents` are rejected,
+        # while explicit `#contents-1` targets the later ### Contents (accepted).
         later_contents_bad = (
             "# Ref\n\n"
             "## Contents\n\n"
+            "- Contents\n"
             "- [TOC self](#contents)\n\n"
             "### Contents\n"
         )
         findings = reference_toc_findings(later_contents_bad, "fixture/later-contents-bad.md")
-        self.assertEqual(len(findings), 1)
-        self.assertIn("#contents", findings[0].message)
+        self.assertEqual(len(findings), 2)
 
         later_contents_ok = (
             "# Ref\n\n"
