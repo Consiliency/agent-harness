@@ -595,7 +595,9 @@ class PhaseLoopCliTest(unittest.TestCase):
             self.assertEqual(closeout["phase"], "RUNNER")
             self.assertEqual(closeout["source_bundle"]["sha256"], hashlib.sha256(bundle.read_bytes()).hexdigest())
             self.assertEqual(closeout["source_bundle"]["phase_id"], "pipeline.phase.runner")
-            self.assertEqual(closeout["artifacts"]["plan_path"], str(plan))
+            self.assertEqual(closeout["artifacts"]["plan_path"], plan.relative_to(repo).as_posix())
+            from phase_loop_runtime.closeout import phase_loop_closeout_diagnostic
+            self.assertIsNone(phase_loop_closeout_diagnostic(closeout))
 
     def test_execute_direct_invocation_invalid_mode_writes_typed_closeout(self):
         with tempfile.TemporaryDirectory() as td:

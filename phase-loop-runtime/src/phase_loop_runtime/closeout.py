@@ -202,7 +202,26 @@ def build_phase_loop_closeout(
     else:
         source_bundle_sha256 = metadata.source_bundle_sha256 if metadata else None
     pipeline_phase_id = source_bundle.phase_id if source_bundle else (metadata.pipeline_phase_id if metadata else None)
-    plan_path_text = str(plan_path)
+
+    raw_artifact_paths = dict(artifact_paths or terminal.get("artifact_paths") or {})
+    effective_repo_root = _infer_repo_root(repo_root, plan_path, raw_artifact_paths)
+    plan_path_text = _relativize_repo_path(plan_path, effective_repo_root)
+    if isinstance(source_bundle_path, (str, Path)):
+        source_bundle_path = _relativize_repo_path(source_bundle_path, effective_repo_root)
+    raw_auto_artifact = normalized_automation.get("artifact")
+    auto_artifact = (
+        _relativize_repo_path(raw_auto_artifact, effective_repo_root)
+        if isinstance(raw_auto_artifact, (str, Path))
+        else raw_auto_artifact
+    )
+    serialized_artifact_paths = {
+        key: _relativize_repo_path(val, effective_repo_root) if isinstance(val, (str, Path)) else val
+        for key, val in raw_artifact_paths.items()
+    }
+    serialized_verification_results = [
+        _relativize_verification_result(item, effective_repo_root) if isinstance(item, Mapping) else item
+        for item in verification_results
+    ]
 
     outcome = _closeout_outcome(
         terminal_summary=terminal,
@@ -224,14 +243,14 @@ def build_phase_loop_closeout(
         blocker_summary=normalized_automation.get("blocker_summary"),
         required_human_inputs=tuple(normalized_automation.get("required_human_inputs") or ()),
         verification_status=str(normalized_automation.get("verification_status") or "not_run"),
-        artifact=normalized_automation.get("artifact"),
+        artifact=auto_artifact,
         artifact_state=normalized_automation.get("artifact_state"),
     )
 
     arts = PhaseLoopArtifacts(
         plan_path=plan_path_text,
         plan_sha256=_file_sha256(plan_path),
-        artifact_paths=dict(artifact_paths or terminal.get("artifact_paths") or {}),
+        artifact_paths=serialized_artifact_paths,
         changed_paths=tuple(_stable_paths(
             changed_paths
             or terminal.get("dirty_paths")
@@ -249,7 +268,7 @@ def build_phase_loop_closeout(
     verification = PhaseLoopVerification(
         status=str(terminal.get("verification_status") or normalized_automation.get("verification_status") or "unknown"),
         commands=tuple(_verification_commands(terminal)),
-        results=tuple(verification_results),
+        results=tuple(serialized_verification_results),
         agent_reported_verification_status=agent_reported_verification_status,
     )
 
@@ -827,6 +846,76 @@ def _lane_closeout_fields(work_unit_closeout: WorkUnitCloseout | Mapping[str, An
 def _policy_source(assignment: Mapping[str, Any]) -> str | None:
     policy = assignment.get("execution_policy") if isinstance(assignment.get("execution_policy"), Mapping) else {}
     return policy.get("execution_policy_source") or policy.get("source")
+
+
+def _infer_repo_root(
+    repo_root: str | Path | None,
+    plan_path: str | Path,
+    artifact_paths: Mapping[str, Any] | None = None,
+) -> Path | None:
+    """Resolve the repository root used to relativize serialized closeout paths.
+
+    Uses an explicit ``repo_root`` when provided; otherwise walks ancestors of
+    absolute ``plan_path`` and ``artifact_paths`` entries to locate the nearest
+    directory containing ``.git`` or ``.phase-loop`` so repo-scoped paths never
+    leak host-private prefixes (such as ``/home/<user>/...``) into closeout
+    payloads (agent-harness#1941).
+    """
+    if repo_root is not None and str(repo_root).strip():
+        return Path(repo_root)
+    candidates: list[Path] = []
+    if plan_path and str(plan_path).strip():
+        candidate = Path(plan_path)
+        if candidate.is_absolute():
+            candidates.append(candidate)
+    if isinstance(artifact_paths, Mapping):
+        for raw in artifact_paths.values():
+            if isinstance(raw, (str, Path)) and str(raw).strip():
+                candidate = Path(raw)
+                if candidate.is_absolute():
+                    candidates.append(candidate)
+    for candidate in candidates:
+        try:
+            start = candidate.resolve()
+        except OSError:
+            start = candidate
+        search_root = start if start.is_dir() else start.parent
+        for ancestor in (search_root, *search_root.parents):
+            try:
+                if (ancestor / ".git").exists() or (ancestor / ".phase-loop").is_dir():
+                    return ancestor
+            except OSError:
+                continue
+    return None
+
+
+def _relativize_repo_path(value: str | Path, repo_root: Path | None) -> str:
+    """Convert an absolute path inside ``repo_root`` into a repo-relative POSIX path."""
+    text = str(value)
+    if not text or repo_root is None:
+        return text
+    candidate = Path(text)
+    if not candidate.is_absolute():
+        return text
+    try:
+        return candidate.relative_to(repo_root).as_posix()
+    except ValueError:
+        pass
+    try:
+        return candidate.resolve().relative_to(repo_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return text
+
+
+def _relativize_verification_result(
+    result: Mapping[str, Any], repo_root: Path | None
+) -> dict[str, Any]:
+    copied = dict(result)
+    for field in ("artifact_path", "log_path"):
+        value = copied.get(field)
+        if isinstance(value, (str, Path)):
+            copied[field] = _relativize_repo_path(value, repo_root)
+    return copied
 
 
 def _file_sha256(path: str | Path) -> str:

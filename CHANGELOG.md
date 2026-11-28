@@ -115,6 +115,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `claude-phase-roadmap-builder/references/roadmap-template.md` (and regenerate the
   `phase-loop-skills` and `skills_bundle` copies) so inner triple-backtick code fences no
   longer close the outer template block early (agent-harness#1689).
+- Relativize repo-scoped closeout paths (`artifacts.plan_path`, `artifacts.artifact_paths`,
+  `automation.artifact`, `source_bundle.path`, and verification result `artifact_path` /
+  `log_path`) against `repo_root` (or the nearest `.git`/`.phase-loop` ancestor when
+  `repo_root` is omitted) in `closeout.build_phase_loop_closeout` and pass `repo_root`
+  from `cli.py` so repositories located under `/home/<user>/...` or `/Users/<user>/...`
+  no longer have valid closeouts silently discarded by `metadata_redaction_diagnostic`
+  as `absolute_private_path` (agent-harness#1941).
 - Update `phase-loop-runtime/README.md` contributor test guidance to accurately distinguish
   runtime `pytest` from the opt-in `test` dependency group (`build`, `setuptools`, `pip`,
   `agy-watch`, `grok-catalog`) and `visual` extra, and use an absolute `PYTHONPATH`,

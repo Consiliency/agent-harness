@@ -5649,6 +5649,7 @@ def _direct_invocation_blocker(
             "artifact_state": "tracked" if plan else "none",
         },
         blocker=blocker,
+        repo_root=str(repo),
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(closeout, indent=2, sort_keys=True), encoding="utf-8")
