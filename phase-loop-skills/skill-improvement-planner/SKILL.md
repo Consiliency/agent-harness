@@ -110,11 +110,13 @@ reflections_consumed:
 
 ## Speculative / low-confidence notes
 
+<For each deferred item (rule 1 or convergence gate): one-line observation and supporting reflection manifest ids.>
+
 ## Contradictions surfaced
 
 ## Archival directive for <harness>-skill-editor
 
-After the recommendations apply, run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for each reflection that supports a failed recommendation.
+After the recommendations apply, run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for each reflection that supports a failed recommendation or whose only themes in this plan were deferred to `## Speculative / low-confidence notes` (by the convergence gate or by rule 1).
 ```
 
 ## Closeout

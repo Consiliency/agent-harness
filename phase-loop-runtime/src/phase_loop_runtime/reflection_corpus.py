@@ -827,6 +827,11 @@ def _mark_duplicates(reflections: list[Reflection]) -> None:
     a newer reflection that adds friction to an older one is kept. Copies are never
     collapsed across runs: identical reports from independent runs are
     recurring evidence, not duplicates.
+
+    Because the grouping key is ``(bare_skill, repo_hash, branch_slug, run_id)``
+    without the scan root, deduplication is effectively cross-root across different
+    harness roots. Legacy flat reflections that lack ``repo_hash`` or ``branch_slug``
+    are skipped so unidentifiable legacy copies are never falsely collapsed.
     """
     kept_by_group: dict[tuple[str, str, str, str], list[tuple[str, set[str]]]] = defaultdict(list)
     for reflection in reflections:
@@ -896,6 +901,7 @@ def apply_quality_filter(
 
         stripped_repo_specific = False
         dropped_repo_specific = 0
+        stripped_ledger = False
         if "improvements" in reflection.sections:
             # Group into Markdown proposal units BEFORE stripping boilerplate lines so
             # boilerplate removal cannot split a wrapped repo-specific bullet and leave
@@ -909,6 +915,7 @@ def apply_quality_filter(
                 if any(classify_improvements(line) == "repo_specific" for line in bp_lines):
                     stripped_repo_specific = True
                 if _unit_is_ledger(unit):
+                    stripped_ledger = True
                     if any(classify_improvements(line) == "repo_specific" for line in unit):
                         stripped_repo_specific = True
                     continue
@@ -916,6 +923,8 @@ def apply_quality_filter(
                 # or stripping boilerplate so a nested ledger ref cannot discard a generic
                 # proposal and boilerplate removal cannot orphan a ledger continuation.
                 without_ledger, removed_ledger = _strip_nested_ledger_lines(unit)
+                if removed_ledger:
+                    stripped_ledger = True
                 if any(classify_improvements(line) == "repo_specific" for line in removed_ledger):
                     stripped_repo_specific = True
                 if any(classify_improvements(line) == "repo_specific" for line in without_ledger):
@@ -956,10 +965,15 @@ def apply_quality_filter(
                 has_none_marker = any(
                     classify_improvements(line) == "none" for line in non_blank_remaining
                 )
-                reflection.sections["improvements"] = _strip_blank_edges(
-                    [line for unit in surviving_units for line in unit]
-                ) if has_none_marker else ""
-                reflection.improvements_class = "none" if has_none_marker else "missing"
+                if stripped_ledger and not has_none_marker:
+                    reflection.sections["improvements"] = ""
+                    reflection.improvements_class = "ledger_only"
+                    reflection.notes.append("improvements_ledger_only")
+                else:
+                    reflection.sections["improvements"] = _strip_blank_edges(
+                        [line for unit in surviving_units for line in unit]
+                    ) if has_none_marker else ""
+                    reflection.improvements_class = "none" if has_none_marker else "missing"
         else:
             reflection.improvements_class = "missing"
         for key in CONTENT_KEYS:
@@ -969,7 +983,12 @@ def apply_quality_filter(
                 )
         eligible_proposal = reflection.improvements_class == "agnostic" and bool(reflection.sections.get("improvements"))
         if reflection.structured and not reflection.sections.get("didnt") and not eligible_proposal:
-            reflection.excluded = "improvements_repo_specific" if reflection.improvements_class == "repo_specific" else "no_friction_or_proposal"
+            if reflection.improvements_class == "repo_specific":
+                reflection.excluded = "improvements_repo_specific"
+            elif reflection.improvements_class == "ledger_only":
+                reflection.excluded = "improvements_ledger_only"
+            else:
+                reflection.excluded = "no_friction_or_proposal"
 
     groups: dict[tuple[str, str, str], list[Reflection]] = defaultdict(list)
     for reflection in reflections:
@@ -1112,9 +1131,9 @@ def consumed(corpus: Corpus) -> list[Reflection]:
     (``duplicate_of:<id>``) whose kept twin is also consumed in this pass. Every
     other reflection stays in place: admitted ones of a skill below the threshold
     (and their duplicates) so evidence can accumulate, duplicates of non-consumed
-    reflections, and the rest of the excluded ones (a dropped repo-specific
-    proposal with no friction, per-branch cap, oversized) because they may still
-    be evidence. Repo-specific Improvements are removed without dropping usable
+    reflections, and the rest of the excluded ones (a dropped repo-specific or
+    ledger-only proposal with no friction, per-branch cap, oversized) because they
+    may still be evidence. Repo-specific Improvements are removed without dropping usable
     friction. A reflection whose real location leaves its scan root is never
     consumed, because ``archive`` would refuse it.
     """

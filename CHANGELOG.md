@@ -120,6 +120,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (and wrapped-bullet) granularity rather than discarding the whole section, so generic
   sibling proposals still reach the aggregator while pure repo-specific sections without
   friction remain excluded and unarchived (agent-harness#1654).
+- Assign ledger-only `Improvements to SKILL.md` reflections without friction a
+  non-archivable `improvements_ledger_only` exclusion reason in `reflection_corpus`
+  (agent-harness#1655); instruct all planners, `aggregator_prompt.md`, and all
+  `*-skill-editor` skills to cite supporting reflection IDs on deferred
+  `## Speculative / low-confidence notes` and pass `--exclude` so reflections whose only
+  themes were deferred (by the convergence gate or rule 1) are not archived
+  (agent-harness#1656); and pin the two-root legacy-identity dedup guard and run token's
+  branch component in `test_reflection_corpus.py`, note cross-root dedup on
+  `_mark_duplicates`, clarify `aggregator_prompt.md`'s quality-filter summary, and fix the
+  `agent-harness#1588` CHANGELOG rejected-themes routing bullet (agent-harness#1658).
 - Add `"codex"` to `panel_invoker._SANDBOX_INCAPABLE_BROKERED_LEGS` so the retained
   sealed non-jailed brokered Codex route (`_brokered_codex_command`, sealed in
   agent-harness#1916) no longer reports `seat_filesystem_unconfined` in launch modes,
@@ -2944,8 +2954,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - The aggregator had three admission gates. It now applies eight to every candidate
   theme: durability, specificity, convergence, skill-was-used, existing-skill-first,
-  already-covered, decision-changing and structural-mechanism. A theme that fails one is
-  listed under a new `## Rejected themes` section with the gate that rejected it.
+  already-covered, decision-changing and structural-mechanism. A theme that fails a gate
+  is listed under a new `## Rejected themes` section with the gate that rejected it,
+  unless the gate routes it elsewhere (`convergence` and `existing-skill-first` defer to
+  `## Speculative / low-confidence notes`; `structural-mechanism` and defect/compliance
+  escalations route to `## Mechanism candidates`).
 - Every recommendation states its level on the enforcement ladder (architecture,
   unrepresentable, check, prose) and why the level above fails. Only prose-level themes
   become SKILL.md edits; the rest are mechanism candidates.

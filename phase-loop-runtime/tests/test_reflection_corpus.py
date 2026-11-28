@@ -398,10 +398,12 @@ def test_a_ledger_only_proposal_is_not_admitted(tmp_path, marker):
         worked="", didnt="", improvements=f"{marker}Hosted CI: passed on main.",
     ))
 
-    corpus, _ = rc.collect([root], min_reflections=1)
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
 
     assert not corpus.admitted
-    assert corpus.scanned[0].excluded == "no_friction_or_proposal"
+    assert corpus.scanned[0].improvements_class == "ledger_only"
+    assert corpus.scanned[0].excluded == "improvements_ledger_only"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
 
 
 @pytest.mark.parametrize(("first", "second"), [
@@ -1459,16 +1461,18 @@ def test_non_proposal_remnants_after_repo_specific_drop_stay_unarchived(tmp_path
     assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
 
 
-@pytest.mark.parametrize("improvements", [
-    "+ None.",
-    "- None.\n- None.",
-    "- Hosted CI: passed\n  on main.",
-    "```sh\n\n```",
-    "---",
-    "-",
-    "- None.\n  Hosted CI: passed on main.",
+@pytest.mark.parametrize(("improvements", "expected_excluded"), [
+    ("+ None.", "no_friction_or_proposal"),
+    ("- None.\n- None.", "no_friction_or_proposal"),
+    ("- Hosted CI: passed\n  on main.", "improvements_ledger_only"),
+    ("```sh\n\n```", "no_friction_or_proposal"),
+    ("---", "no_friction_or_proposal"),
+    ("-", "no_friction_or_proposal"),
+    ("- None.\n  Hosted CI: passed on main.", "no_friction_or_proposal"),
 ])
-def test_standalone_non_proposal_remnants_are_not_admitted_as_agnostic(tmp_path, improvements):
+def test_standalone_non_proposal_remnants_are_not_admitted_as_agnostic(
+    tmp_path, improvements, expected_excluded
+):
     root = tmp_path / "skills"
     put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
         worked="", didnt="", improvements=improvements,
@@ -1477,7 +1481,7 @@ def test_standalone_non_proposal_remnants_are_not_admitted_as_agnostic(tmp_path,
     corpus, _ = rc.collect([root], min_reflections=1)
 
     assert corpus.admitted == []
-    assert corpus.scanned[0].excluded == "no_friction_or_proposal"
+    assert corpus.scanned[0].excluded == expected_excluded
 
 
 def test_list_item_opening_with_code_fence_does_not_swallow_generic_sibling(tmp_path):
@@ -1887,3 +1891,141 @@ def test_plain_text_improvements_setext_scan_is_linear_time(tmp_path):
     assert "agent-harness#1371" not in corpus.admitted[0].sections["improvements"]
     assert "Retry cap step 0." in corpus.admitted[0].sections["improvements"]
     assert "Retry cap step 1199." in corpus.admitted[0].sections["improvements"]
+
+
+@pytest.mark.parametrize("improvements", [
+    "- Hosted CI: passed on main.",
+    "Hosted CI: passed on main.",
+    "### Status\n- Lifecycle warning: lease expired.",
+    "- Publication result: merged cleanly.",
+])
+def test_ledger_only_improvements_get_non_archivable_exclusion(tmp_path, improvements):
+    # agent-harness#1655: ledger-only proposals without friction must not be archived as empty.
+    root = tmp_path / "skills"
+    path = put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="Ran targeted checks.", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+    data = rc.manifest(corpus, boilerplate)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "ledger_only"
+    assert corpus.scanned[0].excluded == "improvements_ledger_only"
+    assert "improvements_ledger_only" not in rc.ARCHIVABLE_EXCLUSIONS
+    assert data["reflections_consumed"] == []
+    assert path.exists()
+
+
+def test_ledger_only_improvements_with_friction_remains_admitted(tmp_path):
+    # agent-harness#1655: usable friction still admits the reflection even when Improvements
+    # holds only ledger entries.
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="Ran checks.",
+        didnt="Retrying failed without a clear timeout hint.",
+        improvements="- Hosted CI: passed on main.",
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+
+    assert len(corpus.admitted) == 1
+    assert corpus.admitted[0].improvements_class == "ledger_only"
+    assert corpus.admitted[0].sections["improvements"] == ""
+    assert "Retrying failed without a clear timeout hint." in rc.render_bundle(corpus)
+
+
+def test_none_marker_with_indented_non_repo_ledger_stays_no_friction_or_proposal(tmp_path):
+    # Explicit `- None.` with only a non-repo-specific ledger attachment is genuinely empty.
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="Clean run.",
+        didnt="",
+        improvements="- None.\n  Hosted CI: passed on main.",
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "none"
+    assert corpus.scanned[0].excluded == "no_friction_or_proposal"
+    assert len(rc.manifest(corpus, boilerplate)["reflections_consumed"]) == 1
+
+
+@pytest.mark.parametrize("editor", EDITORS, ids=lambda p: p.parent.name)
+def test_editor_prose_excludes_deferred_only_reflections_and_ledger_only(editor):
+    # agent-harness#1656 & agent-harness#1655
+    text = editor.read_text(encoding="utf-8")
+    assert "convergence" in text and "rule 1" in text
+    assert "## Speculative / low-confidence notes" in text
+    assert "improvements_ledger_only" in text
+
+
+@pytest.mark.parametrize("planner", PLANNERS, ids=lambda p: p.parent.name)
+def test_planner_prose_preserves_deferred_reflection_ids_for_archival_exclusion(planner):
+    # agent-harness#1656
+    text = planner.read_text(encoding="utf-8")
+    assert "convergence" in text and "rule 1" in text
+    assert "## Speculative / low-confidence notes" in text
+    assert "--exclude" in text
+
+
+@pytest.mark.parametrize("prompt", BUNDLED_PROMPTS, ids=lambda p: p.parent.parent.name)
+def test_aggregator_prompt_cites_deferred_ids_and_accurate_quality_filter(prompt):
+    # agent-harness#1656 & agent-harness#1658
+    text = prompt.read_text(encoding="utf-8")
+    assert "supporting reflection manifest ids" in text
+    assert "only themes were deferred" in text
+    assert "while `What didn't` keeps ledger-labelled observations" in text
+    assert "repeated single-repo boilerplate lines stripped per bare skill" in text
+    assert "`<json>`" in text
+
+
+def test_legacy_flat_copies_across_two_roots_are_not_deduplicated(tmp_path):
+    # agent-harness#1658: legacy flat reflections lack repo_hash/branch_slug and must not be
+    # collapsed by _mark_duplicates even when identical copies exist across two roots.
+    root_a = tmp_path / "root_a"
+    root_b = tmp_path / "root_b"
+    body = reflection(didnt="Identical legacy friction across two roots.")
+    for root in (root_a, root_b):
+        legacy = root / "codex-plan-phase" / "reflections" / "run1.md"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(body, encoding="utf-8")
+
+    corpus, _ = rc.collect([root_a, root_b], min_reflections=2)
+
+    assert len(corpus.scanned) == 2
+    assert all(r.repo_hash == "" and r.branch_slug == "" for r in corpus.scanned)
+    assert [r.excluded for r in corpus.scanned] == [None, None]
+    assert len(corpus.admitted) == 2
+
+
+def test_same_run_id_on_different_branches_gets_distinct_run_tokens(tmp_path):
+    # agent-harness#1658: the bundle's `run` source token incorporates branch_slug.
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "same-repo", "branch-alpha", "run-42", reflection(
+        didnt="Friction on alpha.",
+    ))
+    put(root, "codex-plan-phase", "same-repo", "branch-beta", "run-42", reflection(
+        didnt="Friction on beta.",
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    matches = re.findall(
+        r"\*\*Source\*\*: repo ([0-9a-f]{16}); branch ([0-9a-f]{16}); run ([0-9a-f]{16})",
+        bundle,
+    )
+    assert len(matches) == 2
+    (repo_a, branch_a, run_a), (repo_b, branch_b, run_b) = matches
+    assert repo_a == repo_b
+    assert branch_a != branch_b
+    assert run_a != run_b
+
+
+def test_mark_duplicates_docstring_documents_cross_root_dedup():
+    # agent-harness#1658
+    doc = rc._mark_duplicates.__doc__ or ""
+    assert "cross-root" in doc
+    assert "repo_hash" in doc and "branch_slug" in doc
