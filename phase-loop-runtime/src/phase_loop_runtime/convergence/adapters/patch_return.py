@@ -332,22 +332,25 @@ def _paths(proposal):
             else:
                 raise ValueError("proposal_hunk")
             continue
-        if line.startswith("diff --git "):
-            a, b = line[len("diff --git "):].split(" ")
+        header_line = line[:-1] if line.endswith("\r") else line
+        if header_line.startswith("diff --git "):
+            a, b = header_line[len("diff --git "):].split(" ")
             if not a.startswith("a/") or not b.startswith("b/"):
                 raise ValueError("proposal_header")
             check(a, True)
             check(b, True)
             found = True
-        elif line.startswith(("--- ", "+++ ")):
-            check(line[4:])
-        elif line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
-            raw_path = line.split(" ", 2)[2]
+        elif header_line.startswith(("--- ", "+++ ")):
+            check(header_line[4:])
+        elif header_line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+            raw_path = header_line.split(" ", 2)[2]
             if raw_path.startswith('"'):
                 raise ValueError("proposal_path")
             check("a/" + raw_path, True)
-        elif line.startswith("@@ "):
-            match = _HUNK_HEADER.match(line)
+        elif header_line.startswith("@@ "):
+            if index == last_index and not has_trailing_lf:
+                raise ValueError("proposal_hunk")
+            match = _HUNK_HEADER.match(header_line)
             if match is None:
                 raise ValueError("proposal_hunk")
             old_rem = int(match.group(2)) if match.group(2) is not None else 1

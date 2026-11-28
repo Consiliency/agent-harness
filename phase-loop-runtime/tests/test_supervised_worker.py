@@ -1338,6 +1338,28 @@ def test_unified_diff_hunk_line_counts_and_removed_dashes(worker_case):
     worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(missing_final_lf) + ")\n")
     assert run(worker_case).proposal.status == "withheld_malformed"
 
+    crlf_valid = (
+        b"diff --git a/file b/file\r\n"
+        b"--- a/file\r\n"
+        b"+++ b/file\r\n"
+        b"@@ -1 +1 @@\r\n"
+        b"-old\r\n"
+        b"+new\r\n"
+    )
+    worker_case.envelope["attempt_id"] += "-crlf"
+    worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(crlf_valid) + ")\n")
+    assert run(worker_case).proposal.status == "returned"
+
+    unterminated_hunk_header = (
+        b"diff --git a/file b/file\n"
+        b"--- a/file\n"
+        b"+++ b/file\n"
+        b"@@ -2,0 +2,0 @@"
+    )
+    worker_case.envelope["attempt_id"] += "-unterminated-hunk-hdr"
+    worker_case.executable.write_text("#!/usr/bin/python3\nimport os\nos.write(1," + repr(unterminated_hunk_header) + ")\n")
+    assert run(worker_case).proposal.status == "withheld_malformed"
+
 
 def test_elf_descriptor_mismatch_refuses_cleanly_through_run_patch_return(worker_case, monkeypatch):
     # Consiliency/agent-harness#1960 item 2: if the ELF binary at argv[0] is replaced
@@ -1448,14 +1470,23 @@ def test_w4_open_journal_root_refusal_stops_without_side_effects(worker_case, mo
     assert not (worker_case.state / "launchers").exists()
 
 
-def test_w10_repeat_cancel_while_attempt_nonterminal(worker_case):
+def test_w10_repeat_cancel_while_attempt_nonterminal(worker_case, monkeypatch):
     # Consiliency/agent-harness#1960 item 3 (W10): repeating cancel_attempt while the
-    # attempt is explicitly gated nonterminal delivers both signals and returns
-    # cancel_pending then cancelled once released.
+    # attempt is explicitly gated nonterminal delivers both real SIGTERMs via
+    # pidfd_send_signal and returns cancel_pending then cancelled once released.
+    import signal
     import time
 
     case = worker_case
     case.config.template_path.write_text('["{executable}", "wait"]')
+    signals = []
+    real_send = worker.signal.pidfd_send_signal
+
+    def spy_send(pidfd, sig):
+        real_send(pidfd, sig)
+        signals.append(sig)
+
+    monkeypatch.setattr(worker.signal, "pidfd_send_signal", spy_send)
     process, commands = _start_launcher(case, mode="queued_gate")
     try:
         root = _await_state(case, "queued")
@@ -1464,30 +1495,24 @@ def test_w10_repeat_cancel_while_attempt_nonterminal(worker_case):
             time.sleep(0.01)
         assert (case.root / "ready").exists()
 
-        delivered = []
-
-        def first_guard(send):
-            send()
-            delivered.append("first")
-
         first = worker.cancel_attempt(
             state_root=case.state, attempt_id=case.envelope["attempt_id"],
-            launcher_commands=commands, wait_seconds=0.5, signal_guard=first_guard,
+            launcher_commands=commands, wait_seconds=0.5,
         )
-        assert first == "cancel_pending" and delivered == ["first"]
+        assert first == "cancel_pending" and signals == [signal.SIGTERM]
         assert projection.attempt_status(root, case.envelope["attempt_id"]).state == "queued"
 
-        def second_guard(send):
+        def release_after_second_signal(send):
             assert projection.attempt_status(root, case.envelope["attempt_id"]).state == "queued"
             send()
-            delivered.append("second")
+            assert signals == [signal.SIGTERM, signal.SIGTERM]
             (case.root / "release").write_text("go")
 
         second = worker.cancel_attempt(
             state_root=case.state, attempt_id=case.envelope["attempt_id"],
-            launcher_commands=commands, wait_seconds=5, signal_guard=second_guard,
+            launcher_commands=commands, wait_seconds=5, signal_guard=release_after_second_signal,
         )
-        assert second == "cancelled" and delivered == ["first", "second"]
+        assert second == "cancelled" and signals == [signal.SIGTERM, signal.SIGTERM]
         _finish_launcher(process)
         record = json.loads((case.root / "result.json").read_bytes())
         assert record["state"] == "refused" and record["refusal"] == "cancelled_before_start"
