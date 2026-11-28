@@ -43,6 +43,7 @@ def run_train_generation_leases(worktrees):
     from .broker.live import (
         RUN_TRAIN_WRITER_LOCK,
         WriterGenerationLatch,
+        _register_held_writer_locks,
         repository_namespace_root,
     )
 
@@ -57,6 +58,7 @@ def run_train_generation_leases(worktrees):
                 acquire_exclusive(writer_lock)
             else:
                 fcntl.flock(writer_lock, fcntl.LOCK_EX)
+        stack.enter_context(_register_held_writer_locks(namespace_roots))
         for path in paths:
             latch = WriterGenerationLatch.open(path)
             snapshot = latch.read()

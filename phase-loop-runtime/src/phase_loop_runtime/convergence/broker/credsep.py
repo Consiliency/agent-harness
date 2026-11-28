@@ -1,6 +1,7 @@
 """Credential boundary and GitHub publish adapter."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -211,42 +212,66 @@ class GitHubBrokerAdapter:
         from .live import (
             LegacyCutoverConflict,
             fabpub_capability_active,
-            repository_snapshot,
             require_current_generation,
             require_namespace_unactivated_when_inactive,
+            try_repository_snapshot,
         )
 
         active = fabpub_capability_active()
         if not active:
-            try:
-                snapshot = repository_snapshot(self.repo_path)
-            except (LegacyCutoverConflict, OSError):
-                # Unit seams pass a synthetic subprocess runner and a path
-                # that is intentionally not a repository.  They have no
-                # generation namespace to mutate; a declared missing lease,
-                # however, remains a fail-closed real-repository error.
+            snapshot = try_repository_snapshot(self.repo_path)
+            if snapshot is None:
+                # Unit seams pass a synthetic subprocess runner and a positively
+                # verified non-repository path.  A declared missing lease remains
+                # a fail-closed real-repository error.
                 if self.generation_lease is _UNDECLARED_GENERATION:
                     return
-                raise
+                raise LegacyCutoverConflict(f"{self.repo_path} is not a Git repository")
             require_namespace_unactivated_when_inactive(snapshot)
             return
         root = self._generation_root
         if root is None:
-            try:
-                snapshot = repository_snapshot(self.repo_path)
-            except (LegacyCutoverConflict, OSError):
-                # Unit seams pass a synthetic subprocess runner and a path
-                # that is intentionally not a repository.  They have no
-                # generation namespace to mutate; a declared missing lease,
-                # however, remains a fail-closed real-repository error.
+            snapshot = try_repository_snapshot(self.repo_path)
+            if snapshot is None:
                 if self.generation_lease is _UNDECLARED_GENERATION:
                     return
-                raise
+                raise LegacyCutoverConflict(f"{self.repo_path} is not a Git repository")
             root = snapshot.store_root
             self._generation_root = root
         if self.generation_lease is _UNDECLARED_GENERATION:
             raise PermissionError("legacy_writer_after_fabpub_activation")
         require_current_generation(root, self.generation_lease, strict=True)
+
+    @contextlib.contextmanager
+    def _generation_effect_guard(self):
+        """Coordinate the provider-effect window with FABPUB cutover/activation.
+
+        When active, enforces the generation fence on entry.  When inactive,
+        holds ``RUN_TRAIN_WRITER_LOCK`` across both ``git push`` and
+        ``gh pr create`` (after verifying the namespace is unactivated both
+        before and under the lock) so cutover/bootstrap/onboarding cannot
+        activate concurrently with an unfenced publisher effect
+        (agent-harness#1681).
+        """
+        from .live import (
+            LegacyCutoverConflict,
+            fabpub_capability_active,
+            inactive_effect_exclusion,
+            try_repository_snapshot,
+        )
+
+        if fabpub_capability_active():
+            self._revalidate_generation_before_effect()
+            yield
+            return
+        snapshot = try_repository_snapshot(self.repo_path)
+        if snapshot is None:
+            if self.generation_lease is _UNDECLARED_GENERATION:
+                yield
+                return
+            raise LegacyCutoverConflict(f"{self.repo_path} is not a Git repository")
+        with inactive_effect_exclusion(snapshot):
+            yield
 
     def _acquire_service_generation_lease(self, store_root: Path):
         """Bridge an admitted BrokerService compatibility call without leaking a lease."""
@@ -495,22 +520,23 @@ class GitHubBrokerAdapter:
         # push (concurrent writer in the same workspace); pinning the source side means the
         # push can only ever publish the validated commit, never whatever the ref points to
         # by the time this runs.
-        self._revalidate_generation_before_effect()
-        pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True)
-        if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
-        # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
-        # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
-        # Derive a deterministic title from the branch HEAD's commit subject and pass
-        # the request's pr_body verbatim (empty body is valid once --title is present).
-        # --head pins the branch explicitly so gh never infers a wrong head. agent-harness#250
-        # (N6): --base pins the PR's base explicitly too — without it `gh` opens the PR
-        # against the repo DEFAULT branch, which for a non-default `request.base` (e.g.
-        # `release/2.0`) would open a PR whose real diff (vs the repo default) was never the
-        # diff this adapter scope-checked (vs request.base).
-        title = self._output("log", "-1", "--format=%s") or request.branch
-        args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
-        if request.draft: args.append("--draft")
-        created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
+        with self._generation_effect_guard():
+            pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True)
+            if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
+            # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
+            # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
+            # Derive a deterministic title from the branch HEAD's commit subject and pass
+            # the request's pr_body verbatim (empty body is valid once --title is present).
+            # --head pins the branch explicitly so gh never infers a wrong head. agent-harness#250
+            # (N6): --base pins the PR's base explicitly too — without it `gh` opens the PR
+            # against the repo DEFAULT branch, which for a non-default `request.base` (e.g.
+            # `release/2.0`) would open a PR whose real diff (vs the repo default) was never the
+            # diff this adapter scope-checked (vs request.base).
+            title = self._output("log", "-1", "--format=%s") or request.branch
+            args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
+            if request.draft: args.append("--draft")
+            self._revalidate_generation_before_effect()
+            created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
         # An exact branch may already have an open PR (for example after a prior
         # process pushed and created it but died before recording terminal evidence).
         # `gh pr create` reports that condition as a non-zero exit. Reconcile only

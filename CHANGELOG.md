@@ -210,14 +210,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `observed_landed` and forbid `attested_not_landed`; also distinguish non-generation
   terminal write failures (`could not be recorded`) and returned `no_effect_terminal_proven`
   evidence references on `ProviderEffectGenerationRefused` handoffs (agent-harness#1701).
-- Fail closed in `fabpub_capability_active()` (`FabpubConfigurationError`) on an
-  unsupported `FABPUB_CAPABILITY_VERSION` or missing transitive import inside
-  `phase_loop_runtime.fabpub_capability`, and probe the resolved repository namespace in
-  `GitHubBrokerAdapter._revalidate_generation_before_effect()` even when FABPUB capability
-  is inactive so an inactive runtime refuses (`WriterGenerationBlocked` / fail-closed
-  routing or receipt error) any repository carrying a writer-generation latch, armed
-  cutover marker, partition receipt, or `generations/` layout instead of publishing
-  unfenced (agent-harness#1681).
+- Fail closed in `fabpub_capability_active()` (`FabpubConfigurationError`) on any
+  non-`int` or unsupported/missing `FABPUB_CAPABILITY_VERSION` (including `True` and
+  `1.0`) or unnamed/transitive `ModuleNotFoundError` inside
+  `phase_loop_runtime.fabpub_capability`; probe the resolved repository namespace with
+  strict `lstat` absence checks (`require_namespace_unactivated_when_inactive` +
+  `try_repository_snapshot`) in `GitHubBrokerAdapter._revalidate_generation_before_effect()`
+  even when FABPUB capability is inactive, hold `RUN_TRAIN_WRITER_LOCK` cutover exclusion
+  across `git push` and `gh pr create` via `_generation_effect_guard()` /
+  `inactive_effect_exclusion()` (coordinated with `run_legacy_broker_cutover`,
+  `onboard_zero_legacy_repository`, and `bootstrap_zero_history_authority`), and
+  re-validate before `gh pr create` so an inactive runtime never publishes unfenced or
+  races activation on an activated or unreadable namespace (agent-harness#1681).
 - List `grok` (`--reasoning-effort high`) as a concrete effort lane in the ABDFREEZE
   contract (`advisor_board/CONTRACTS.md`) and name the `[sandbox]` `roots` key in the
   `phase-loop placement reap` exit-2 documentation (`docs/phase-loop/convergence-runtime.md`)

@@ -1376,7 +1376,7 @@ def _disable_fabpub_marker_1681(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, live.FABPUB_MARKER_MODULE, None)
 
 
-@pytest.mark.parametrize("bad_version", [2, 0, "1", True, None, "<missing>"])
+@pytest.mark.parametrize("bad_version", [2, 0, "1", 1.0, True, None, "<missing>"])
 def test_fabpub_capability_version_mismatch_fails_closed_1681(tmp_path, monkeypatch, bad_version):
     import sys
     import types
@@ -1409,6 +1409,17 @@ def test_fabpub_capability_missing_transitive_dependency_fails_closed_1681(monke
     monkeypatch.setattr(live.importlib, "import_module", raise_transitive)
     with pytest.raises(live.FabpubConfigurationError, match="missing_dep_1681"):
         live.fabpub_capability_active()
+
+    # An unnamed or empty-name ModuleNotFoundError (e.g. raised inside the marker)
+    # must fail closed instead of being treated as marker absence.
+    for exc in (ModuleNotFoundError("unnamed marker failure"), ModuleNotFoundError("empty", name="")):
+        def raise_unnamed(name: str, _exc=exc):
+            assert name == live.FABPUB_MARKER_MODULE
+            raise _exc
+
+        monkeypatch.setattr(live.importlib, "import_module", raise_unnamed)
+        with pytest.raises(live.FabpubConfigurationError):
+            live.fabpub_capability_active()
 
     def raise_marker_absent(name: str):
         assert name == live.FABPUB_MARKER_MODULE
@@ -1534,3 +1545,163 @@ def test_active_capability_does_not_swallow_broken_generations_routing_refusal_1
     with pytest.raises(live.PartitionRoutingRefused):
         GitHubBrokerAdapter(repo, run=run).execute(_request())
     assert run.calls == []
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX non-root chmod test")
+def test_inactive_capability_refuses_unreadable_namespace_and_unreadable_git_dir_1681(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime.convergence.broker import live
+
+    # (1) An activated FABPUB namespace whose directory denies traversal (chmod 000)
+    # must fail closed instead of looking absent to os.path.lexists().
+    repo = _init_git_repo_1681(tmp_path / "unreadable-ns-repo")
+    latch = live.WriterGenerationLatch.open(repo)
+    latch.begin_draining()
+    latch.mark_armed()
+    latch.activate()
+    ns_root = latch.root
+    _disable_fabpub_marker_1681(monkeypatch)
+
+    os.chmod(ns_root, 0)
+    try:
+        run = _FakeRun(_base_responses())
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            GitHubBrokerAdapter(repo, run=run).execute(_request())
+        assert run.calls == []
+    finally:
+        os.chmod(ns_root, 0o700)
+
+    # (2) A repository with an unreadable .git directory (chmod 000) causes git rev-parse
+    # to emit "not a git repository", yet must fail closed rather than pass as synthetic.
+    repo_git = _init_git_repo_1681(tmp_path / "unreadable-git-repo")
+    os.chmod(repo_git / ".git", 0)
+    try:
+        run_git = _FakeRun(_base_responses())
+        with pytest.raises(live.LegacyCutoverConflict):
+            GitHubBrokerAdapter(repo_git, run=run_git).execute(_request())
+        assert run_git.calls == []
+    finally:
+        os.chmod(repo_git / ".git", 0o700)
+
+    # (3) An unreadable parent directory around the repo path also fails closed.
+    locked_parent = tmp_path / "locked-parent"
+    locked_parent.mkdir()
+    hidden_repo = _init_git_repo_1681(locked_parent / "repo")
+    os.chmod(locked_parent, 0)
+    try:
+        run_parent = _FakeRun(_base_responses())
+        with pytest.raises(live.LegacyCutoverConflict):
+            GitHubBrokerAdapter(hidden_repo, run=run_parent).execute(_request())
+        assert run_parent.calls == []
+    finally:
+        os.chmod(locked_parent, 0o700)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fcntl flock test")
+def test_inactive_capability_coordinates_with_cutover_and_fences_pr_create_1681(
+    tmp_path, monkeypatch
+):
+    import fcntl
+    import threading
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "coord-repo")
+    snapshot = live.repository_snapshot(repo)
+    lock_path = snapshot.namespace_root / live.RUN_TRAIN_WRITER_LOCK
+    _disable_fabpub_marker_1681(monkeypatch)
+
+    # (1) If cutover/bootstrap already holds RUN_TRAIN_WRITER_LOCK, an inactive publish
+    # refuses before git push or gh pr create.
+    snapshot.namespace_root.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        run_blocked = _FakeRun(_base_responses())
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            GitHubBrokerAdapter(repo, run=run_blocked).execute(_request())
+        assert not any("push" in call or "create" in call for call in run_blocked.calls)
+
+    # (2) While an inactive publish is mid-push, RUN_TRAIN_WRITER_LOCK is held exclusively
+    # (blocking concurrent bootstrap/cutover from another thread), AND after a clean
+    # inactive publish the residue stays clean for zero-history bootstrap probing.
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.delenv(live.FABPUB_LEGACY_ROOTS_ENV, raising=False)
+    monkeypatch.delenv(live.FABPUB_CUTOVER_MANIFEST_ENV, raising=False)
+    pre_inventory = live.probe_zero_history_bootstrap(
+        cutover_id="bootstrap-race-1681",
+        authority_root=tmp_path / "authority",
+        worktrees=(repo,),
+        legacy_roots=(tmp_path / "legacy",),
+        search_roots=(tmp_path,),
+    )
+    lock_observed_held = []
+    bootstrap_errors = []
+
+    class _ObservingRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            if "push" in args:
+                # Verify from a separate thread (distinct lock owner & open file description)
+                # that cutover exclusion is active during git push and blocks bootstrap apply.
+                def probe_cutover() -> None:
+                    with lock_path.open("a+") as contender:
+                        try:
+                            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            lock_observed_held.append(True)
+                        else:
+                            lock_observed_held.append(False)
+                    try:
+                        live.bootstrap_zero_history_authority(
+                            pre_inventory, confirmed_zero_history=True
+                        )
+                    except Exception as exc:
+                        bootstrap_errors.append(exc)
+
+                t = threading.Thread(target=probe_cutover)
+                t.start()
+                t.join(timeout=10)
+            return super().__call__(args, **kwargs)
+
+    run_clean = _ObservingRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(repo, run=run_clean).execute(_request())
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None
+    assert lock_observed_held == [True], "RUN_TRAIN_WRITER_LOCK must be held during git push"
+    assert len(bootstrap_errors) == 1 and isinstance(bootstrap_errors[0], live.LegacyCutoverConflict), (
+        f"bootstrap apply must refuse while inactive publish holds writer lock; got {bootstrap_errors!r}"
+    )
+
+    # Residue left by an inactive publish on an unactivated repo must still classify
+    # as clean zero-history ("absent") for bootstrap probing.
+    inventory = live.probe_zero_history_bootstrap(
+        cutover_id="bootstrap-after-inactive-1681",
+        authority_root=tmp_path / "authority",
+        worktrees=(repo,),
+        legacy_roots=(tmp_path / "legacy",),
+        search_roots=(tmp_path,),
+    )
+    assert inventory["worktrees"][0]["classification"] == "absent"
+    assert inventory["worktrees"][0]["files"] == []
+
+    # (3) A state change between git push and gh pr create (e.g., writer-generation.json
+    # appearing during push) must refuse gh pr create fail-closed.
+    class _ActivateDuringPushRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            response = super().__call__(args, **kwargs)
+            if "push" in args:
+                live.WriterGenerationLatch.open(repo)
+            return response
+
+    run_raced = _ActivateDuringPushRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
+    ])
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(repo, run=run_raced).execute(_request())
+    assert any("push" in call for call in run_raced.calls)
+    assert not any("create" in call for call in run_raced.calls), (
+        "gh pr create must not run after namespace activation during git push"
+    )
