@@ -456,23 +456,21 @@ class SkillsCanonParityTest(unittest.TestCase):
         return True, ""
 
     def test_every_linked_reference_and_asset_ships_with_its_harness(self):
-        """agent-harness#1358 / agent-harness#1646: a SKILL.md that links `references/<file>`
-        or `assets/<file>` must resolve directly under its packaged skill dir's `references/`
-        or `assets/`, for every harness. Progressive disclosure is only safe if the linked
-        file travels directly under that directory without traversal or symlink escape.
-        A link followed by "from the installed `<skill>` directory" resolves directly under
-        that sibling skill's directory instead (execute-phase reads execute-detailed's pr-writing.md)."""
+        """agent-harness#1358 / agent-harness#1646 / agent-harness#1649: a SKILL.md that links
+        `references/<file>` or `assets/<file>` must resolve directly under its packaged skill
+        dir's `references/` or `assets/`, for every harness. Progressive disclosure is only safe
+        if the linked file travels directly under that directory without traversal or symlink
+        escape. A link followed by "from the installed `<skill>` directory" resolves directly
+        under that sibling skill's directory instead (execute-phase reads execute-detailed's
+        pr-writing.md)."""
         self._require_sources()
-        import re
+        from phase_loop_runtime.build_bundle import iter_skill_aux_links
 
-        link = re.compile(
-            r"(?<![\w-])((?:references|assets)/[\w./-]+\.md)`?(?:\s+from the installed `([\w-]+)` directory)?"
-        )
         packaged = PKG / "src" / "phase_loop_runtime" / "skills_bundle"
         checked = 0
         for harness, root in SKILLS_SRC.items():
             for skill_md in sorted(root.glob("*/SKILL.md")):
-                for rel, owner in sorted(set(link.findall(skill_md.read_text(encoding="utf-8")))):
+                for rel, owner in iter_skill_aux_links(skill_md.read_text(encoding="utf-8")):
                     checked += 1
                     with self.subTest(skill=skill_md.parent.name, link=rel):
                         ok, reason = self._linked_file_ships_directly(
@@ -581,6 +579,73 @@ class SkillsCanonParityTest(unittest.TestCase):
             build_bundle({h: src / h for h in SKILLS_SRC}, out, dry_run=False, apply=True, force=True)
             self.assertTrue((skill_out / "references" / "shared.md").is_file())
             self.assertFalse((skill_out / "_overrides" / "claude" / "references" / "shared.md").exists())
+
+    def test_build_bundle_uses_parity_link_grammar_for_references_placement(self):
+        """agent-harness#1649: raw substring hits (prefixed/suffixed paths or links
+        attributed to a different installed skill) must not promote a harness-only
+        reference into the shared base, while `./references/` and self-owned links do."""
+        from phase_loop_runtime.build_bundle import iter_skill_aux_links, linked_own_aux_paths
+
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "src"
+            for harness in SKILLS_SRC:
+                skill = src / harness / f"{harness}-plan-phase"
+                skill.mkdir(parents=True)
+                body = f"---\nname: {harness}-plan-phase\n---\n"
+                if harness == "claude":
+                    refs = skill / "references"
+                    refs.mkdir()
+                    for name in (
+                        "cross-skill.md",
+                        "prefixed.md",
+                        "suffixed.md",
+                        "parent-dir.md",
+                        "dot-rel.md",
+                        "self-owned.md",
+                    ):
+                        (refs / name).write_text(f"{name}\n", encoding="utf-8")
+                    body += (
+                        "Read `references/cross-skill.md`, `references/prefixed.md`, "
+                        "`references/suffixed.md`, `references/parent-dir.md`, "
+                        "`references/dot-rel.md`, and `references/self-owned.md`.\n"
+                    )
+                elif harness == "gemini":
+                    body += (
+                        "Read `references/cross-skill.md` from the installed `gemini-execute-detailed` directory.\n"
+                        "Ignore `my-references/prefixed.md` and `other/references/parent-dir.md` "
+                        "and `../references/parent-dir.md`.\n"
+                        "Ignore `references/suffixed.md.bak` and `references/suffixed.mdx` "
+                        "and `references/suffixed.md/extra`.\n"
+                        "Read [dot relative](./references/dot-rel.md#top).\n"
+                        "Read [self](references/self-owned.md#sec) from the installed `gemini-plan-phase` directory.\n"
+                    )
+                (skill / "SKILL.md").write_text(body, encoding="utf-8")
+
+            gemini_text = (src / "gemini" / "gemini-plan-phase" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                iter_skill_aux_links(gemini_text),
+                [
+                    ("references/cross-skill.md", "gemini-execute-detailed"),
+                    ("references/dot-rel.md", ""),
+                    ("references/self-owned.md", "gemini-plan-phase"),
+                ],
+            )
+            self.assertEqual(
+                linked_own_aux_paths(gemini_text, skill_name="gemini-plan-phase"),
+                {"references/dot-rel.md", "references/self-owned.md"},
+            )
+
+            out = Path(td) / "out"
+            build_bundle({h: src / h for h in SKILLS_SRC}, out, dry_run=False, apply=True, force=True)
+            skill_out = out / "plan-phase"
+            for harness_only in ("cross-skill.md", "prefixed.md", "suffixed.md", "parent-dir.md"):
+                with self.subTest(harness_only=harness_only):
+                    self.assertFalse((skill_out / "references" / harness_only).exists())
+                    self.assertTrue((skill_out / "_overrides" / "claude" / "references" / harness_only).is_file())
+            for shared in ("dot-rel.md", "self-owned.md"):
+                with self.subTest(shared=shared):
+                    self.assertTrue((skill_out / "references" / shared).is_file())
+                    self.assertFalse((skill_out / "_overrides" / "claude" / "references" / shared).exists())
 
     def test_plan_phase_skills_publish_falsifier_grammar(self):
         from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract

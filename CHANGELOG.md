@@ -104,6 +104,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `test_skills_canon_parity.py`'s links-ship check to require files resolving directly under
   `references/`/`assets/` without traversal, nesting, or symlinks (with negative controls)
   (agent-harness#1646).
+- Share a single `references/`/`assets/` link grammar (`build_bundle.SKILL_AUX_LINK_RE`,
+  `iter_skill_aux_links`, `linked_own_aux_paths`) between `build_bundle` references
+  placement and `test_skills_canon_parity`, replacing raw substring matching so prefixed,
+  suffixed, parent-directory, or cross-skill (`from the installed \`<other-skill>\` directory`)
+  mentions cannot misplace a harness-only reference into the shared base (agent-harness#1649).
 - Teach `phase-loop-closeout-audit` (`closeout_classifier.main`/`console_main`) to print
   usage and exit 0 on `-h`/`--help` without auditing the working directory or running
   declared producers (while still raising with `CRASH_ACTION` on malformed dangling

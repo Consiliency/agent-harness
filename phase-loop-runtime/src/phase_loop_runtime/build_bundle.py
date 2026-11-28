@@ -25,6 +25,32 @@ AUX_SUBDIRS: tuple[str, ...] = ("scripts", "assets")
 # shipped Claude-only prose to every harness and would silently drop a second
 # harness's own copy of the same file.
 HARNESS_AUX_SUBDIRS: tuple[str, ...] = ("references",)
+# Shared link grammar for `references/` and `assets/` links in a SKILL.md
+# (agent-harness#1649). Used by both `build_bundle` (references placement) and
+# `test_skills_canon_parity` (installed-bundle verification) so placement and
+# parity checks always agree.
+SKILL_AUX_LINK_RE = re.compile(
+    r"(?<![\w./-])(?:\./)?((?:references|assets)/[\w./-]+\.md)(?![\w/-]|\.\w)"
+    r"(?:`|(?:#[\w.-]+)?\))?(?:\s+from the installed `([\w-]+)` directory)?"
+)
+
+
+def iter_skill_aux_links(text: str) -> list[tuple[str, str]]:
+    """Return sorted unique `(rel_path, owner)` pairs for `references/` and `assets/` links."""
+    return sorted(set(SKILL_AUX_LINK_RE.findall(text)))
+
+
+def linked_own_aux_paths(text: str, *, skill_name: str) -> set[str]:
+    """Return relative `references/` / `assets/` paths in `text` owned by `skill_name`.
+
+    Links qualified with ``from the installed `<other-skill>` directory`` belong to
+    `<other-skill>` rather than `skill_name` (unless `<other-skill> == skill_name`).
+    """
+    return {
+        rel
+        for rel, owner in iter_skill_aux_links(text)
+        if not owner or owner == skill_name
+    }
 # IF-0-CANON-1: the canonical phase-loop skill sources now live IN this repo
 # under `skills-src/<harness>/` (one tree per active harness, each holding
 # `<harness>-<skill>/` dirs). `build_bundle` consumes these to produce the
@@ -201,6 +227,10 @@ def build_bundle(
                     shutil.copy2(src_file, target)
 
         skill_texts = {harness: path.read_text(encoding="utf-8") for harness, path in canonical_paths.items()}
+        linked_aux_by_harness = {
+            harness: linked_own_aux_paths(text, skill_name=f"{harness}-{skill}")
+            for harness, text in skill_texts.items()
+        }
         shared_refs: set[str] = set()
         if effective_apply:
             # Only this loop writes these dirs. Clear them so a file whose placement
@@ -214,11 +244,13 @@ def build_bundle(
                 for src_file in _aux_files(source_aux):
                     rel = src_file.relative_to(source_aux).as_posix()
                     link = f"{aux}/{rel}"
-                    # Only a harness that links the file but ships no copy of its
-                    # own needs the shared one.
+                    # Only a harness that links the file (as its own skill's reference
+                    # under the shared link grammar) but ships no copy of its own needs
+                    # the shared one.
                     linked_elsewhere = any(
-                        link in text and not (canonical_paths[other].parent / link).is_file()
-                        for other, text in skill_texts.items()
+                        link in linked_aux_by_harness[other]
+                        and not (canonical_paths[other].parent / link).is_file()
+                        for other in ACTIVE_HARNESSES
                         if other != harness
                     )
                     if linked_elsewhere and link not in shared_refs:
