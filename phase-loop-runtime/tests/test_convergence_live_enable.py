@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from subprocess import CompletedProcess
 import subprocess
@@ -223,7 +224,7 @@ def _fake_git_gh(
 
     def fake_run(cmd, **kwargs):
         if cmd[0] == "git":
-            sub = cmd[3:]  # after: git -C <path>
+            sub = cmd[3:] if (len(cmd) >= 3 and cmd[1] == "-C") else cmd[1:]
             if sub[:2] == ["branch", "--show-current"]:
                 return CompletedProcess(cmd, 0, stdout=branch + "\n", stderr="")
             if sub[0] == "rev-parse":
@@ -437,10 +438,13 @@ def _routing_fake(repos, seen_paths):
 
     def fake_run(cmd, **kwargs):
         if cmd[0] == "git":
-            path = cmd[2]  # after: git -C <path>
+            if len(cmd) >= 3 and cmd[1] == "-C":
+                path, sub = cmd[2], cmd[3:]
+            else:
+                path = os.path.realpath(str(kwargs.get("cwd", "")))
+                sub = cmd[1:]
             seen_paths.append(path)
             meta = repos[path]
-            sub = cmd[3:]
             if sub[:2] == ["branch", "--show-current"]:
                 return CompletedProcess(cmd, 0, stdout=meta["branch"] + "\n", stderr="")
             if sub[0] == "rev-parse":
@@ -456,7 +460,8 @@ def _routing_fake(repos, seen_paths):
             if sub[:2] == ["remote", "get-url"]:
                 return CompletedProcess(cmd, 0, stdout="https://github.com/owner/repo.git\n", stderr="")
         if cmd[0] == "gh":
-            meta = repos[str(kwargs.get("cwd"))]
+            cwd = str(kwargs.get("cwd", ""))
+            meta = repos.get(cwd) or repos[os.path.realpath(cwd)]
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
@@ -630,9 +635,12 @@ def test_one_repo_ambiguous_outcome_does_not_poison_other_repos(tmp_path, reques
 
     def fake_run(cmd, **kwargs):
         if cmd[0] == "git":
-            path = cmd[2]
+            if len(cmd) >= 3 and cmd[1] == "-C":
+                path, sub = cmd[2], cmd[3:]
+            else:
+                path = os.path.realpath(str(kwargs.get("cwd", "")))
+                sub = cmd[1:]
             meta = repos[path]
-            sub = cmd[3:]
             if sub[:2] == ["branch", "--show-current"]:
                 return CompletedProcess(cmd, 0, stdout=meta["branch"] + "\n", stderr="")
             if sub[0] == "rev-parse":
@@ -650,7 +658,8 @@ def test_one_repo_ambiguous_outcome_does_not_poison_other_repos(tmp_path, reques
             if sub[:2] == ["remote", "get-url"]:
                 return CompletedProcess(cmd, 0, stdout="https://github.com/owner/repo.git\n", stderr="")
         if cmd[0] == "gh":
-            meta = repos[str(kwargs.get("cwd"))]
+            cwd = str(kwargs.get("cwd", ""))
+            meta = repos.get(cwd) or repos[os.path.realpath(cwd)]
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:

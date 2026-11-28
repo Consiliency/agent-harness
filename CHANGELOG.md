@@ -230,6 +230,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `observed_landed` and forbid `attested_not_landed`; also distinguish non-generation
   terminal write failures (`could not be recorded`) and returned `no_effect_terminal_proven`
   evidence references on `ProviderEffectGenerationRefused` handoffs (agent-harness#1701).
+- Fail closed in `fabpub_capability_active()` (`FabpubConfigurationError`) on any
+  non-`int` or unsupported/missing `FABPUB_CAPABILITY_VERSION` (including `True` and
+  `1.0`) or unnamed/transitive `ModuleNotFoundError` inside
+  `phase_loop_runtime.fabpub_capability`; probe the resolved repository namespace with
+  strict `lstat` absence checks (`require_namespace_unactivated_when_inactive` +
+  `try_repository_snapshot`) in `GitHubBrokerAdapter._revalidate_generation_before_effect()`
+  even when FABPUB capability is inactive, serialize competing inactive publishers while
+  excluding cutover/bootstrap/onboarding via `RUN_TRAIN_WRITER_LOCK` across `git push`
+  and `gh pr create` (passing the lock fd via `pass_fds` so surviving provider child
+  processes keep the kernel lock until exit), pin commands to the guarded resolved
+  worktree (`verify_guarded_worktree_binding`), and re-validate before `gh pr create`
+  (agent-harness#1681).
 - List `grok` (`--reasoning-effort high`) as a concrete effort lane in the ABDFREEZE
   contract (`advisor_board/CONTRACTS.md`) and name the `[sandbox]` `roots` key in the
   `phase-loop placement reap` exit-2 documentation (`docs/phase-loop/convergence-runtime.md`)

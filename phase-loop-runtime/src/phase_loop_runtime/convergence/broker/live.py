@@ -194,26 +194,55 @@ class SealedWorktreeFallbackWarning(RuntimeWarning):
     """A sealed inventory row's worktree was pruned; its recorded common dir stood in."""
 
 
+def _is_marker_module_absent(error: ModuleNotFoundError) -> bool:
+    """True only when ``error.name`` positively names the marker module or its parent.
+
+    An unnamed ``ModuleNotFoundError`` or one naming a missing transitive import
+    inside an existing marker module is a configuration failure, never an absent
+    marker (agent-harness#1681).
+    """
+    missing = error.name
+    if not isinstance(missing, str) or not missing:
+        return False
+    parts = FABPUB_MARKER_MODULE.split(".")
+    marker_chain = {".".join(parts[:i]) for i in range(1, len(parts) + 1)}
+    return missing in marker_chain
+
+
 def fabpub_capability_active() -> bool:
     """Exact activation predicate, mirroring the SL-0 tests-only guard.
 
     An ABSENT marker is the ordinary pre-SL-4 state and means inactive.  A
-    marker that exists but raises on import is a CONFIGURATION FAILURE, never an
-    inactive downgrade: falling back would run the legacy caller-hashed
-    allocator against a repository that has already been migrated and retired.
+    marker that exists but raises on import, fails a transitive import, or
+    reports an unsupported ``FABPUB_CAPABILITY_VERSION`` is a CONFIGURATION
+    FAILURE, never an inactive downgrade: falling back would run the legacy
+    caller-hashed allocator or skip the generation fence against a repository
+    that has already been migrated and retired (agent-harness#1681).
     """
     if os.environ.get(FABPUB_ACTIVATION_ENV) == "1":
         return True
     try:
         module = importlib.import_module(FABPUB_MARKER_MODULE)
-    except ModuleNotFoundError:
-        return False
+    except ModuleNotFoundError as error:
+        if _is_marker_module_absent(error):
+            return False
+        raise FabpubConfigurationError(
+            f"the FABPUB capability marker {FABPUB_MARKER_MODULE} exists but could not "
+            f"be imported: {error}. Refusing to downgrade to the legacy allocator."
+        ) from error
     except Exception as error:
         raise FabpubConfigurationError(
             f"the FABPUB capability marker {FABPUB_MARKER_MODULE} exists but could not "
             f"be imported: {error}. Refusing to downgrade to the legacy allocator."
         ) from error
-    return getattr(module, FABPUB_MARKER_ATTRIBUTE, None) == FABPUB_MARKER_VERSION
+    version = getattr(module, FABPUB_MARKER_ATTRIBUTE, None)
+    if type(version) is not int or version != FABPUB_MARKER_VERSION:
+        raise FabpubConfigurationError(
+            f"the FABPUB capability marker {FABPUB_MARKER_MODULE} reports unsupported "
+            f"{FABPUB_MARKER_ATTRIBUTE}={version!r} (expected {FABPUB_MARKER_VERSION!r}). "
+            "Refusing to downgrade to the legacy allocator."
+        )
+    return True
 
 
 def canonical_bytes(payload: dict) -> bytes:
@@ -528,6 +557,89 @@ def active_store_root(container: Path) -> Path:
     if generation == 0:
         return container
     return container / GENERATIONS_DIR / str(generation)
+
+
+def try_repository_snapshot(worktree: Path | str) -> RepositorySnapshot | None:
+    """Resolve a repository snapshot, returning ``None`` ONLY for verified non-repos.
+
+    agent-harness#1681: distinguishes synthetic unit-seam paths (a positively
+    non-existent path, or a readable directory with no ``.git`` ancestor where
+    ``git rev-parse`` exits 128 ``not a git repository``) from permission,
+    I/O, symlink, corrupt-``.git``, or Git-execution failures, all of which
+    fail closed with ``LegacyCutoverConflict``.
+    """
+    candidate = Path(worktree)
+    try:
+        lstat_result = os.lstat(candidate)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise LegacyCutoverConflict(
+            f"cannot stat repository path {candidate}: {error}"
+        ) from error
+    if stat.S_ISLNK(lstat_result.st_mode):
+        try:
+            target_stat = os.stat(candidate)
+        except OSError as error:
+            raise LegacyCutoverConflict(
+                f"repository path symlink {candidate} could not be resolved: {error}"
+            ) from error
+    else:
+        target_stat = lstat_result
+    if not stat.S_ISDIR(target_stat.st_mode):
+        raise LegacyCutoverConflict(f"repository path {candidate} is not a directory")
+    try:
+        resolved = candidate.resolve()
+    except OSError as error:
+        raise LegacyCutoverConflict(
+            f"cannot resolve repository path {candidate}: {error}"
+        ) from error
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(resolved), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise LegacyCutoverConflict(
+            f"git rev-parse --git-common-dir failed in {resolved}: {error}"
+        ) from error
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        if completed.returncode == 128 and "not a git repository" in stderr.lower():
+            for ancestor in (resolved, *resolved.parents):
+                git_entry = ancestor / ".git"
+                try:
+                    os.lstat(git_entry)
+                except FileNotFoundError:
+                    continue
+                except OSError as error:
+                    raise LegacyCutoverConflict(
+                        f"cannot inspect {git_entry} while verifying non-repository "
+                        f"{resolved}: {error}"
+                    ) from error
+                raise LegacyCutoverConflict(
+                    f"{resolved} has a .git entry at {git_entry} that git could not "
+                    f"read ({stderr}); refusing to treat it as a synthetic path"
+                )
+            return None
+        raise LegacyCutoverConflict(
+            f"git rev-parse --git-common-dir failed in {resolved}: {stderr}"
+        )
+    common = Path(completed.stdout.strip()).resolve()
+    object_format = _git_out(resolved, "rev-parse", "--show-object-format")
+    identity = hashlib.sha256(
+        REPOSITORY_DOMAIN
+        + canonical_bytes(
+            {
+                "schema": "CanonicalRepositoryIdentity.v1",
+                "git_common_dir": str(common),
+                "git_object_format": object_format,
+            }
+        )
+    ).hexdigest()
+    return RepositorySnapshot(resolved, common, object_format, identity)
 
 
 def repository_snapshot(worktree: Path | str) -> RepositorySnapshot:
@@ -918,6 +1030,415 @@ def require_current_generation(
         return
     latch.validate_lease(lease, strict=strict, allow_draining=allow_draining)
     _require_active_generation_root(store_root)
+
+
+_WRITER_LOCK_DEPTH: dict[tuple[str, int], list] = {}
+_WRITER_LOCK_GUARD = threading.Lock()
+
+
+@contextlib.contextmanager
+def _register_held_writer_locks(namespace_roots_and_fds: Iterable[tuple[Path, int]]):
+    """Track writer locks already held by this thread so same-thread calls re-enter."""
+    tid = threading.get_ident()
+    entries = tuple(
+        sorted(
+            {(str(Path(root).resolve()), tid): fd for root, fd in namespace_roots_and_fds}.items()
+        )
+    )
+    with _WRITER_LOCK_GUARD:
+        for key, fd in entries:
+            existing = _WRITER_LOCK_DEPTH.get(key)
+            if existing is not None:
+                existing[0] += 1
+            else:
+                _WRITER_LOCK_DEPTH[key] = [1, fd]
+    try:
+        yield
+    finally:
+        with _WRITER_LOCK_GUARD:
+            for key, _fd in entries:
+                existing = _WRITER_LOCK_DEPTH.get(key)
+                if existing is not None:
+                    existing[0] -= 1
+                    if existing[0] <= 0:
+                        _WRITER_LOCK_DEPTH.pop(key, None)
+
+
+def _lstat_verified_absent(path: Path) -> os.stat_result | None:
+    """Return ``lstat`` result, or ``None`` ONLY on verified ``ENOENT``.
+
+    Unlike ``os.path.lexists``, permission errors (``EACCES``), ``ENOTDIR``,
+    ``ELOOP``, and I/O errors fail closed as ``WriterGenerationBlocked``
+    instead of masquerading as absence (agent-harness#1681).
+    """
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, and namespace path {path} could not be probed "
+            f"({error}); refusing to assume the namespace is unactivated"
+        ) from error
+
+
+@contextlib.contextmanager
+def _hold_writer_locks(
+    namespace_roots: Iterable[Path],
+    *,
+    blocking: bool = False,
+    error_cls: type[Exception] = WriterGenerationBlocked,
+):
+    """Acquire ``RUN_TRAIN_WRITER_LOCK`` across ``namespace_roots`` in sorted order.
+
+    Leaves only the benign 0-byte operator-owned lock residue recognized by
+    ``_namespace_holds_nothing`` and ``_drop_run_train_lock_residue``.
+    Re-entrant on the same thread (e.g. ``bootstrap_zero_history_authority`` or
+    ``run_train_generation_leases`` calling ``onboard_zero_legacy_repository``),
+    while enforcing OS-level exclusive ``flock`` across threads and processes.
+    Yields ``{resolved_namespace_root: lock_fd}`` so callers may pass the open
+    lock descriptor to provider child processes via ``pass_fds``.
+    """
+    import errno
+
+    if os.name != "nt":
+        import fcntl
+
+    tid = threading.get_ident()
+    ordered = sorted({Path(root).resolve() for root in namespace_roots}, key=str)
+    held_fds: dict[Path, int] = {}
+    with contextlib.ExitStack() as stack:
+        for root in ordered:
+            key = (str(root), tid)
+            with _WRITER_LOCK_GUARD:
+                existing = _WRITER_LOCK_DEPTH.get(key)
+                if existing is not None and existing[0] > 0:
+                    existing[0] += 1
+                    reentered_fd = existing[1]
+                    reentered = True
+                else:
+                    reentered_fd = -1
+                    reentered = False
+            if reentered:
+                held_fds[root] = reentered_fd
+
+                def _decrement(k=key) -> None:
+                    with _WRITER_LOCK_GUARD:
+                        entry = _WRITER_LOCK_DEPTH.get(k)
+                        if entry is not None:
+                            entry[0] -= 1
+                            if entry[0] <= 0:
+                                _WRITER_LOCK_DEPTH.pop(k, None)
+
+                stack.callback(_decrement)
+                continue
+            if root.name != REPOSITORY_NAMESPACE_DIR:
+                raise error_cls(
+                    f"namespace root {root} is not a {REPOSITORY_NAMESPACE_DIR} directory"
+                )
+            path = root / RUN_TRAIN_WRITER_LOCK
+            try:
+                _require_no_ancestor_symlink(root)
+                root_stat = _lstat_verified_absent(root)
+                if root_stat is not None and not stat.S_ISDIR(root_stat.st_mode):
+                    raise error_cls(
+                        f"namespace root {root} is not a regular directory"
+                    )
+                if root_stat is None:
+                    root.mkdir(exist_ok=True)
+                descriptor = os.open(
+                    path,
+                    os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                    0o666,
+                )
+            except error_cls:
+                raise
+            except (LegacyCutoverConflict, OSError) as error:
+                raise error_cls(
+                    f"cannot open the writer exclusion lock {path}: {error}"
+                ) from error
+            stack.callback(os.close, descriptor)
+            try:
+                status = os.fstat(descriptor)
+            except OSError as error:
+                raise error_cls(
+                    f"cannot stat the writer exclusion lock {path}: {error}"
+                ) from error
+            if not (
+                stat.S_ISREG(status.st_mode)
+                and status.st_nlink == 1
+                and status.st_uid == os.getuid()
+                and status.st_size == 0
+            ):
+                raise error_cls(
+                    f"writer exclusion lock {path} is not an empty, singly linked "
+                    "regular file owned by the operator"
+                )
+            try:
+                if os.name == "nt":
+                    acquire_exclusive(descriptor, blocking=blocking)
+                else:
+                    flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(descriptor, flags)
+            except OSError as error:
+                if not blocking and error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    raise error_cls(
+                        f"a concurrent cutover or publisher holds the writer exclusion "
+                        f"lock {path}; refusing to race activation"
+                    ) from error
+                raise error_cls(
+                    f"cannot lock the writer exclusion lock {path}: {error}"
+                ) from error
+            held_fds[root] = descriptor
+            with _WRITER_LOCK_GUARD:
+                _WRITER_LOCK_DEPTH[key] = [1, descriptor]
+
+            def _release_depth(k=key) -> None:
+                with _WRITER_LOCK_GUARD:
+                    entry = _WRITER_LOCK_DEPTH.get(k)
+                    if entry is not None:
+                        entry[0] -= 1
+                        if entry[0] <= 0:
+                            _WRITER_LOCK_DEPTH.pop(k, None)
+
+            stack.callback(_release_depth)
+        yield held_fds
+
+
+def require_namespace_unactivated_when_inactive(
+    worktree_or_snapshot: "RepositorySnapshot | Path | str",
+) -> None:
+    """Fail closed when an inactive runtime targets an already-activated namespace.
+
+    agent-harness#1681: unactivated repositories remain compatible when
+    ``fabpub_capability_active()`` is False, but an inactive process may never
+    skip the generation fence on a repository that already carries a FABPUB
+    latch, armed cutover marker, generation directory, partition receipt, or
+    unreadable/tampered namespace component.
+    """
+    snapshot = (
+        worktree_or_snapshot
+        if isinstance(worktree_or_snapshot, RepositorySnapshot)
+        else repository_snapshot(worktree_or_snapshot)
+    )
+    ns_stat = _lstat_verified_absent(snapshot.namespace_root)
+    if ns_stat is None:
+        return
+    if not stat.S_ISDIR(ns_stat.st_mode):
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, but {snapshot.namespace_root} is not a "
+            "regular directory; refusing to run an unfenced publisher effect on a "
+            "tampered namespace"
+        )
+    latch = WriterGenerationLatch(snapshot.namespace_root)
+    if _lstat_verified_absent(latch.path) is not None:
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, but {latch.path} already exists; "
+            "refusing to run an unfenced publisher effect on an activated namespace"
+        )
+    if _lstat_verified_absent(latch.armed_marker) is not None:
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, but {latch.armed_marker} already exists; "
+            "refusing to run an unfenced publisher effect on an activated namespace"
+        )
+    repos_stat = _lstat_verified_absent(snapshot.container.parent)
+    if repos_stat is None:
+        return
+    if not stat.S_ISDIR(repos_stat.st_mode):
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, but {snapshot.container.parent} is not a "
+            "regular directory; refusing to run an unfenced publisher effect on a "
+            "tampered namespace"
+        )
+    container = snapshot.container
+    container_stat = _lstat_verified_absent(container)
+    if container_stat is None:
+        return
+    if not stat.S_ISDIR(container_stat.st_mode):
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, but {container} is not a regular directory; "
+            "refusing to run an unfenced publisher effect on a tampered namespace"
+        )
+    container_receipt = container / RECEIPT_FILENAME
+    receipt_stat = _lstat_verified_absent(container_receipt)
+    if receipt_stat is not None:
+        if not stat.S_ISREG(receipt_stat.st_mode):
+            raise WriterGenerationBlocked(
+                f"FABPUB capability is inactive, but {container_receipt} is not a regular "
+                "file; refusing to run an unfenced publisher effect on an activated namespace"
+            )
+        if load_partition_receipt(container) is not None:
+            raise WriterGenerationBlocked(
+                f"FABPUB capability is inactive, but {container} carries an authenticated "
+                "partition receipt; refusing to run an unfenced publisher effect"
+            )
+    generations = container / GENERATIONS_DIR
+    generations_stat = _lstat_verified_absent(generations)
+    if generations_stat is not None:
+        if not stat.S_ISDIR(generations_stat.st_mode):
+            raise WriterGenerationBlocked(
+                f"FABPUB capability is inactive, but {generations} is not a regular "
+                "directory; refusing to run an unfenced publisher effect on an activated "
+                "namespace"
+            )
+        store_root = snapshot.store_root
+        store_receipt = store_root / RECEIPT_FILENAME
+        if store_receipt != container_receipt:
+            store_receipt_stat = _lstat_verified_absent(store_receipt)
+            if store_receipt_stat is not None:
+                if not stat.S_ISREG(store_receipt_stat.st_mode):
+                    raise WriterGenerationBlocked(
+                        f"FABPUB capability is inactive, but {store_receipt} is not a "
+                        "regular file; refusing to run an unfenced publisher effect on an "
+                        "activated namespace"
+                    )
+                load_partition_receipt(store_root)
+        raise WriterGenerationBlocked(
+            f"FABPUB capability is inactive, but {generations} already exists; "
+            "refusing to run an unfenced publisher effect on an activated namespace"
+        )
+
+
+def _open_guarded_worktree_fd(worktree: Path) -> tuple[int, tuple[int, int]]:
+    """Open an ``O_NOFOLLOW|O_DIRECTORY|O_CLOEXEC`` descriptor to a verified worktree.
+
+    Returns ``(fd, (st_dev, st_ino))``.  On Windows returns ``(-1, (st_dev, st_ino))``.
+    agent-harness#1681: binds provider execution to the verified checkout inode
+    instead of re-resolving its pathname at ``exec`` time.
+    """
+    try:
+        _require_no_ancestor_symlink(worktree)
+    except LegacyCutoverConflict as error:
+        raise WriterGenerationBlocked(
+            f"guarded worktree {worktree} has a symlink component: {error}"
+        ) from error
+    if os.name == "nt":
+        wt_stat = _lstat_verified_absent(worktree)
+        if wt_stat is None or not stat.S_ISDIR(wt_stat.st_mode):
+            raise WriterGenerationBlocked(
+                f"guarded worktree {worktree} is not a regular directory"
+            )
+        return -1, (wt_stat.st_dev, wt_stat.st_ino)
+    try:
+        fd = os.open(
+            worktree,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as error:
+        raise WriterGenerationBlocked(
+            f"cannot open guarded worktree {worktree}: {error}"
+        ) from error
+    try:
+        st = os.fstat(fd)
+    except OSError as error:
+        os.close(fd)
+        raise WriterGenerationBlocked(
+            f"cannot stat guarded worktree {worktree}: {error}"
+        ) from error
+    if not stat.S_ISDIR(st.st_mode):
+        os.close(fd)
+        raise WriterGenerationBlocked(
+            f"guarded worktree {worktree} is not a regular directory"
+        )
+    return fd, (st.st_dev, st.st_ino)
+
+
+def verify_guarded_worktree_binding(
+    snapshot: RepositorySnapshot, expected_dev_ino: tuple[int, int]
+) -> None:
+    """Verify ``snapshot.worktree`` still names the exact directory and repository identity.
+
+    agent-harness#1681: rejects symlink retargeting or directory replacement
+    after the worktree snapshot or exclusion lock was taken.
+    """
+    try:
+        _require_no_ancestor_symlink(snapshot.worktree)
+    except LegacyCutoverConflict as error:
+        raise WriterGenerationBlocked(
+            f"guarded worktree {snapshot.worktree} gained a symlink component: {error}"
+        ) from error
+    current_stat = _lstat_verified_absent(snapshot.worktree)
+    if (
+        current_stat is None
+        or not stat.S_ISDIR(current_stat.st_mode)
+        or (current_stat.st_dev, current_stat.st_ino) != expected_dev_ino
+    ):
+        raise WriterGenerationBlocked(
+            f"guarded worktree {snapshot.worktree} changed after verification; "
+            "refusing to run provider effect against an unguarded checkout"
+        )
+    current = try_repository_snapshot(snapshot.worktree)
+    if (
+        current is None
+        or current.common_dir != snapshot.common_dir
+        or current.identity != snapshot.identity
+    ):
+        raise WriterGenerationBlocked(
+            f"guarded worktree {snapshot.worktree} no longer binds repository "
+            f"{snapshot.identity}; refusing to run provider effect"
+        )
+
+
+@contextlib.contextmanager
+def active_effect_worktree_binding(
+    snapshot: RepositorySnapshot,
+    *,
+    expected_dev_ino: tuple[int, int] | None = None,
+):
+    """Hold an open directory descriptor to the verified worktree during an active effect."""
+    wt_fd, opened_dev_ino = _open_guarded_worktree_fd(snapshot.worktree)
+    try:
+        if expected_dev_ino is not None and opened_dev_ino != expected_dev_ino:
+            raise WriterGenerationBlocked(
+                f"guarded worktree {snapshot.worktree} changed before provider entry; "
+                "refusing to run provider effect against an unguarded checkout"
+            )
+        verify_guarded_worktree_binding(snapshot, opened_dev_ino)
+        yield opened_dev_ino, (wt_fd if wt_fd >= 0 else None)
+    finally:
+        if wt_fd >= 0:
+            os.close(wt_fd)
+
+
+@contextlib.contextmanager
+def inactive_effect_exclusion(
+    snapshot: RepositorySnapshot,
+    *,
+    expected_dev_ino: tuple[int, int] | None = None,
+):
+    """Hold cutover writer exclusion across an inactive repository effect.
+
+    agent-harness#1681: checks the namespace before creating any lock file so
+    already-activated or unreadable namespaces fail closed with zero disk
+    writes, opens an ``O_NOFOLLOW|O_DIRECTORY`` descriptor to the verified
+    worktree so provider subprocesses bind to the exact inode rather than
+    re-resolving the pathname, serializes competing inactive publishers with a
+    blocking ``RUN_TRAIN_WRITER_LOCK`` (cutover/bootstrap/onboarding take the
+    same lock non-blockingly and refuse while an inactive effect is in flight),
+    re-checks the namespace and worktree binding under the lock, and yields
+    ``(lock_fd, worktree_dev_ino, worktree_fd)`` so the adapter passes
+    ``lock_fd`` to provider child processes via ``pass_fds``.
+    """
+    require_namespace_unactivated_when_inactive(snapshot)
+    wt_fd, opened_dev_ino = _open_guarded_worktree_fd(snapshot.worktree)
+    try:
+        if expected_dev_ino is not None and opened_dev_ino != expected_dev_ino:
+            raise WriterGenerationBlocked(
+                f"guarded worktree {snapshot.worktree} changed before lock acquisition; "
+                "refusing to run provider effect against an unguarded checkout"
+            )
+        resolved_root = snapshot.namespace_root.resolve()
+        with _hold_writer_locks(
+            (resolved_root,),
+            blocking=True,
+            error_cls=WriterGenerationBlocked,
+        ) as held_fds:
+            verify_guarded_worktree_binding(snapshot, opened_dev_ino)
+            require_namespace_unactivated_when_inactive(snapshot)
+            yield held_fds[resolved_root], opened_dev_ino, (wt_fd if wt_fd >= 0 else None)
+    finally:
+        if wt_fd >= 0:
+            os.close(wt_fd)
 
 
 def _require_active_generation_root(root: Path) -> None:
@@ -2904,66 +3425,71 @@ def run_legacy_broker_cutover(
                 return transaction
             return _drive_cutover(transaction, sealed["partitions"], roots, sealed)
 
-        # (c) Fresh.  Quiescence FIRST (read-only), then drain, then plan.
+        # (c) Fresh.  Quiescence FIRST (read-only), then writer exclusion, then drain, then plan.
         worktrees = manifest.declared_worktrees()
         for worktree in worktrees:
             LegacyWriterQuiescence.inventory(worktree).require_fenceable().require_quiescent()
 
-        latches = [WriterGenerationLatch.open(worktree) for worktree in worktrees]
-        # Generation locks are taken BRIEFLY for the transition only; holding
-        # them across the drain would block the foreign releases we wait for.
-        with _hold_all([latch.lock_path for latch in latches]):
-            for latch in latches:
-                if latch.read().generation_state != "ACTIVE":
-                    latch.begin_draining()
-        for latch, worktree in zip(latches, worktrees):
-            if latch.read().generation_state == "DRAINING":
-                latch.await_quiescent(worktree=worktree)
+        with _hold_writer_locks(
+            (repository_namespace_root(worktree).resolve() for worktree in worktrees),
+            blocking=False,
+            error_cls=WriterGenerationBlocked,
+        ):
+            latches = [WriterGenerationLatch.open(worktree) for worktree in worktrees]
+            # Generation locks are taken BRIEFLY for the transition only; holding
+            # them across the drain would block the foreign releases we wait for.
+            with _hold_all([latch.lock_path for latch in latches]):
+                for latch in latches:
+                    if latch.read().generation_state != "ACTIVE":
+                        latch.begin_draining()
+            for latch, worktree in zip(latches, worktrees):
+                if latch.read().generation_state == "DRAINING":
+                    latch.await_quiescent(worktree=worktree)
 
-        partitions = _plan_partitions(manifest)
+            partitions = _plan_partitions(manifest)
 
-        for pointer in pointers:
-            claim_body = json.dumps(
-                {
-                    "cutover_id": manifest.cutover_id,
-                    "root_set_sha256": root_set_sha256,
-                    "manifest_sha256": manifest_sha256,
-                    "legacy_root_inventory": [str(root) for root in roots],
-                    "primary_authority": str(authority),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ) + "\n"
-            try:
-                handle = os.open(str(pointer), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            except FileExistsError:
-                claim = _read_pointer_claim(pointer)
-                if claim["cutover_id"] != manifest.cutover_id:
-                    raise LegacyCutoverConflict(
-                        f"another cutover ({claim['cutover_id']!r}) claimed "
-                        f"{pointer.parent.parent} first"
-                    )
-            else:
-                with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                    stream.write(claim_body)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                _fsync_dir(pointer.parent)
+            for pointer in pointers:
+                claim_body = json.dumps(
+                    {
+                        "cutover_id": manifest.cutover_id,
+                        "root_set_sha256": root_set_sha256,
+                        "manifest_sha256": manifest_sha256,
+                        "legacy_root_inventory": [str(root) for root in roots],
+                        "primary_authority": str(authority),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ) + "\n"
+                try:
+                    handle = os.open(str(pointer), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                except FileExistsError:
+                    claim = _read_pointer_claim(pointer)
+                    if claim["cutover_id"] != manifest.cutover_id:
+                        raise LegacyCutoverConflict(
+                            f"another cutover ({claim['cutover_id']!r}) claimed "
+                            f"{pointer.parent.parent} first"
+                        )
+                else:
+                    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                        stream.write(claim_body)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    _fsync_dir(pointer.parent)
 
-        sealed = {
-            "schema": "LegacyBrokerCutoverInventory.v2",
-            "cutover_id": manifest.cutover_id,
-            "manifest_sha256": manifest_sha256,
-            "legacy_root_inventory": [str(root) for root in roots],
-            "partition_map_sha256": _partition_map_digest(partitions),
-            "partitions": partitions,
-        }
-        sealed["inventory_sha256"] = _inventory_digest(sealed)
-        _atomic_write_json(inventory_path, sealed)
-        transaction = LegacyBrokerCutoverTransaction(
-            manifest.cutover_id, journal_path, partitions, sealed
-        )
-        return _drive_cutover(transaction, partitions, roots, sealed)
+            sealed = {
+                "schema": "LegacyBrokerCutoverInventory.v2",
+                "cutover_id": manifest.cutover_id,
+                "manifest_sha256": manifest_sha256,
+                "legacy_root_inventory": [str(root) for root in roots],
+                "partition_map_sha256": _partition_map_digest(partitions),
+                "partitions": partitions,
+            }
+            sealed["inventory_sha256"] = _inventory_digest(sealed)
+            _atomic_write_json(inventory_path, sealed)
+            transaction = LegacyBrokerCutoverTransaction(
+                manifest.cutover_id, journal_path, partitions, sealed
+            )
+            return _drive_cutover(transaction, partitions, roots, sealed)
 
 
 def _drive_cutover(
@@ -3425,6 +3951,7 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
         else "re-run the zero-history probe"
     )
     with contextlib.ExitStack() as stack:
+        held_pairs: list[tuple[Path, int]] = []
         for root in sorted(rows, key=str):
             path = root / RUN_TRAIN_WRITER_LOCK
             row = rows[root]
@@ -3486,7 +4013,9 @@ def _exclude_live_run_trains(inventory: dict, *, resuming: bool):
                 raise LegacyCutoverConflict(
                     f"cannot lock the run-train writer lock {path}: {error}"
                 ) from error
-        yield frozenset(rows)
+            held_pairs.append((root, descriptor))
+        with _register_held_writer_locks(held_pairs):
+            yield frozenset(rows)
 
 
 def _classify_repository_namespace(
@@ -4341,15 +4870,20 @@ def onboard_zero_legacy_repository(
             )
         ):
             raise LegacyCutoverConflict("active bootstrap changed before onboarding seal")
-        return _onboard_zero_legacy_repository_under_seal(
-            worktree,
-            cutover_id=cutover_id,
-            roots=roots,
-            authority_root=authority_root,
-            bootstrap_inventory_sha256=bootstrap_inventory_sha256,
-            bootstrap_authority_root=bootstrap_authority_root,
-            recorded_worktree=recorded_worktree,
-        )
+        with _hold_writer_locks(
+            (repository_namespace_root(worktree).resolve(),),
+            blocking=False,
+            error_cls=WriterGenerationBlocked,
+        ):
+            return _onboard_zero_legacy_repository_under_seal(
+                worktree,
+                cutover_id=cutover_id,
+                roots=roots,
+                authority_root=authority_root,
+                bootstrap_inventory_sha256=bootstrap_inventory_sha256,
+                bootstrap_authority_root=bootstrap_authority_root,
+                recorded_worktree=recorded_worktree,
+            )
 
 
 def _rotation_ceremony_dir(identity: str, authority_root: Path | str | None) -> Path:

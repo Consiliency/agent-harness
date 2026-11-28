@@ -1347,3 +1347,815 @@ def test_refresh_readback_that_never_confirms_the_new_head_is_ambiguous_not_a_se
     assert evidence.terminal_state == "outcome_ambiguous_blocked"
     assert evidence.evidence_reference == "pr-head-unconfirmed"
     assert sum(1 for call in run.calls if call[:3] == ["gh", "pr", "create"]) == 1, "never a second create"
+
+
+# --- agent-harness#1681: inactive or version-mismatched FABPUB capability fails
+# closed on an activated namespace instead of publishing unfenced. ---
+
+def _init_git_repo_1681(path: Path) -> Path:
+    import subprocess
+
+    path.mkdir(parents=True, exist_ok=True)
+    for args in (
+        ("init", "-q", "-b", "main"),
+        ("config", "user.name", "FABPUB Test"),
+        ("config", "user.email", "fabpub@example.invalid"),
+    ):
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True, text=True, timeout=60)
+    (path / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "README.md"], check=True, capture_output=True, text=True, timeout=60)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "base"], check=True, capture_output=True, text=True, timeout=60)
+    return path
+
+
+def _disable_fabpub_marker_1681(monkeypatch) -> None:
+    import sys
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.delenv(live.FABPUB_ACTIVATION_ENV, raising=False)
+    monkeypatch.setitem(sys.modules, live.FABPUB_MARKER_MODULE, None)
+
+
+@pytest.mark.parametrize("bad_version", [2, 0, "1", 1.0, True, None, "<missing>"])
+def test_fabpub_capability_version_mismatch_fails_closed_1681(tmp_path, monkeypatch, bad_version):
+    import sys
+    import types
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.delenv(live.FABPUB_ACTIVATION_ENV, raising=False)
+    fake_marker = types.ModuleType(live.FABPUB_MARKER_MODULE)
+    if bad_version != "<missing>":
+        setattr(fake_marker, live.FABPUB_MARKER_ATTRIBUTE, bad_version)
+    monkeypatch.setitem(sys.modules, live.FABPUB_MARKER_MODULE, fake_marker)
+
+    with pytest.raises(live.FabpubConfigurationError, match="FABPUB_CAPABILITY_VERSION"):
+        live.fabpub_capability_active()
+
+    run = _FakeRun(_base_responses())
+    with pytest.raises(live.FabpubConfigurationError):
+        GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+    assert run.calls == []
+
+
+def test_fabpub_capability_missing_transitive_dependency_fails_closed_1681(monkeypatch):
+    from phase_loop_runtime.convergence.broker import live
+
+    monkeypatch.delenv(live.FABPUB_ACTIVATION_ENV, raising=False)
+
+    def raise_transitive(name: str):
+        assert name == live.FABPUB_MARKER_MODULE
+        raise ModuleNotFoundError("No module named 'missing_dep_1681'", name="missing_dep_1681")
+
+    monkeypatch.setattr(live.importlib, "import_module", raise_transitive)
+    with pytest.raises(live.FabpubConfigurationError, match="missing_dep_1681"):
+        live.fabpub_capability_active()
+
+    # An unnamed or empty-name ModuleNotFoundError (e.g. raised inside the marker)
+    # must fail closed instead of being treated as marker absence.
+    for exc in (ModuleNotFoundError("unnamed marker failure"), ModuleNotFoundError("empty", name="")):
+        def raise_unnamed(name: str, _exc=exc):
+            assert name == live.FABPUB_MARKER_MODULE
+            raise _exc
+
+        monkeypatch.setattr(live.importlib, "import_module", raise_unnamed)
+        with pytest.raises(live.FabpubConfigurationError):
+            live.fabpub_capability_active()
+
+    def raise_marker_absent(name: str):
+        assert name == live.FABPUB_MARKER_MODULE
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    monkeypatch.setattr(live.importlib, "import_module", raise_marker_absent)
+    assert live.fabpub_capability_active() is False
+
+
+@pytest.mark.parametrize("state", ["LEGACY_OPEN", "DRAINING", "ACTIVE"])
+def test_inactive_capability_refuses_repository_with_writer_generation_latch_1681(
+    tmp_path, monkeypatch, state
+):
+    import subprocess
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "repo")
+    linked = tmp_path / "linked-wt"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "-q", "-b", "feat/linked-1681", str(linked)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    latch = live.WriterGenerationLatch.open(repo)
+    if state in ("DRAINING", "ACTIVE"):
+        latch.begin_draining()
+    if state == "ACTIVE":
+        latch.mark_armed()
+        latch.activate()
+
+    _disable_fabpub_marker_1681(monkeypatch)
+    assert live.fabpub_capability_active() is False
+
+    for target in (repo, linked):
+        run = _FakeRun(_base_responses())
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            GitHubBrokerAdapter(target, run=run).execute(_request())
+        assert run.calls == []
+
+    # Even if a caller supplies a non-None lease handle while capability is inactive,
+    # the pre-push fence refuses before any git push or gh pr create runs.
+    run_with_lease = _FakeRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(repo, run=run_with_lease, generation_lease=object()).execute(_request())
+    assert not any("push" in call or "create" in call for call in run_with_lease.calls)
+
+
+def test_inactive_capability_refuses_repository_with_partition_receipt_or_generations_1681(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime.convergence.broker import live
+    from test_convergence_live_enable import _activated_publish_fixture
+
+    worktree, store_root, _publish = _activated_publish_fixture(
+        tmp_path, label="receipt-only-1681", branch=_BRANCH, owned_file="a.py"
+    )
+    latch = live.WriterGenerationLatch.for_store_root(store_root)
+    latch.path.unlink()
+    if latch.armed_marker.exists():
+        latch.armed_marker.unlink()
+
+    _disable_fabpub_marker_1681(monkeypatch)
+    assert live.fabpub_capability_active() is False
+
+    # Authenticated partition receipt without a latch file must still fail closed.
+    run = _FakeRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(worktree, run=run).execute(_request())
+    assert run.calls == []
+
+    # A tampered/corrupt partition receipt also fails closed.
+    receipt_path = store_root / live.RECEIPT_FILENAME
+    receipt_path.write_text("not-json\n", encoding="utf-8")
+    run_tampered = _FakeRun(_base_responses())
+    with pytest.raises(live.LegacyCutoverConflict):
+        GitHubBrokerAdapter(worktree, run=run_tampered).execute(_request())
+    assert run_tampered.calls == []
+
+    # A symlinked partition receipt (even dangling) fails closed.
+    receipt_path.unlink()
+    receipt_path.symlink_to(tmp_path / "missing-receipt.json")
+    run_symlink = _FakeRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(worktree, run=run_symlink).execute(_request())
+    assert run_symlink.calls == []
+
+    # A generations/ directory without latch or container receipt fails closed.
+    receipt_path.unlink()
+    (store_root / live.GENERATIONS_DIR).mkdir()
+    run_gen = _FakeRun(_base_responses())
+    with pytest.raises((live.WriterGenerationBlocked, live.PartitionRoutingRefused)):
+        GitHubBrokerAdapter(worktree, run=run_gen).execute(_request())
+    assert run_gen.calls == []
+
+
+def test_inactive_capability_allows_unactivated_git_repo_and_unit_seam_1681(tmp_path, monkeypatch):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "unactivated-repo")
+    _disable_fabpub_marker_1681(monkeypatch)
+    assert live.fabpub_capability_active() is False
+
+    for target in (repo, tmp_path / "synthetic-not-a-repo"):
+        run = _FakeRun(_base_responses() + [
+            (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+            (("list",), json.dumps([_same_repo_pr()]), 0),
+        ])
+        result, evidence = GitHubBrokerAdapter(target, run=run).execute(_request())
+        assert evidence.terminal_state == "effect_terminal_observed"
+        assert result is not None
+
+
+def test_active_capability_does_not_swallow_broken_generations_routing_refusal_1681(tmp_path):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "broken-gen-repo")
+    snapshot = live.repository_snapshot(repo)
+    (snapshot.container / live.GENERATIONS_DIR).mkdir(parents=True)
+
+    run = _FakeRun(_base_responses())
+    with pytest.raises(live.PartitionRoutingRefused):
+        GitHubBrokerAdapter(repo, run=run).execute(_request())
+    assert run.calls == []
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX non-root chmod test")
+def test_inactive_capability_refuses_unreadable_namespace_and_unreadable_git_dir_1681(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime.convergence.broker import live
+
+    # (1) An activated FABPUB namespace whose directory denies traversal (chmod 000)
+    # must fail closed instead of looking absent to os.path.lexists().
+    repo = _init_git_repo_1681(tmp_path / "unreadable-ns-repo")
+    latch = live.WriterGenerationLatch.open(repo)
+    latch.begin_draining()
+    latch.mark_armed()
+    latch.activate()
+    ns_root = latch.root
+    _disable_fabpub_marker_1681(monkeypatch)
+
+    os.chmod(ns_root, 0)
+    try:
+        run = _FakeRun(_base_responses())
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            GitHubBrokerAdapter(repo, run=run).execute(_request())
+        assert run.calls == []
+    finally:
+        os.chmod(ns_root, 0o700)
+
+    # (2) A repository with an unreadable .git directory (chmod 000) causes git rev-parse
+    # to emit "not a git repository", yet must fail closed rather than pass as synthetic.
+    repo_git = _init_git_repo_1681(tmp_path / "unreadable-git-repo")
+    os.chmod(repo_git / ".git", 0)
+    try:
+        run_git = _FakeRun(_base_responses())
+        with pytest.raises(live.LegacyCutoverConflict):
+            GitHubBrokerAdapter(repo_git, run=run_git).execute(_request())
+        assert run_git.calls == []
+    finally:
+        os.chmod(repo_git / ".git", 0o700)
+
+    # (3) An unreadable parent directory around the repo path also fails closed.
+    locked_parent = tmp_path / "locked-parent"
+    locked_parent.mkdir()
+    hidden_repo = _init_git_repo_1681(locked_parent / "repo")
+    os.chmod(locked_parent, 0)
+    try:
+        run_parent = _FakeRun(_base_responses())
+        with pytest.raises(live.LegacyCutoverConflict):
+            GitHubBrokerAdapter(hidden_repo, run=run_parent).execute(_request())
+        assert run_parent.calls == []
+    finally:
+        os.chmod(locked_parent, 0o700)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fcntl flock test")
+def test_inactive_capability_coordinates_with_cutover_and_fences_pr_create_1681(
+    tmp_path, monkeypatch
+):
+    import fcntl
+    import threading
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "coord-repo")
+    snapshot = live.repository_snapshot(repo)
+    lock_path = snapshot.namespace_root / live.RUN_TRAIN_WRITER_LOCK
+    _disable_fabpub_marker_1681(monkeypatch)
+
+    # (1) If cutover holds RUN_TRAIN_WRITER_LOCK while activating the repo, an inactive
+    # publish waits for cutover to release the lock and then immediately fails closed
+    # under the lock before git push or gh pr create.
+    cutover_holding = threading.Event()
+    cutover_release = threading.Event()
+
+    def hold_cutover_and_activate() -> None:
+        snapshot.namespace_root.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            cutover_holding.set()
+            cutover_release.wait(timeout=5)
+            latch = live.WriterGenerationLatch.open(repo)
+            latch.begin_draining()
+            latch.mark_armed()
+            latch.activate()
+
+    cutover_thread = threading.Thread(target=hold_cutover_and_activate)
+    cutover_thread.start()
+    assert cutover_holding.wait(timeout=5)
+    # Release cutover slightly after the adapter blocks on the lock.
+    threading.Timer(0.1, cutover_release.set).start()
+    try:
+        run_blocked = _FakeRun(_base_responses())
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            GitHubBrokerAdapter(repo, run=run_blocked).execute(_request())
+        assert not any("push" in call or "create" in call for call in run_blocked.calls)
+    finally:
+        cutover_release.set()
+        cutover_thread.join(timeout=5)
+
+    # Clean up the activation latch from scenario (1) by using a fresh unactivated repo
+    # for scenarios (2) and (3).
+    repo = _init_git_repo_1681(tmp_path / "coord-repo-2")
+    snapshot = live.repository_snapshot(repo)
+    lock_path = snapshot.namespace_root / live.RUN_TRAIN_WRITER_LOCK
+
+    # (2) While an inactive publish is mid-push, RUN_TRAIN_WRITER_LOCK is held exclusively
+    # (blocking concurrent bootstrap/cutover from another thread), pass_fds carries the
+    # lock fd into both git push and gh pr create, AND after a clean inactive publish the
+    # residue stays clean for zero-history bootstrap probing.
+    monkeypatch.setenv(live.FABPUB_AUTHORITY_ROOT_ENV, str(tmp_path / "authority"))
+    monkeypatch.delenv(live.FABPUB_LEGACY_ROOTS_ENV, raising=False)
+    monkeypatch.delenv(live.FABPUB_CUTOVER_MANIFEST_ENV, raising=False)
+    pre_inventory = live.probe_zero_history_bootstrap(
+        cutover_id="bootstrap-race-1681",
+        authority_root=tmp_path / "authority",
+        worktrees=(repo,),
+        legacy_roots=(tmp_path / "legacy",),
+        search_roots=(tmp_path,),
+    )
+    lock_observed_held = []
+    bootstrap_errors = []
+    observed_pass_fds = {}
+
+    class _ObservingRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            if "push" in args:
+                observed_pass_fds["push"] = kwargs.get("pass_fds")
+                # Verify from a separate thread (distinct lock owner & open file description)
+                # that cutover exclusion is active during git push and blocks bootstrap apply.
+                def probe_cutover() -> None:
+                    with lock_path.open("a+") as contender:
+                        try:
+                            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            lock_observed_held.append(True)
+                        else:
+                            lock_observed_held.append(False)
+                    try:
+                        live.bootstrap_zero_history_authority(
+                            pre_inventory, confirmed_zero_history=True
+                        )
+                    except Exception as exc:
+                        bootstrap_errors.append(exc)
+
+                t = threading.Thread(target=probe_cutover)
+                t.start()
+                t.join(timeout=10)
+            elif "create" in args:
+                observed_pass_fds["create"] = kwargs.get("pass_fds")
+            return super().__call__(args, **kwargs)
+
+    run_clean = _ObservingRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(repo, run=run_clean).execute(_request())
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None
+    assert lock_observed_held == [True], "RUN_TRAIN_WRITER_LOCK must be held during git push"
+    assert observed_pass_fds["push"] and len(observed_pass_fds["push"]) == 1
+    assert observed_pass_fds["create"] == observed_pass_fds["push"]
+    assert len(bootstrap_errors) == 1 and isinstance(bootstrap_errors[0], live.LegacyCutoverConflict), (
+        f"bootstrap apply must refuse while inactive publish holds writer lock; got {bootstrap_errors!r}"
+    )
+
+    # Residue left by an inactive publish on an unactivated repo must still classify
+    # as clean zero-history ("absent") for bootstrap probing.
+    inventory = live.probe_zero_history_bootstrap(
+        cutover_id="bootstrap-after-inactive-1681",
+        authority_root=tmp_path / "authority",
+        worktrees=(repo,),
+        legacy_roots=(tmp_path / "legacy",),
+        search_roots=(tmp_path,),
+    )
+    assert inventory["worktrees"][0]["classification"] == "absent"
+    assert inventory["worktrees"][0]["files"] == []
+
+    # (3) A state change between git push and gh pr create (e.g., writer-generation.json
+    # appearing during push) must refuse gh pr create fail-closed.
+    class _ActivateDuringPushRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            response = super().__call__(args, **kwargs)
+            if "push" in args:
+                live.WriterGenerationLatch.open(repo)
+            return response
+
+    run_raced = _ActivateDuringPushRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
+    ])
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(repo, run=run_raced).execute(_request())
+    assert any("push" in call for call in run_raced.calls)
+    assert not any("create" in call for call in run_raced.calls), (
+        "gh pr create must not run after namespace activation during git push"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink and flock test")
+def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681(
+    tmp_path, monkeypatch
+):
+    import subprocess
+    from phase_loop_runtime.convergence.broker import live
+
+    repo_a = _init_git_repo_1681(tmp_path / "repo-a")
+    repo_b = _init_git_repo_1681(tmp_path / "repo-b")
+    latch_b = live.WriterGenerationLatch.open(repo_b)
+    latch_b.begin_draining()
+    latch_b.mark_armed()
+    latch_b.activate()
+    link = tmp_path / "wt-link"
+    link.symlink_to(repo_a)
+    _disable_fabpub_marker_1681(monkeypatch)
+
+    seen_push_cwds = []
+    seen_create_cwds = []
+
+    class _RetargetingRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            if "get-url" in args:
+                # Retarget the symlink at self.repo_path to activated repo_b right
+                # before the effect guard / push runs.
+                link.unlink()
+                link.symlink_to(repo_b)
+            if "push" in args:
+                cwd = kwargs.get("cwd")
+                seen_push_cwds.append(Path(cwd).resolve() if cwd is not None else Path(args[2]).resolve())
+            if "create" in args:
+                seen_create_cwds.append(Path(kwargs["cwd"]).resolve())
+            return super().__call__(args, **kwargs)
+
+    run = _RetargetingRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(link, run=run).execute(_request())
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None
+    assert seen_push_cwds == [repo_a.resolve()]
+    assert seen_create_cwds == [repo_a.resolve()]
+
+    # (2) Replacing the resolved checkout directory BEFORE the first mutation (during
+    # get-url, before git push) must fail closed with zero git push or gh pr create calls.
+    repo_pre = _init_git_repo_1681(tmp_path / "repo-pre-swap")
+    repo_pre_backup = tmp_path / "repo-pre-swap-backup"
+
+    class _SwapDirBeforePushRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            response = super().__call__(args, **kwargs)
+            if "get-url" in args:
+                repo_pre.rename(repo_pre_backup)
+                repo_pre.symlink_to(repo_b)
+            return response
+
+    run_pre_swap = _SwapDirBeforePushRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(repo_pre, run=run_pre_swap).execute(_request())
+    assert not any("push" in call or "create" in call for call in run_pre_swap.calls)
+
+    # (3) Even if the directory at the resolved path is swapped AFTER verification and
+    # before subprocess exec, the open O_NOFOLLOW worktree fd binds real subprocess.run
+    # execution (via _GuardedEffectHandle.git_call / effect_cwd) to the verified
+    # inode (never the swapped-in activated repo_b).
+    repo_fd = _init_git_repo_1681(tmp_path / "repo-fd-bind")
+    repo_fd_moved = tmp_path / "repo-fd-bind-moved"
+    snap_fd = live.repository_snapshot(repo_fd)
+    adapter_real = GitHubBrokerAdapter(repo_fd, run=subprocess.run)
+    with adapter_real._generation_effect_guard(entry_snapshot=snap_fd) as handle:
+        push_argv, push_bind = handle.git_call(
+            subprocess.run, "push", "https://github.com/o/r.git", f"{_HEAD}:refs/heads/{_BRANCH}"
+        )
+        log_argv, log_bind = handle.git_call(subprocess.run, "log", "-1", "--format=%s")
+        eff_cwd = handle.effect_cwd(subprocess.run)
+        assert push_argv[:2] == ["git", "push"]
+        assert log_argv == ["git", "log", "-1", "--format=%s"]
+        assert push_bind == {"cwd": eff_cwd} and log_bind == {"cwd": eff_cwd}
+        assert str(eff_cwd).startswith(("/proc/self/fd/", "/dev/fd/"))
+        repo_fd.rename(repo_fd_moved)
+        repo_fd.symlink_to(repo_b)
+        toplevel = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=eff_cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout.strip()
+        assert Path(toplevel).resolve() == repo_fd_moved.resolve()
+        # Title lookup via cwd=eff_cwd (never git -C /proc/self/fd/N) works after exec.
+        subject = subprocess.run(
+            log_argv, capture_output=True, text=True, check=True, timeout=30, **log_bind
+        ).stdout.strip()
+        assert subject == "base"
+
+    # (3b) Real end-to-end push -> title log -> gh pr create -> ls-remote -> gh pr list
+    # sequence using real subprocess.run against a local bare remote + shimmed gh binary
+    # proves /proc/self/fd/<fd> works across every command in execute() with no -C failure.
+    import shutil
+    from phase_loop_runtime.convergence.broker import credsep as credsep_mod
+
+    real_git = shutil.which("git")
+    assert real_git is not None
+    bare_remote = tmp_path / "bare-remote.git"
+    subprocess.run([real_git, "init", "--bare", "-q", str(bare_remote)], check=True, timeout=30)
+    real_repo = _init_git_repo_1681(tmp_path / "real-subproc-repo")
+    subprocess.run(
+        [real_git, "-C", str(real_repo), "remote", "add", "origin", "https://github.com/owner/repo.git"],
+        check=True, timeout=30,
+    )
+    subprocess.run([real_git, "-C", str(real_repo), "push", "-q", str(bare_remote), "main"], check=True, timeout=30)
+    subprocess.run([real_git, "-C", str(real_repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True, timeout=30)
+    subprocess.run([real_git, "-C", str(real_repo), "checkout", "-q", "-b", _BRANCH], check=True, timeout=30)
+    (real_repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run([real_git, "-C", str(real_repo), "add", "a.py"], check=True, timeout=30)
+    subprocess.run([real_git, "-C", str(real_repo), "commit", "-q", "-m", "real subject 1681"], check=True, timeout=30)
+    real_head = subprocess.run(
+        [real_git, "-C", str(real_repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True, timeout=30,
+    ).stdout.strip()
+
+    gh_bin = tmp_path / "fake-gh-bin"
+    gh_bin.mkdir()
+    git_wrapper = gh_bin / "git"
+    git_wrapper.write_text(
+        f"#!/bin/sh\n"
+        f"# Forward every git command to real git; only map the allow-listed remote URL to bare_remote.\n"
+        f"args=\"\"\n"
+        f"for a in \"$@\"; do\n"
+        f"  if [ \"$a\" = \"https://github.com/owner/repo.git\" ]; then\n"
+        f"    set -- \"$@\" {str(bare_remote)!r}\n"
+        f"  else\n"
+        f"    set -- \"$@\" \"$a\"\n"
+        f"  fi\n"
+        f"  shift\n"
+        f"done\n"
+        f"exec {real_git!r} \"$@\"\n",
+        encoding="utf-8",
+    )
+    git_wrapper.chmod(0o700)
+    gh_log = tmp_path / "gh-calls.log"
+    gh_script = gh_bin / "gh"
+    gh_script.write_text(
+        f"#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {str(gh_log)!r}\n"
+        f"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n"
+        f"  printf 'https://github.com/owner/repo/pull/9\\n'\n"
+        f"  exit 0\n"
+        f"fi\n"
+        f"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"list\" ]; then\n"
+        f"  printf '[{{\"url\":\"https://github.com/owner/repo/pull/9\",\"headRefOid\":\"{real_head}\",\"baseRefName\":\"main\",\"headRepositoryOwner\":{{\"login\":\"owner\"}},\"isCrossRepository\":false}}]\\n'\n"
+        f"  exit 0\n"
+        f"fi\n"
+        f"exit 1\n",
+        encoding="utf-8",
+    )
+    gh_script.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{gh_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    real_adm = AdmissionRequest("attempt-real", 1, "fence", "digest", "predicate", "scope", "key-real")
+    real_req = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, real_adm, "repo", _BRANCH, real_head, ("a.py",))
+    real_result, real_ev = GitHubBrokerAdapter(real_repo, run=subprocess.run).execute(real_req)
+    assert real_ev.terminal_state == "effect_terminal_observed"
+    assert real_result is not None and real_result.pr_url == "https://github.com/owner/repo/pull/9"
+    assert "--title real subject 1681" in gh_log.read_text(encoding="utf-8")
+
+    # (3c) When descriptor-backed cwd is unavailable (e.g. no /proc/self/fd or /dev/fd),
+    # the guarded inactive mutation refuses fail-closed instead of falling back to pathname.
+    monkeypatch.setattr(credsep_mod, "_resolve_fd_cwd", lambda _fd: None)
+    run_no_fd = _FakeRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(real_repo, run=run_no_fd).execute(_request())
+    assert not any("push" in call or "create" in call for call in run_no_fd.calls)
+    monkeypatch.undo()
+    _disable_fabpub_marker_1681(monkeypatch)
+
+    # (3d) An inactive runner that does not accept pass_fds cannot inherit the cutover
+    # lock fd into provider child processes, so inactive publication fails closed before push.
+    no_pass_fds_calls: list[list[str]] = []
+    inner_fake = _FakeRun(_base_responses())
+
+    def _no_pass_fds_runner(args, capture_output=False, text=False, check=False, cwd=None, env=None):
+        no_pass_fds_calls.append(list(args))
+        return inner_fake(args, capture_output=capture_output, text=text, check=check, cwd=cwd, env=env)
+
+    with pytest.raises(live.WriterGenerationBlocked, match="pass_fds"):
+        GitHubBrokerAdapter(real_repo, run=_no_pass_fds_runner).execute(_request())
+    assert not any("push" in call or "create" in call for call in no_pass_fds_calls)
+
+    # (4) Swapping the resolved checkout directory between git push and gh pr create
+    # also fails closed before gh pr create runs.
+    repo_c = _init_git_repo_1681(tmp_path / "repo-c")
+    repo_c_backup = tmp_path / "repo-c-backup"
+
+    class _SwapDirDuringPushRun(_FakeRun):
+        def __call__(self, args, **kwargs):
+            response = super().__call__(args, **kwargs)
+            if "push" in args:
+                repo_c.rename(repo_c_backup)
+                repo_c.symlink_to(repo_b)
+            return response
+
+    run_swap = _SwapDirDuringPushRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
+    ])
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(repo_c, run=run_swap).execute(_request())
+    assert any("push" in call for call in run_swap.calls)
+    assert not any("create" in call for call in run_swap.calls)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink test")
+def test_active_reused_adapter_refuses_retargeted_symlink_repository_1681(tmp_path, monkeypatch):
+    from phase_loop_runtime.convergence.broker import credsep as credsep_mod
+    from phase_loop_runtime.convergence.broker import live
+
+    repo_a = _init_git_repo_1681(tmp_path / "active-repo-a")
+    repo_b = _init_git_repo_1681(tmp_path / "active-repo-b")
+    for repo in (repo_a, repo_b):
+        latch = live.WriterGenerationLatch.open(repo)
+        latch.begin_draining()
+        latch.mark_armed()
+        latch.activate()
+    latch_a = live.WriterGenerationLatch.open(repo_a)
+    lease_a = latch_a.acquire(generation=latch_a.read().generation)
+    link = tmp_path / "active-wt-link"
+    link.symlink_to(repo_a)
+    try:
+        # Active publication with an ordinary custom wrapper runner still binds
+        # git push, git log, and gh pr create via descriptor-backed cwd.
+        run_first = _FakeRun(_base_responses() + [
+            (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+            (("list",), json.dumps([_same_repo_pr()]), 0),
+        ])
+        wrapper_cwds: list[tuple[list[str], str]] = []
+
+        def _custom_wrapper(args, **kwargs):
+            if "push" in args or "log" in args or args[:3] == ["gh", "pr", "create"]:
+                wrapper_cwds.append((list(args), str(kwargs.get("cwd", ""))))
+            return run_first(args, **kwargs)
+
+        adapter = GitHubBrokerAdapter(link, run=_custom_wrapper, generation_lease=lease_a)
+        result, evidence = adapter.execute(_request())
+        assert evidence.terminal_state == "effect_terminal_observed"
+        assert result is not None
+        assert len(wrapper_cwds) == 3
+        assert all(
+            cwd.startswith(("/proc/self/fd/", "/dev/fd/")) and "-C" not in cmd
+            for cmd, cwd in wrapper_cwds
+        ), wrapper_cwds
+
+        # Active publication also fails closed when descriptor-backed cwd is unavailable.
+        monkeypatch.setattr(credsep_mod, "_resolve_fd_cwd", lambda _fd: None)
+        run_no_fd = _FakeRun(_base_responses())
+        adapter.run = run_no_fd
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            adapter.execute(_request())
+        assert not any("push" in call or "create" in call for call in run_no_fd.calls)
+        monkeypatch.undo()
+
+        # Retarget the symlink to activated repo_b: the reused adapter MUST NOT
+        # authorize repo_b using repo_a's cached _generation_root or lease.
+        link.unlink()
+        link.symlink_to(repo_b)
+        run_second = _FakeRun(_base_responses())
+        adapter.run = run_second
+        with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+            adapter.execute(_request())
+        assert not any("push" in call or "create" in call for call in run_second.calls)
+    finally:
+        lease_a.release()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock test")
+def test_inactive_concurrent_publishers_serialize_without_poisoning_legacy_store_1681(
+    tmp_path, monkeypatch
+):
+    import threading
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    from phase_loop_runtime.convergence.broker.verbs import BrokerService
+
+    repo = _init_git_repo_1681(tmp_path / "serial-repo")
+    store_root = tmp_path / "legacy-store"
+    store_root.mkdir()
+    _disable_fabpub_marker_1681(monkeypatch)
+
+    first_in_push = threading.Event()
+    release_first = threading.Event()
+    active_pushes = []
+    overlap_detected = []
+    state_lock = threading.Lock()
+
+    def make_runner(pause_on_push: bool):
+        class _SerialRun(_FakeRun):
+            def __call__(self, args, **kwargs):
+                if "push" in args:
+                    with state_lock:
+                        if active_pushes:
+                            overlap_detected.append(True)
+                        active_pushes.append(1)
+                    try:
+                        if pause_on_push:
+                            first_in_push.set()
+                            release_first.wait(timeout=10)
+                        return super().__call__(args, **kwargs)
+                    finally:
+                        with state_lock:
+                            active_pushes.pop()
+                return super().__call__(args, **kwargs)
+
+        return _SerialRun(_base_responses() + [
+            (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+            (("list",), json.dumps([_same_repo_pr()]), 0),
+        ])
+
+    admission = LinearizableAdmissionStore(store_root)
+    evidence = BrokerEvidenceStore(store_root)
+    results = {}
+
+    def run_pub(name: str, epoch: int, key: str, pause: bool) -> None:
+        svc = BrokerService(admission, evidence, GitHubBrokerAdapter(repo, run=make_runner(pause)))
+        adm = AdmissionRequest(f"attempt-{epoch}", epoch, "fence", "digest", "predicate", "scope", key)
+        req = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, adm, "repo", _BRANCH, _HEAD, ("a.py",))
+        results[name] = svc.execute(req)
+
+    t1 = threading.Thread(target=run_pub, args=("first", 1, "k-1", True))
+    t2 = threading.Thread(target=run_pub, args=("second", 2, "k-2", False))
+    t1.start()
+    assert first_in_push.wait(timeout=5)
+    t2.start()
+    threading.Timer(0.15, release_first.set).start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert not overlap_detected, "concurrent inactive publishes must serialize on RUN_TRAIN_WRITER_LOCK"
+    assert results["first"].accepted is True
+    assert results["second"].accepted is True
+    assert results["first"].evidence.terminal_state == "effect_terminal_observed"
+    assert results["second"].evidence.terminal_state == "effect_terminal_observed"
+    assert evidence.epoch_blocked is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX SIGKILL + pass_fds flock test")
+def test_inactive_lock_survives_adapter_sigkill_until_provider_child_exits_1681(tmp_path):
+    import fcntl
+    import signal
+    import subprocess
+    import sys
+    import time
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _init_git_repo_1681(tmp_path / "sigkill-repo")
+    snapshot = live.repository_snapshot(repo)
+    lock_path = snapshot.namespace_root / live.RUN_TRAIN_WRITER_LOCK
+    child_ready = tmp_path / "child-ready"
+    child_release = tmp_path / "child-release"
+
+    adapter_script = f"""
+import os, subprocess, sys
+from pathlib import Path
+from phase_loop_runtime.convergence.broker import live
+
+repo = Path({str(repo)!r})
+snapshot = live.repository_snapshot(repo)
+child_code = (
+    "import time; "
+    "from pathlib import Path; "
+    "Path({str(child_ready)!r}).write_text('ready', encoding='ascii'); "
+    "deadline = time.monotonic() + 8; "
+    "\\nwhile not Path({str(child_release)!r}).exists() and time.monotonic() < deadline: time.sleep(0.02)\\n"
+)
+with live.inactive_effect_exclusion(snapshot) as (lock_fd, _dev_ino, _wt_fd):
+    subprocess.run([sys.executable, "-c", child_code], pass_fds=(lock_fd,), check=True)
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    adapter_proc = subprocess.Popen([sys.executable, "-c", adapter_script], env=env)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if child_ready.exists() and child_ready.read_text(encoding="ascii").strip() == "ready":
+                break
+            time.sleep(0.02)
+        assert child_ready.exists(), "provider child did not start"
+
+        # SIGKILL the adapter parent while the provider child is still running.
+        os.kill(adapter_proc.pid, signal.SIGKILL)
+        adapter_proc.wait(timeout=5)
+
+        # Kernel flock MUST remain held by the surviving child process.
+        with lock_path.open("a+") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        # Release the child (which also has a bounded self-exit deadline) and verify
+        # the lock clears once it exits. Never signal a raw numeric child PID.
+        child_release.write_text("done\n", encoding="ascii")
+        deadline = time.monotonic() + 10
+        unlocked = False
+        while time.monotonic() < deadline:
+            with lock_path.open("a+") as contender:
+                try:
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    time.sleep(0.02)
+                else:
+                    unlocked = True
+                    break
+        assert unlocked, "lock did not release after surviving provider child exited"
+    finally:
+        child_release.write_text("done\n", encoding="ascii")
+        if adapter_proc.poll() is None:
+            adapter_proc.kill()
+            adapter_proc.wait(timeout=5)
