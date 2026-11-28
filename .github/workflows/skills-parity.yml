@@ -15,6 +15,7 @@ on:
       - 'phase-loop-runtime/scripts/regenerate_skills_bundle.py'
       - 'phase-loop-runtime/tests/test_skills_canon_parity.py'
       - 'phase-loop-runtime/tests/test_skill_size_gate.py'
+      - 'phase-loop-runtime/tests/test_skill_reference_toc_lint_1688.py'
       - '.github/workflows/skills-parity.yml'
   pull_request:
     paths:
@@ -24,6 +25,7 @@ on:
       - 'phase-loop-runtime/scripts/regenerate_skills_bundle.py'
       - 'phase-loop-runtime/tests/test_skills_canon_parity.py'
       - 'phase-loop-runtime/tests/test_skill_size_gate.py'
+      - 'phase-loop-runtime/tests/test_skill_reference_toc_lint_1688.py'
       - '.github/workflows/skills-parity.yml'
 
 permissions:
@@ -52,6 +54,10 @@ jobs:
       - name: Skill size gate (warn-first, agent-harness#1358)
         working-directory: phase-loop-runtime
         run: python -m pytest -q -rw tests/test_skill_size_gate.py
+
+      - name: Skill reference TOC lint (agent-harness#1688)
+        working-directory: phase-loop-runtime
+        run: python -m pytest -q -rs tests/test_skill_reference_toc_lint_1688.py
 
       - name: Regenerate is a no-op (proves parity is reachable)
         # Belt-and-suspenders: run the documented regenerate against the checkout
