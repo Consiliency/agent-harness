@@ -1805,29 +1805,119 @@ def test_inactive_capability_binds_symlink_target_and_rejects_worktree_swap_1681
 
     # (3) Even if the directory at the resolved path is swapped AFTER verification and
     # before subprocess exec, the open O_NOFOLLOW worktree fd binds real subprocess.run
-    # execution (via _GuardedEffectHandle.git_push_call / effect_cwd) to the verified
+    # execution (via _GuardedEffectHandle.git_call / effect_cwd) to the verified
     # inode (never the swapped-in activated repo_b).
     repo_fd = _init_git_repo_1681(tmp_path / "repo-fd-bind")
     repo_fd_moved = tmp_path / "repo-fd-bind-moved"
     snap_fd = live.repository_snapshot(repo_fd)
     adapter_real = GitHubBrokerAdapter(repo_fd, run=subprocess.run)
     with adapter_real._generation_effect_guard(entry_snapshot=snap_fd) as handle:
-        push_argv, push_cwd = handle.git_push_call(subprocess.run, "https://github.com/o/r.git", f"{_HEAD}:refs/heads/{_BRANCH}")
+        push_argv, push_bind = handle.git_call(
+            subprocess.run, "push", "https://github.com/o/r.git", f"{_HEAD}:refs/heads/{_BRANCH}"
+        )
+        log_argv, log_bind = handle.git_call(subprocess.run, "log", "-1", "--format=%s")
         eff_cwd = handle.effect_cwd(subprocess.run)
-        if Path("/proc/self/fd").is_dir():
-            assert push_argv[:2] == ["git", "push"]
-            assert push_cwd == eff_cwd and str(eff_cwd).startswith("/proc/self/fd/")
-            repo_fd.rename(repo_fd_moved)
-            repo_fd.symlink_to(repo_b)
-            toplevel = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                cwd=eff_cwd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=30,
-            ).stdout.strip()
-            assert Path(toplevel).resolve() == repo_fd_moved.resolve()
+        assert push_argv[:2] == ["git", "push"]
+        assert log_argv == ["git", "log", "-1", "--format=%s"]
+        assert push_bind == {"cwd": eff_cwd} and log_bind == {"cwd": eff_cwd}
+        assert str(eff_cwd).startswith(("/proc/self/fd/", "/dev/fd/"))
+        repo_fd.rename(repo_fd_moved)
+        repo_fd.symlink_to(repo_b)
+        toplevel = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=eff_cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout.strip()
+        assert Path(toplevel).resolve() == repo_fd_moved.resolve()
+        # Title lookup via cwd=eff_cwd (never git -C /proc/self/fd/N) works after exec.
+        subject = subprocess.run(
+            log_argv, capture_output=True, text=True, check=True, timeout=30, **log_bind
+        ).stdout.strip()
+        assert subject == "base"
+
+    # (3b) Real end-to-end push -> title log -> gh pr create -> ls-remote -> gh pr list
+    # sequence using real subprocess.run against a local bare remote + shimmed gh binary
+    # proves /proc/self/fd/<fd> works across every command in execute() with no -C failure.
+    import shutil
+    from phase_loop_runtime.convergence.broker import credsep as credsep_mod
+
+    real_git = shutil.which("git")
+    assert real_git is not None
+    bare_remote = tmp_path / "bare-remote.git"
+    subprocess.run([real_git, "init", "--bare", "-q", str(bare_remote)], check=True, timeout=30)
+    real_repo = _init_git_repo_1681(tmp_path / "real-subproc-repo")
+    subprocess.run(
+        [real_git, "-C", str(real_repo), "remote", "add", "origin", "https://github.com/owner/repo.git"],
+        check=True, timeout=30,
+    )
+    subprocess.run([real_git, "-C", str(real_repo), "push", "-q", str(bare_remote), "main"], check=True, timeout=30)
+    subprocess.run([real_git, "-C", str(real_repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True, timeout=30)
+    subprocess.run([real_git, "-C", str(real_repo), "checkout", "-q", "-b", _BRANCH], check=True, timeout=30)
+    (real_repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run([real_git, "-C", str(real_repo), "add", "a.py"], check=True, timeout=30)
+    subprocess.run([real_git, "-C", str(real_repo), "commit", "-q", "-m", "real subject 1681"], check=True, timeout=30)
+    real_head = subprocess.run(
+        [real_git, "-C", str(real_repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True, timeout=30,
+    ).stdout.strip()
+
+    gh_bin = tmp_path / "fake-gh-bin"
+    gh_bin.mkdir()
+    git_wrapper = gh_bin / "git"
+    git_wrapper.write_text(
+        f"#!/bin/sh\n"
+        f"# Forward every git command to real git; only map the allow-listed remote URL to bare_remote.\n"
+        f"args=\"\"\n"
+        f"for a in \"$@\"; do\n"
+        f"  if [ \"$a\" = \"https://github.com/owner/repo.git\" ]; then\n"
+        f"    set -- \"$@\" {str(bare_remote)!r}\n"
+        f"  else\n"
+        f"    set -- \"$@\" \"$a\"\n"
+        f"  fi\n"
+        f"  shift\n"
+        f"done\n"
+        f"exec {real_git!r} \"$@\"\n",
+        encoding="utf-8",
+    )
+    git_wrapper.chmod(0o700)
+    gh_log = tmp_path / "gh-calls.log"
+    gh_script = gh_bin / "gh"
+    gh_script.write_text(
+        f"#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {str(gh_log)!r}\n"
+        f"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n"
+        f"  printf 'https://github.com/owner/repo/pull/9\\n'\n"
+        f"  exit 0\n"
+        f"fi\n"
+        f"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"list\" ]; then\n"
+        f"  printf '[{{\"url\":\"https://github.com/owner/repo/pull/9\",\"headRefOid\":\"{real_head}\",\"baseRefName\":\"main\",\"headRepositoryOwner\":{{\"login\":\"owner\"}},\"isCrossRepository\":false}}]\\n'\n"
+        f"  exit 0\n"
+        f"fi\n"
+        f"exit 1\n",
+        encoding="utf-8",
+    )
+    gh_script.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{gh_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    real_adm = AdmissionRequest("attempt-real", 1, "fence", "digest", "predicate", "scope", "key-real")
+    real_req = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, real_adm, "repo", _BRANCH, real_head, ("a.py",))
+    real_result, real_ev = GitHubBrokerAdapter(real_repo, run=subprocess.run).execute(real_req)
+    assert real_ev.terminal_state == "effect_terminal_observed"
+    assert real_result is not None and real_result.pr_url == "https://github.com/owner/repo/pull/9"
+    assert "--title real subject 1681" in gh_log.read_text(encoding="utf-8")
+
+    # (3c) When descriptor-backed cwd is unavailable (e.g. no /proc/self/fd or /dev/fd),
+    # the guarded inactive mutation refuses fail-closed instead of falling back to pathname.
+    monkeypatch.setattr(credsep_mod, "_resolve_fd_cwd", lambda _fd: None)
+    run_no_fd = _FakeRun(_base_responses())
+    with pytest.raises(live.WriterGenerationBlocked, match=live.GENERATION_BLOCKER):
+        GitHubBrokerAdapter(real_repo, run=run_no_fd).execute(_request())
+    assert not any("push" in call or "create" in call for call in run_no_fd.calls)
+    monkeypatch.undo()
+    _disable_fabpub_marker_1681(monkeypatch)
 
     # (4) Swapping the resolved checkout directory between git push and gh pr create
     # also fails closed before gh pr create runs.

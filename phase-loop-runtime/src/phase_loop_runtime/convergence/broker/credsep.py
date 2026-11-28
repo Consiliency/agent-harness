@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import inspect
 import json
@@ -207,10 +208,22 @@ def _run_accepts_pass_fds(run_callable) -> bool:
 
 
 def _is_real_subprocess_run(run_callable) -> bool:
+    target = run_callable
+    while isinstance(target, functools.partial):
+        target = target.func
     return (
-        getattr(run_callable, "__module__", None) == "subprocess"
-        and getattr(run_callable, "__name__", None) == "run"
+        getattr(target, "__module__", None) == "subprocess"
+        and getattr(target, "__name__", None) == "run"
     )
+
+
+def _resolve_fd_cwd(worktree_fd: int) -> Path | None:
+    """Return a kernel descriptor-backed directory path for ``worktree_fd``, or ``None``."""
+    for base in ("/proc/self/fd", "/dev/fd"):
+        candidate = Path(f"{base}/{worktree_fd}")
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 class _GuardedEffectHandle:
@@ -222,34 +235,40 @@ class _GuardedEffectHandle:
         *,
         worktree_fd: int | None = None,
         lock_fd: int | None = None,
+        require_fd_cwd: bool = False,
         revalidate=None,
     ) -> None:
         self.repo_path = repo_path
         self.worktree_fd = worktree_fd
         self.lock_fd = lock_fd
+        self.require_fd_cwd = require_fd_cwd
         self._revalidate = revalidate
 
     def _fd_cwd(self, run_callable) -> Path | None:
-        if (
-            _is_real_subprocess_run(run_callable)
-            and self.worktree_fd is not None
-            and self.worktree_fd >= 0
-        ):
-            proc_fd = Path(f"/proc/self/fd/{self.worktree_fd}")
-            if proc_fd.is_dir():
-                return proc_fd
-        return None
+        if self.worktree_fd is None or self.worktree_fd < 0:
+            return None
+        must_bind = self.require_fd_cwd or _is_real_subprocess_run(run_callable)
+        if not must_bind:
+            return None
+        fd_cwd = _resolve_fd_cwd(self.worktree_fd)
+        if fd_cwd is None:
+            from .live import WriterGenerationBlocked
+
+            raise WriterGenerationBlocked(
+                f"cannot bind guarded checkout descriptor for {self.repo_path} "
+                "(neither /proc/self/fd nor /dev/fd is available); refusing to fall back "
+                "to an unguarded pathname"
+            )
+        return fd_cwd
 
     def effect_cwd(self, run_callable) -> Path:
         return self._fd_cwd(run_callable) or self.repo_path
 
-    def git_push_call(
-        self, run_callable, origin_url: str, refspec: str
-    ) -> tuple[list[str], Path | None]:
+    def git_call(self, run_callable, *git_args: str) -> tuple[list[str], dict]:
         fd_cwd = self._fd_cwd(run_callable)
         if fd_cwd is not None:
-            return ["git", "push", origin_url, refspec], fd_cwd
-        return ["git", "-C", str(self.repo_path), "push", origin_url, refspec], None
+            return ["git", *git_args], {"cwd": fd_cwd}
+        return ["git", "-C", str(self.repo_path), *git_args], {}
 
     def run_kwargs(self, run_callable) -> dict:
         if self.lock_fd is not None and os.name != "nt" and _run_accepts_pass_fds(run_callable):
@@ -391,6 +410,7 @@ class GitHubBrokerAdapter:
                 snapshot.worktree,
                 worktree_fd=wt_fd,
                 lock_fd=lock_fd,
+                require_fd_cwd=os.name != "nt",
                 revalidate=_revalidate_guarded,
             )
 
@@ -663,13 +683,10 @@ class GitHubBrokerAdapter:
             effect_repo = effect_guard.repo_path
             effect_cwd = effect_guard.effect_cwd(self.run)
             effect_kwargs = effect_guard.run_kwargs(self.run)
-            push_argv, push_cwd = effect_guard.git_push_call(
-                self.run, origin_url, f"{request.head_sha}:{ref}"
+            push_argv, push_bind = effect_guard.git_call(
+                self.run, "push", origin_url, f"{request.head_sha}:{ref}"
             )
-            push_kwargs = dict(effect_kwargs)
-            if push_cwd is not None:
-                push_kwargs["cwd"] = push_cwd
-            pushed = self.run(push_argv, capture_output=True, text=True, **push_kwargs)
+            pushed = self.run(push_argv, capture_output=True, text=True, **push_bind, **effect_kwargs)
             if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
             # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
             # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
@@ -680,7 +697,11 @@ class GitHubBrokerAdapter:
             # against the repo DEFAULT branch, which for a non-default `request.base` (e.g.
             # `release/2.0`) would open a PR whose real diff (vs the repo default) was never the
             # diff this adapter scope-checked (vs request.base).
-            title = self._output("log", "-1", "--format=%s", repo_path=effect_cwd) or request.branch
+            log_argv, log_bind = effect_guard.git_call(self.run, "log", "-1", "--format=%s")
+            title = (
+                self.run(log_argv, capture_output=True, text=True, check=True, **log_bind).stdout.strip()
+                or request.branch
+            )
             args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
             if request.draft: args.append("--draft")
             effect_guard.revalidate_before_effect()
