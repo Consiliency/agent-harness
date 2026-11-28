@@ -1784,3 +1784,44 @@ def test_bare_redaction_placeholder_sibling_does_not_trigger_archival(tmp_path, 
     assert corpus.scanned[0].improvements_class == "repo_specific"
     assert corpus.scanned[0].excluded == "improvements_repo_specific"
     assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_horizontal_rule_after_blank_line_does_not_erase_indented_generic_proposal(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "- Fix agent-harness#1371.\n"
+        "- None.\n\n"
+        "  Require bounded retries.\n\n"
+        "  ---"
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "Require bounded retries." in bundle
+    assert "agent-harness#1371" not in bundle
+    assert corpus.admitted[0].improvements_class == "agnostic"
+
+
+def test_multiline_setext_heading_above_rejected_bullet_does_not_trigger_archival(tmp_path):
+    root = tmp_path / "skills"
+    improvements = (
+        "Proposed edits\n"
+        "for this run\n"
+        "==============\n"
+        "- Fix agent-harness#1371."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="", didnt="", improvements=improvements,
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []

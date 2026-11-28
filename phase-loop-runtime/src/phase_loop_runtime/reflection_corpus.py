@@ -548,23 +548,38 @@ def _split_improvement_units(text: str) -> list[list[str]]:
                 idx += 1
             units.append(item)
             continue
-        # Plain (non-bullet, non-fence) line: keep a Setext heading underline or
-        # strictly more-indented continuation lines attached while keeping
-        # same-indent sibling lines separate.
+        # Plain (non-bullet, non-fence) line: recognize a single- or multi-line
+        # Setext heading (contiguous plain paragraph immediately followed by
+        # `===` / `---`), otherwise keep strictly more-indented continuations
+        # attached while keeping same-indent sibling lines separate.
         base_indent = _indent_width(line)
-        item = [line]
-        idx += 1
         if (
             base_indent <= 3
             and not _THEMATIC_BREAK_RE.match(line)
             and not _HEADING_RE.match(line)
-            and idx < len(lines)
-            and _SETEXT_UNDERLINE_RE.match(lines[idx])
+            and not _SETEXT_UNDERLINE_RE.match(line)
         ):
-            item.append(lines[idx])
-            idx += 1
-            units.append(item)
-            continue
+            look = idx + 1
+            while look < len(lines) and lines[look].strip():
+                cand = lines[look]
+                if _SETEXT_UNDERLINE_RE.match(cand):
+                    units.append(list(lines[idx : look + 1]))
+                    idx = look + 1
+                    break
+                if (
+                    _fence_open(cand, min_indent=0, max_indent=3) is not None
+                    or _HEADING_RE.match(cand)
+                    or _THEMATIC_BREAK_RE.match(cand)
+                    or _list_item_content_indent(cand) is not None
+                ):
+                    break
+                look += 1
+            else:
+                pass
+            if idx == look + 1:
+                continue
+        item = [line]
+        idx += 1
         while idx < len(lines) and lines[idx].strip():
             cur = lines[idx]
             if _indent_width(cur) > base_indent:
@@ -688,17 +703,27 @@ def _line_is_non_proposal_marker(line: str) -> bool:
 
 def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
     """True when ``unit`` carries no substantive proposal content."""
-    non_blank = [line for line in unit if line.strip()]
-    if not non_blank or _unit_is_empty_fence(unit):
+    if not any(line.strip() for line in unit) or _unit_is_empty_fence(unit):
         return True
-    # Strip any empty fenced blocks nested inside list items (using the same
-    # enclosing list-item content-column bounds as `_split_improvement_units`).
+    # Walk original lines preserving blank-line boundaries so a paragraph
+    # followed by a blank line and `---` is never misread as a Setext heading,
+    # while using the same list-relative fence bounds as `_split_improvement_units`.
     idx = 0
     residual: list[str] = []
     list_indents: list[int] = []
-    while idx < len(non_blank):
-        line = non_blank[idx]
+    saw_blank = False
+    while idx < len(unit):
+        line = unit[idx]
+        if not line.strip():
+            saw_blank = True
+            residual.append(line)
+            idx += 1
+            continue
         cur_indent = _indent_width(line)
+        if saw_blank:
+            while list_indents and cur_indent < list_indents[-1]:
+                list_indents.pop()
+        saw_blank = False
         item_indent = _list_item_content_indent(line)
         if item_indent is not None:
             while list_indents and cur_indent < list_indents[-1]:
@@ -707,9 +732,9 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
             opener = _fence_open_after_list_marker(line)
             if opener is not None:
                 min_ind = list_indents[-1]
-                block, next_idx = _consume_fence(non_blank, idx, opener, min_indent=min_ind)
+                block, next_idx = _consume_fence(unit, idx, opener, min_indent=min_ind)
                 char, length = opener
-                body = block[1:]
+                body = [b for b in block[1:] if b.strip()]
                 if body and _fence_close(body[-1], char, length, min_indent=min_ind, max_indent=min_ind + 3):
                     body = body[:-1]
                 if body:
@@ -726,9 +751,9 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
                 bound = None
             opener = _fence_open(line, min_indent=fence_min, max_indent=fence_min + 3)
             if opener is not None:
-                block, next_idx = _consume_fence(non_blank, idx, opener, min_indent=bound)
+                block, next_idx = _consume_fence(unit, idx, opener, min_indent=bound)
                 char, length = opener
-                body = block[1:]
+                body = [b for b in block[1:] if b.strip()]
                 if body and _fence_close(body[-1], char, length, min_indent=fence_min, max_indent=fence_min + 3):
                     body = body[:-1]
                 if body:
@@ -737,19 +762,35 @@ def _unit_is_non_proposal(unit: Sequence[str]) -> bool:
                 continue
         residual.append(line)
         idx += 1
-    # Drop Setext heading pairs (non-list line immediately underlined by `===` / `---`).
+    # Drop single- or multi-line Setext headings (contiguous non-blank plain
+    # paragraph lines immediately underlined by `===` / `---` with no blank line).
     filtered_residual: list[str] = []
     r_idx = 0
     while r_idx < len(residual):
+        line = residual[r_idx]
         if (
-            r_idx + 1 < len(residual)
-            and _list_item_content_indent(residual[r_idx]) is None
-            and not _THEMATIC_BREAK_RE.match(residual[r_idx])
-            and _ANY_SETEXT_UNDERLINE_RE.match(residual[r_idx + 1])
+            line.strip()
+            and _list_item_content_indent(line) is None
+            and not _THEMATIC_BREAK_RE.match(line)
+            and not re.match(r"^[ \t]*#{1,6}(?:\s|$)", line)
+            and not _ANY_SETEXT_UNDERLINE_RE.match(line)
         ):
-            r_idx += 2
-            continue
-        filtered_residual.append(residual[r_idx])
+            look = r_idx + 1
+            while look < len(residual) and residual[look].strip():
+                cand = residual[look]
+                if _ANY_SETEXT_UNDERLINE_RE.match(cand):
+                    r_idx = look + 1
+                    break
+                if (
+                    _list_item_content_indent(cand) is not None
+                    or _THEMATIC_BREAK_RE.match(cand)
+                    or re.match(r"^[ \t]*#{1,6}(?:\s|$)", cand)
+                ):
+                    break
+                look += 1
+            if r_idx == look + 1:
+                continue
+        filtered_residual.append(line)
         r_idx += 1
     return all(_line_is_non_proposal_marker(line) for line in filtered_residual)
 
