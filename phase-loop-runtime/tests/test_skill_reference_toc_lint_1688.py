@@ -107,6 +107,7 @@ class _ParsedDoc:
     rendered_headings: list[_Heading]
     template_titles: set[str]
     toc_bullets: list[tuple[int, str]]
+    ends_with_paragraph: bool = False
 
 
 def _commonmark_lines(text: str) -> list[str]:
@@ -303,6 +304,18 @@ def _starts_non_paragraph_block(line: str) -> bool:
     return False
 
 
+def _list_match_can_interrupt_paragraph(line: str, list_match: re.Match[str]) -> bool:
+    """CommonMark §5.2: an empty list item cannot interrupt a paragraph, and an ordered
+    list item can interrupt a paragraph ONLY when its start number is 1."""
+    marker = list_match.group(2)
+    after_marker = line[list_match.end() :]
+    if not after_marker.strip(" \t"):
+        return False
+    if marker not in {"-", "*", "+"} and int(marker[:-1]) != 1:
+        return False
+    return True
+
+
 def _line_interrupts_paragraph(line: str) -> bool:
     """Return True if ``line`` can interrupt a CommonMark paragraph (not blank, not lazy continuation)."""
     if not line.strip(" \t"):
@@ -316,15 +329,7 @@ def _line_interrupts_paragraph(line: str) -> bool:
         return True
     list_match = _LIST_START_RE.match(line)
     if list_match:
-        marker = list_match.group(2)
-        after_marker = line[list_match.end() :]
-        # Per CommonMark §5.2: an empty list item cannot interrupt a paragraph, and an
-        # ordered list item can interrupt a paragraph ONLY when its start number is 1.
-        if not after_marker.strip(" \t"):
-            return False
-        if marker not in {"-", "*", "+"} and int(marker[:-1]) != 1:
-            return False
-        return True
+        return _list_match_can_interrupt_paragraph(line, list_match)
     return False
 
 
@@ -382,6 +387,7 @@ def _parse_document(
     html_block: str | None = None
     in_contents = False
     para_lines: list[tuple[int, str]] = []
+    last_block_ends_with_para = False
 
     contents_lines: list[int] = []
     rendered_headings: list[_Heading] = []
@@ -397,7 +403,8 @@ def _parse_document(
             template_titles.add(heading.title)
 
     def _record_heading(lineno: int, level: int, title: str) -> None:
-        nonlocal in_contents
+        nonlocal in_contents, last_block_ends_with_para
+        last_block_ends_with_para = False
         if top_level and level == 2 and title == "Contents":
             contents_lines.append(lineno)
             rendered_headings.append(_Heading(lineno, level, title, is_toc=True))
@@ -416,6 +423,7 @@ def _parse_document(
 
         # 1. Active outer fenced code block (CommonMark §4.5).
         if outer_fence is not None:
+            last_block_ends_with_para = False
             close_match = _CLOSE_FENCE_RE.match(line)
             if close_match:
                 run = close_match.group(1)
@@ -431,6 +439,7 @@ def _parse_document(
 
         # 2. Active HTML block (CommonMark §4.6).
         if html_block is not None:
+            last_block_ends_with_para = False
             if html_block == "type6":
                 if not line.strip(" \t"):
                     html_block = None
@@ -444,6 +453,7 @@ def _parse_document(
         # 3. Blank line closes any open paragraph.
         if not line.strip(" \t"):
             para_lines.clear()
+            last_block_ends_with_para = False
             i += 1
             continue
 
@@ -463,6 +473,7 @@ def _parse_document(
 
         # 5. Indented code block (CommonMark §4.4): >= 4 columns outside a paragraph.
         if indent >= 4 and not para_lines:
+            last_block_ends_with_para = False
             i += 1
             continue
 
@@ -472,6 +483,7 @@ def _parse_document(
             lead, run, info = open_match.group(1), open_match.group(2), open_match.group(3)
             if not (run[0] == "`" and "`" in info):
                 para_lines.clear()
+                last_block_ends_with_para = False
                 lang = _fence_language(info)
                 outer_fence = _Fence(
                     char=run[0],
@@ -487,6 +499,7 @@ def _parse_document(
         html_kind = _html_block_end_kind(line, allow_type7=not para_lines)
         if html_kind is not None:
             para_lines.clear()
+            last_block_ends_with_para = False
             if html_kind == "type6" or not _html_block_closed(html_kind, line):
                 html_block = html_kind
             i += 1
@@ -495,11 +508,24 @@ def _parse_document(
         # 8. Blockquote container (CommonMark §5.1): recurse with top_level=False.
         if _BLOCKQUOTE_RE.match(line):
             para_lines.clear()
+            last_block_ends_with_para = False
             quote_start = i
             quote_lines: list[str] = []
-            while i < total and _BLOCKQUOTE_RE.match(lines[i]):
-                quote_lines.append(_strip_blockquote_marker(lines[i]))
-                i += 1
+            while i < total:
+                if _BLOCKQUOTE_RE.match(lines[i]):
+                    quote_lines.append(_strip_blockquote_marker(lines[i]))
+                    i += 1
+                    continue
+                if not _line_interrupts_paragraph(lines[i]) and _parse_document(
+                    "\n".join(quote_lines), top_level=False, collect_templates=False
+                ).ends_with_paragraph:
+                    lazy_line = lines[i].strip(" \t")
+                    if _SETEXT_UNDERLINE_RE.match(lazy_line):
+                        lazy_line = "\\" + lazy_line
+                    quote_lines.append(lazy_line)
+                    i += 1
+                    continue
+                break
             nested = _parse_document(
                 "\n".join(quote_lines),
                 top_level=False,
@@ -508,6 +534,7 @@ def _parse_document(
             )
             rendered_headings.extend(nested.rendered_headings)
             template_titles.update(nested.template_titles)
+            last_block_ends_with_para = nested.ends_with_paragraph
             continue
 
         # 9. ATX heading (CommonMark §4.2).
@@ -523,13 +550,17 @@ def _parse_document(
         # 10. Thematic break (CommonMark §4.1).
         if _THEMATIC_BREAK_RE.match(line):
             para_lines.clear()
+            last_block_ends_with_para = False
             i += 1
             continue
 
         # 11. List item container (CommonMark §5.2): collect full item body and recurse.
+        # When a paragraph is open, only a non-empty list item (and for ordered lists, start == 1)
+        # can interrupt it.
         list_match = _LIST_START_RE.match(line)
-        if list_match:
+        if list_match and (not para_lines or _list_match_can_interrupt_paragraph(line, list_match)):
             para_lines.clear()
+            last_block_ends_with_para = False
             item_start = i
             lead, marker, sep = list_match.group(1), list_match.group(2), list_match.group(3)
             marker_end_col = len(lead) + len(marker)
@@ -548,33 +579,35 @@ def _parse_document(
 
             item_lines: list[str] = [first_body_line]
             lazy_indices: set[int] = set()
-            first_para_open = bool(rest_after_ws) and not _starts_non_paragraph_block(first_body_line)
             i += 1
             pending_blanks: list[str] = []
             while i < total:
                 next_line = lines[i]
                 if not next_line.strip(" \t"):
                     pending_blanks.append("")
-                    first_para_open = False
                     i += 1
                     continue
                 if _leading_columns(next_line) >= content_indent:
                     item_lines.extend(pending_blanks)
                     pending_blanks.clear()
                     stripped_next = _strip_leading_columns(next_line, content_indent)
-                    if first_para_open and (
-                        _line_interrupts_paragraph(stripped_next) or _SETEXT_UNDERLINE_RE.match(stripped_next)
-                    ):
-                        first_para_open = False
                     item_lines.append(stripped_next)
                     i += 1
                     continue
-                # CommonMark §5.2 lazy paragraph continuation line (only while the first paragraph is still open).
-                if first_para_open and not pending_blanks and not _line_interrupts_paragraph(next_line):
-                    lazy_indices.add(len(item_lines))
-                    item_lines.append(next_line.strip(" \t"))
-                    i += 1
-                    continue
+                # CommonMark §5.2 lazy paragraph continuation line (only when the item's
+                # current open block ends with a paragraph and no blank line preceded it).
+                if not pending_blanks and not _line_interrupts_paragraph(next_line):
+                    item_so_far = [
+                        ("\\" + ln if (idx in lazy_indices and _SETEXT_UNDERLINE_RE.match(ln)) else ln)
+                        for idx, ln in enumerate(item_lines)
+                    ]
+                    if _parse_document(
+                        "\n".join(item_so_far), top_level=False, collect_templates=False
+                    ).ends_with_paragraph:
+                        lazy_indices.add(len(item_lines))
+                        item_lines.append(next_line.strip(" \t"))
+                        i += 1
+                        continue
                 break
             # Rewind trailing blank lines that were not followed by indented item content.
             i -= len(pending_blanks)
@@ -611,10 +644,12 @@ def _parse_document(
             template_titles.update(nested.template_titles)
             if capture_bullet:
                 toc_bullets.extend(nested.toc_bullets)
+            last_block_ends_with_para = nested.ends_with_paragraph
             continue
 
         # 12. Ordinary paragraph line (candidate for a following Setext underline).
         para_lines.append((lineno, line))
+        last_block_ends_with_para = False
         i += 1
 
     # Unclosed trailing markdown fence still parses its inner lines per CommonMark §4.5.
@@ -627,6 +662,7 @@ def _parse_document(
         rendered_headings=rendered_headings,
         template_titles=template_titles,
         toc_bullets=toc_bullets,
+        ends_with_paragraph=bool(para_lines) or last_block_ends_with_para,
     )
 
 
@@ -960,6 +996,30 @@ class SkillReferenceTocLintTest(unittest.TestCase):
             + ("body line\n" * 100)
         )
         self.assertEqual(reference_toc_findings(after_html_list_item, "fixture/after-html-list.md"), [])
+
+        # 11. Ordered list starting at 2 cannot interrupt an open paragraph (top-level,
+        # bullet-nested, or blockquote-lazy), so `2. ## Ghost` never supplies a `#ghost` anchor.
+        for label, doc in (
+            (
+                "top-level",
+                "# Ref\n\n## Contents\n\n- [Ghost](#ghost)\n\n## Body\n\nParagraph\n2. ## Ghost\n",
+            ),
+            (
+                "bullet-nested",
+                "# Ref\n\n## Contents\n\n- [Ghost](#ghost)\n\n## Body\n\n- Paragraph\n  2. ## Ghost\n",
+            ),
+            (
+                "blockquote-lazy",
+                "# Ref\n\n## Contents\n\n- [Ghost](#ghost)\n\n## Body\n\n> Paragraph\n2. ## Ghost\n",
+            ),
+            (
+                "list-second-para-lazy",
+                "# Ref\n\n## Contents\n\n- [Ghost](#ghost)\n\n## Body\n\n- First\n\n  Second\n2. ## Ghost\n",
+            ),
+        ):
+            findings = reference_toc_findings(doc, f"fixture/ordered-no-interrupt-{label}.md")
+            self.assertEqual(len(findings), 1, f"{label}: {findings}")
+            self.assertIn("#ghost", findings[0].message)
 
     def test_anchor_slug_allocation_emphasis_blockquotes_and_template_separation(self) -> None:
         # 1. Heading inside an md template satisfies plain bullet, NEVER #anchor.
