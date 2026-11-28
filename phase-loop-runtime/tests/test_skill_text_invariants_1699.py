@@ -32,14 +32,15 @@ _LIST_ITEM_RE = re.compile(r"^([-*+]|(?:\d{1,9})[.)])([ \t]+|$)(.*)$")
 _OPEN_FENCE_RE = re.compile(r"^(`{3,}|~{3,})([^\r\n]*)$")
 _CLOSE_FENCE_RE = re.compile(r"^(`{3,}|~{3,})[ \t]*$")
 _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
+_SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 _THEMATIC_BREAK_RE = re.compile(r"^ {0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
 _TRAILING_HASHES_RE = re.compile(r"(?:^|[ \t]+)#+$")
 _LINK_DEF_RE = re.compile(
-    r"^ {0,3}\[([^\]]+)\]:[ \t]*(?:<([^>\r\n]+)>|([^\s<>]+))(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$",
+    r"^ {0,3}\[([^\]]+)\]:[ \t]*(?:\n[ \t]*)?(?:<([^>\r\n]+)>|([^\s<>]+))(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$",
     re.MULTILINE,
 )
 _INLINE_DEST_RE = re.compile(
-    r"^[ \t]*(?:<([^>\r\n]+)>|([^\s()<>]+))(?:[ \t]+(?:\"[^\"]*\"|'[^']*'))?[ \t]*\)"
+    r"^[ \t]*(?:\n[ \t]*)?(?:<([^>\r\n]+)>|([^\s()<>]+))(?:[ \t\n]+(?:\"[^\"]*\"|'[^']*'))?[ \t]*(?:\n[ \t]*)?\)"
 )
 _ASCII_PUNCT = set(r"""!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~""")
 
@@ -247,7 +248,9 @@ def _visible_prose(text: str) -> str:
                 # CommonMark §5.2: if >= 5 spaces follow marker, content starts at marker+1 (rest is indented code).
                 if gap_cols >= 5:
                     content_indent = indent + marker_cols + 1
-                    _, rest, col = _consume_cols(rest, content_indent, col)
+                    _, rest, col = _consume_cols(
+                        body[marker_cols:], 1, col + indent + marker_cols
+                    )
                 else:
                     content_indent = indent + marker_cols + max(gap_cols, 1)
                     rest = after_item
@@ -298,8 +301,12 @@ def _visible_prose(text: str) -> str:
                     out.append("")
                     continue
 
-        # Step 8: ATX heading or thematic break ends paragraph state; normal text continues/starts it.
-        if _ATX_HEADING_RE.match(rest) or _THEMATIC_BREAK_RE.match(rest):
+        # Step 8: ATX heading, Setext heading underline, or thematic break ends paragraph state.
+        if (
+            _ATX_HEADING_RE.match(rest)
+            or _THEMATIC_BREAK_RE.match(rest)
+            or (in_paragraph and not opened_container and _SETEXT_UNDERLINE_RE.match(rest))
+        ):
             in_paragraph = False
         else:
             in_paragraph = True if (not opened_container or bool(rest.strip())) else False
@@ -995,12 +1002,15 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                 "ref-shortcut.md",
                 "after-unclosed-list-fence.md",
                 "after-comment-fence.md",
+                "multiline-dest.md",
                 "orphan.md",
                 "fenced-top.md",
                 "fenced-list.md",
                 "fenced-quote.md",
                 "fenced-nested-list-quote.md",
                 "indented-code.md",
+                "indented-after-setext.md",
+                "padded-list-code.md",
                 "commented-only.md",
                 "prefix-only.md",
                 "image-inline.md",
@@ -1019,6 +1029,9 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                 "- Angle destination [ok](<references/angle-dest.md>).\n"
                 "- See `references/code-span.md` for details.\n"
                 "- Also [dot](./references/dot-rel.md) and [deep](references/nested/deep.md).\n"
+                "- Multiline destination [next-line](\n"
+                "  references/multiline-dest.md\n"
+                ").\n"
                 "- Reference links: [the full guide][full-guide], [ref-collapsed][], and [ref-shortcut].\n"
                 "- Wrong prefix: `other/references/prefix-only.md` and `references/prefix-only.md.bak`.\n"
                 "- Inline image is not a doc link: ![img](references/image-inline.md).\n"
@@ -1029,6 +1042,10 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                 "<!-- [hidden](references/commented-only.md) `references/commented-only.md` -->\n\n"
                 "    [indented-code](references/indented-code.md)\n"
                 "    `references/indented-code.md`\n\n"
+                "Setext Heading\n"
+                "--------------\n"
+                "    [indented-after-setext](references/indented-after-setext.md)\n\n"
+                "-     [padded-list-code](references/padded-list-code.md)\n\n"
                 "```markdown\n"
                 "[top-fence](references/fenced-top.md)\n"
                 "`references/fenced-top.md`\n"
@@ -1063,7 +1080,7 @@ class ShippedReferenceLinksTest(unittest.TestCase):
             )
 
             count, findings = unlinked_reference_findings_for_skill(skill, label_root=root)
-            self.assertEqual(count, 25)
+            self.assertEqual(count, 28)
             self.assertEqual(
                 findings,
                 [
@@ -1076,9 +1093,11 @@ class ShippedReferenceLinksTest(unittest.TestCase):
                     "demo-skill/SKILL.md: shipped `references/fenced-top.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/image-inline.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/image-ref.md` is not linked from SKILL.md",
+                    "demo-skill/SKILL.md: shipped `references/indented-after-setext.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/indented-code.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/malformed-angle.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/orphan.md` is not linked from SKILL.md",
+                    "demo-skill/SKILL.md: shipped `references/padded-list-code.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/prefix-only.md` is not linked from SKILL.md",
                     "demo-skill/SKILL.md: shipped `references/unused-def.md` is not linked from SKILL.md",
                 ],
