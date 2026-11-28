@@ -1649,3 +1649,57 @@ def test_indented_heading_or_thematic_break_inside_bullet_keeps_single_proposal_
     assert corpus.scanned[0].improvements_class == "repo_specific"
     assert corpus.scanned[0].excluded == "improvements_repo_specific"
     assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+def test_nested_ledger_reference_does_not_discard_generic_proposal(tmp_path):
+    root = tmp_path / "skills"
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="",
+            didnt="",
+            improvements=(
+                "- Require bounded retries.\n"
+                "  - Hosted CI: all checks passed for publication on agent-harness#1371."
+            ),
+        ))
+
+    corpus, _ = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 3
+    assert bundle.count("Require bounded retries.") == 3
+    assert "agent-harness#1371" not in bundle
+    assert all(r.improvements_class == "agnostic" and r.excluded is None for r in corpus.admitted)
+
+
+def test_indented_four_space_code_with_backticks_does_not_hide_later_sections(tmp_path):
+    root = tmp_path / "skills"
+    worked = "    ```sh\n    echo indented code block, not a fence\n"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked=worked,
+        didnt="FRICTION-SURVIVES after four-space indented backticks.",
+        improvements="- Require bounded retries.",
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 1
+    assert "FRICTION-SURVIVES after four-space indented backticks." in bundle
+    assert "Require bounded retries." in bundle
+
+
+def test_standalone_heading_above_rejected_bullet_does_not_trigger_archival(tmp_path):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(
+        worked="",
+        didnt="",
+        improvements="### Proposed edits\n- Fix agent-harness#1371.",
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.admitted == []
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
