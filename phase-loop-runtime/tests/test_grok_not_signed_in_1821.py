@@ -241,10 +241,11 @@ def test_grok_not_signed_in_respects_precedence_and_no_false_positives():
     assert not pi._grok_not_signed_in(1, "", spaced_usage)
     assert pi._finalize_leg_detail(
         pi._leg_failure_detail("ERROR", 1, "", spaced_usage, leg="grok")
-    ) != "grok_seat_credential_missing"
+    ) == "usage_limit"
 
-    # Two-line prose mentioning `grok login` without the native instruction is NOT a banner,
-    # and a banner split across stderr + stdout must never be assembled across streams.
+    # Embedded command prose (`Do not run grok login in the test.`), two-line prose,
+    # and banners split across stderr + stdout must never match.
+    assert not pi._grok_not_signed_in(1, "Not signed in. Do not run grok login in the test.\n", "")
     prose_two_lines = "Not signed in.\nTest that grok login opens a browser.\n"
     assert not pi._grok_not_signed_in(1, prose_two_lines, "")
     assert not pi._grok_not_signed_in(
@@ -253,10 +254,12 @@ def test_grok_not_signed_in_respects_precedence_and_no_false_positives():
         "Not signed in. To authenticate without a browser, run:\n",
     )
 
-    # Linear-time non-backtracking check on long non-matching lines.
+    # Linear-time non-backtracking checks on long non-matching lines and repeated tool-denied prefixes.
     long_nonmatch = "Not signed in. " + ("x" * 16384) + "\n"
+    many_no_output = "no output produced\n" * 1024
     t0 = time.monotonic()
     assert not pi._grok_not_signed_in(1, "", long_nonmatch)
+    assert not pi._grok_not_signed_in(1, "", many_no_output)
     assert (time.monotonic() - t0) < 0.25
 
     # Mid-sentence prose on rc==1 does not false-positive.
@@ -298,21 +301,42 @@ def test_grok_not_signed_in_respects_precedence_and_no_false_positives():
 
 
 def test_failed_grok_review_prose_is_preserved_not_erased(tmp_path, monkeypatch):
-    """P2 regression: rc==1 with review prose starting with 'Not signed in' preserves the
-    body and keeps `panel_nonconforming` rather than emitting a false auth notice."""
+    """P2 regression: rc==1 with review prose starting with 'Not signed in' (even mentioning
+    `run grok login` in prose) preserves the body and keeps `panel_nonconforming`."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(pi, "_grok_leg_on_frozen_basis", lambda **k: False)
-    prose = "Not signed in users are redirected to login.py.\n"
-    monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (1, prose, ""))
+    for prose in (
+        "Not signed in users are redirected to login.py.\n",
+        "Not signed in. Do not run grok login in the test.\n",
+    ):
+        monkeypatch.setattr(pi, "_exec_leg", lambda *a, _p=prose, **k: (1, _p, ""))
+        panel = pi.invoke_panel("ARTIFACT", ["grok"])
+        (leg,) = panel.legs
+        assert leg.status == "ERROR"
+        assert leg.text == prose
+        assert leg.detail != "grok_seat_credential_missing"
+        assert leg.seat_notices == ()
+        findings = gr._findings_from_panel(panel)
+        assert any(f.code == "panel_nonconforming" for f in findings)
+
+
+def test_spaced_usage_limit_before_banner_reaches_panel_as_usage_limit(tmp_path, monkeypatch):
+    """P3 regression: a usage-limit diagnostic separated by >20 lines from the sign-in
+    banner surfaces as DEGRADED + `usage_limit` in the final panel result."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_leg_on_frozen_basis", lambda **k: False)
+    spaced_usage = (
+        "You hit your weekly limit.\n"
+        + "".join(f"ordinary line {i}\n" for i in range(25))
+        + _ISSUE_1821_CLI_LOG
+    )
+    monkeypatch.setattr(pi, "_exec_leg", lambda *a, **k: (1, "", spaced_usage))
 
     panel = pi.invoke_panel("ARTIFACT", ["grok"])
     (leg,) = panel.legs
-    assert leg.status == "ERROR"
-    assert leg.text == prose
-    assert leg.detail != "grok_seat_credential_missing"
+    assert leg.status == "DEGRADED"
+    assert leg.detail == "usage_limit"
     assert leg.seat_notices == ()
-    findings = gr._findings_from_panel(panel)
-    assert any(f.code == "panel_nonconforming" for f in findings)
 
 
 def test_exec_leg_grok_does_not_retry_empty_rc0_sign_in_banner(tmp_path, monkeypatch):

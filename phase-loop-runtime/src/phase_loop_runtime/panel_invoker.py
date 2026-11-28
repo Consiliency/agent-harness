@@ -3116,7 +3116,8 @@ _GROK_NOT_SIGNED_IN_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 _GROK_LOGIN_INLINE_RE = re.compile(
-    r"\brun\s+`?grok login(?:\s+--device-code)?`?(?:[.!]|(?:\s|$))",
+    r"^(?:to authenticate(?: without a browser)?,\s*)?"
+    r"run:?\s+`?grok login(?:\s+--device-code)?`?\.?$",
     re.IGNORECASE,
 )
 _GROK_LOGIN_CMD_LINE_RE = re.compile(
@@ -3855,7 +3856,7 @@ def _stream_has_grok_not_signed_in_banner(stream: str) -> bool:
         if match is None:
             continue
         rest = match.group("rest")
-        if _GROK_LOGIN_INLINE_RE.search(rest):
+        if _GROK_LOGIN_INLINE_RE.fullmatch(rest):
             return True
         if rest.lower().endswith("run:") and idx + 1 < len(lines):
             if _GROK_LOGIN_CMD_LINE_RE.match(lines[idx + 1]):
@@ -3863,38 +3864,53 @@ def _stream_has_grok_not_signed_in_banner(stream: str) -> bool:
     return False
 
 
-def _grok_not_signed_in(rc: int | None, review_text: str, log_text: str) -> bool:
-    """Whether an already-failed Grok leg failed because the Grok CLI reported its
-    ``Not signed in`` + ``grok login`` banner (agent-harness#1821).
+def _grok_banner_or_higher_failure(
+    rc: int | None, review_text: str, log_text: str,
+) -> _LegFailure | None:
+    """For an already-failed Grok leg, return the typed ``grok_seat_credential_missing``
+    failure when an authentic Grok CLI sign-in banner is present, or a higher-precedence
+    ``usage_limit`` / ``env_failure`` failure if one appeared earlier in the same stream(s).
 
-    Process facts (timeout, signal), runtime-emitted ``_HarnessCode`` details, and
-    higher-precedence non-auth labels (``usage_limit``, ``env_failure``, ``tool_denied``)
-    evaluated over the same full ANSI-stripped stream(s) always take precedence. Any stdout
-    carrying a terminal verdict (or any non-empty stdout on ``rc == 0``) is preserved and
-    never reclassified as a sign-in failure. Matches per stream (never assembling a banner
-    across stdout and stderr) and over full output so trailing diagnostics do not hide an
-    authentic sign-in banner.
+    Checks the linear-time sign-in banner FIRST so non-banner logs pay zero extra full-stream
+    scanning. Higher-precedence checks run line-by-line (linear time; ``_TOOL_DENIED_RE``
+    runs only on the bounded 20-line tail via ``_leg_failure_kind``).
     """
     if type(rc) is not int or rc == 124 or rc < 0:
-        return False
+        return None
     if type(log_text) is _HarnessCode:
-        return False
+        return None
     stdout_text = str(review_text or "")
     stderr_text = str(log_text or "")
     if terminal_verdict(stdout_text) is not None:
-        return False
+        return None
     if rc == 0 and stdout_text.strip():
-        return False
+        return None
     stderr_clean = _ANSI_CSI_RE.sub("", stderr_text)
     streams = (stderr_clean,) if rc == 0 else (stderr_clean, _ANSI_CSI_RE.sub("", stdout_text))
-    if any(
-        _USAGE_LIMIT_LABEL_RE.search(stream)
-        or _ENV_FAILURE_LABEL_RE.search(stream)
-        or _TOOL_DENIED_RE.search(stream)
-        for stream in streams
-    ):
-        return False
-    return any(_stream_has_grok_not_signed_in_banner(stream) for stream in streams)
+    if not any(_stream_has_grok_not_signed_in_banner(stream) for stream in streams):
+        return None
+    # Tail-bounded precedence check first (covers usage_limit, env_failure, and tool_denied).
+    if _leg_failure_kind(rc, review_text, log_text) in ("usage_limit", "env_failure", "tool_denied"):
+        return None
+    # Linear line-by-line precedence check over the same streams so an earlier usage/env
+    # diagnostic (>20 lines before the banner) still takes precedence AND reaches detail.
+    for stream in streams:
+        for line in stream.splitlines():
+            if _USAGE_LIMIT_LABEL_RE.search(line):
+                reset = _rendered_reset(line)
+                return _LegFailure(f"usage_limit (resets {reset})" if reset else "usage_limit")
+    for stream in streams:
+        for line in stream.splitlines():
+            if _ENV_FAILURE_LABEL_RE.search(line):
+                return _LegFailure(_env_failure_template(line))
+    return _LegFailure(_HarnessCode("grok_seat_credential_missing"))
+
+
+def _grok_not_signed_in(rc: int | None, review_text: str, log_text: str) -> bool:
+    """Whether an already-failed Grok leg should be classified as
+    ``grok_seat_credential_missing`` (agent-harness#1821)."""
+    failure = _grok_banner_or_higher_failure(rc, review_text, log_text)
+    return failure is not None and failure.template == "grok_seat_credential_missing"
 
 
 def _leg_failure_detail(
@@ -3914,8 +3930,10 @@ def _leg_failure_detail(
         # Provenance by TYPE: a diagnostic this runtime itself produced (never CLI text
         # that merely looks like one — agent-harness#1102 r8).
         return _LegFailure(log_text)
-    if leg == "grok" and _grok_not_signed_in(rc, review_text, log_text):
-        return _LegFailure(_HarnessCode("grok_seat_credential_missing"))
+    if leg == "grok":
+        grok_failure = _grok_banner_or_higher_failure(rc, review_text, log_text)
+        if grok_failure is not None:
+            return grok_failure
     kind = _leg_failure_kind(rc, review_text, log_text)
     if kind == "unknown" and rc == 0 and str(review_text).strip():
         return None
@@ -21403,11 +21421,12 @@ def _default_spawn(
                             status, rc, text, log, _seat_paths(base, review_dir, out_dir, resolved_repo_dir),
                             leg=leg,
                         )
-                        if (leg == "grok" and status != "OK"
-                                and isinstance(leg_detail, _LegFailure)
-                                and leg_detail.template == "grok_seat_credential_missing"):
-                            status, text = "DEGRADED", ""
-                            seat_notices.append("grok_seat_credential_missing")
+                        if leg == "grok" and status != "OK" and isinstance(leg_detail, _LegFailure):
+                            if leg_detail.template == "grok_seat_credential_missing":
+                                status, text = "DEGRADED", ""
+                                seat_notices.append("grok_seat_credential_missing")
+                            elif leg_detail.template.startswith(("usage_limit", "env_failure")):
+                                status = "DEGRADED"
                     if qualify_agy and (status == "OK" or review_monitor.cancel.is_set()):
                         broker.evidence.pop("provider_error_class", None)
                     elif qualify_agy:
@@ -21528,14 +21547,15 @@ def _default_spawn(
             _seat_paths(base, review_dir, out_dir, resolved_repo_dir),
             leg=leg,
         )
-        if (leg == "grok" and status != "OK"
-                and isinstance(detail, _LegFailure)
-                and detail.template == "grok_seat_credential_missing"):
-            status, review_text = "DEGRADED", ""
-            seat_notices.append("grok_seat_credential_missing")
-            return _with_placement(_BrokeredSpawnResult(
-                status, review_text, detail, seat_notices=_dedupe(seat_notices),
-            ))
+        if leg == "grok" and status != "OK" and isinstance(detail, _LegFailure):
+            if detail.template == "grok_seat_credential_missing":
+                status, review_text = "DEGRADED", ""
+                seat_notices.append("grok_seat_credential_missing")
+                return _with_placement(_BrokeredSpawnResult(
+                    status, review_text, detail, seat_notices=_dedupe(seat_notices),
+                ))
+            if detail.template.startswith(("usage_limit", "env_failure")):
+                status = "DEGRADED"
         if detail:
             return _with_placement((status, review_text, detail))
         return _with_placement((status, review_text))
