@@ -425,6 +425,7 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
     uids = seat_uid.subordinate_range(seat_uid.SUBUID_FILE)
     gids = seat_uid.subordinate_range(seat_uid.SUBGID_FILE)
     dependency = None
+    standalone_runtime = None
     shape = _gemini_shape(seat_dir) if leg == "gemini" else {}
     grok = None
     if leg == "grok":
@@ -433,20 +434,42 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
         from . import seat_profile_grok as grok
         shape = grok.qualification_shape(seat_dir)
     if leg == "codex":
-        from .seat_codex_runtime import subject_runtime
-        from .seat_profile_codex import validate_codex_projection
-        subject, dependency = pi._resolved_jail_subject(leg, os.environ)
-        validate_codex_projection(dependency)
-        if subject.source != "standalone" and dependency is None:
-            raise QualificationError("Codex projection unavailable")
-        subject_runtime(subject)
-        provider = Path(dependency.subject_source) if dependency is not None else subject.subject_path
         certificate = seat_dir / "egress-ca.pem"
         certificate.write_text("qualification placeholder certificate\n", encoding="ascii")
         certificate.chmod(0o444)
         shape = {"egress_ca": certificate,
-                 "egress_proxy": "http://srt:qualification@127.0.0.1:3128",
-                 "dependency": dependency}
+                 "egress_proxy": "http://srt:qualification@127.0.0.1:3128"}
+        if seat_jail._QUALIFICATION_PROBE_SUBJECT.get() is None:
+            from . import seat_codex_runtime as codex_runtime
+            from .seat_profile_codex import validate_codex_projection
+            subject, dependency = pi._resolved_jail_subject(leg, os.environ)
+            try:
+                validate_codex_projection(dependency)
+                if subject.source != "standalone" and dependency is None:
+                    raise QualificationError("Codex projection unavailable")
+                if dependency is None:
+                    resolved = codex_runtime.subject_runtime(subject)
+                    if isinstance(resolved, codex_runtime.AdmittedStandaloneRuntime):
+                        standalone_runtime = resolved
+                    elif isinstance(resolved, codex_runtime.CodexRuntime):
+                        standalone_runtime = codex_runtime.admit_runtime(
+                            resolved, lookup_chain=getattr(subject, "lookup_chain", ()),
+                        )
+                    else:
+                        raise QualificationError("standalone Codex runtime unavailable")
+                provider = (
+                    Path(dependency.subject_source)
+                    if dependency is not None
+                    else Path(standalone_runtime.subject_source)
+                )
+            except BaseException:
+                if standalone_runtime is not None:
+                    standalone_runtime.close()
+                if dependency is not None and getattr(dependency, "_jailcore_owned", False):
+                    dependency.close()
+                raise
+            shape["dependency"] = dependency
+            shape["standalone_runtime"] = standalone_runtime
     try:
         with seat_uid.lease_seat_id(seat_uid.seat_id_count(uids, gids)) as n, \
                 sandbox_egress.isolated_network(timeout_s=900, required=True, seat_uid_map=True) as egress:
@@ -466,6 +489,8 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
                 else:
                     # The probe runs in the canonical jail and nowhere else.
                     pi._require_canonical_jail(jail)
+                if getattr(jail, "standalone_runtime", None) is not None:
+                    seat_jail.verify_standalone_runtime_projection(jail)
                 prefix = pi._compose_seat_jail_prefix(jail)
                 done = subprocess.run(
                     [*prefix, "/usr/bin/python3", "-I", "-c", _PROBE_SOURCE, json.dumps(config)],
@@ -477,6 +502,8 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
                     seat_uid.teardown_in_h(holder, str(parent))
                 pi._EGRESS_LAUNCH_PREFIX.reset(token)
     finally:
+        if standalone_runtime is not None:
+            standalone_runtime.close()
         if dependency is not None and getattr(dependency, "_jailcore_owned", False):
             dependency.close()
         if grok is not None:

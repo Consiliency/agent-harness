@@ -74,6 +74,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the `NO_NEW_PRIVS` check and before installing the seccomp filter so owned review
   providers retain parent-death `SIGKILL` across AppArmor transitions such as Ubuntu 25.04+
   `bwrap-userns-restrict` (agent-harness#1921).
+- Harden standalone Codex runtime validation (`seat_codex_runtime.py`) to verify trusted
+  ownership and non-group/other-writable permissions on every ancestor directory up to `/`
+  (with root-owned sticky-directory handling and descriptor-anchored symlink/lookup-chain
+  validation), carry descriptor-pinned validated file identities through both admission
+  execution (`codex_admission_gate` / `seat_profile` / `launch_owned`) and jail binding
+  (`build_seat_jail` / `_fresh_window_launch_jails` / `launch_provider` / qualification) via
+  `--ro-bind-data` instead of re-resolving pathnames, and verify live projection descriptors
+  and zero offsets at each spawn boundary while preserving the canonical Codex jail profile
+  digest (agent-harness#1952).
 - Fix the `/proc/self/fd` / `/proc/$PPID/fd` descriptor-enumeration race in
   `test_phase_loop_baml_v1_runtime.py::test_executor_launch_path_after_1140_with_a_live_worker_and_a_stalled_spawn`
   by capturing executor and supervisor descriptors separately (ignoring only `ENOENT` on

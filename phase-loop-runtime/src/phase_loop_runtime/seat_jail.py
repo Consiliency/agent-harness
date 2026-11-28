@@ -1437,6 +1437,10 @@ class SeatJail:
     dependency_mount_points: tuple[str, ...] = ()
     dependency_projection_digest: str = ""
     dependency: object | None = field(default=None, repr=False)
+    standalone_runtime_fds: tuple[int, ...] = ()
+    standalone_runtime_mount_args: tuple[str, ...] = field(default=(), repr=False)
+    standalone_runtime_projection_digest: str = ""
+    standalone_runtime: object | None = field(default=None, repr=False)
     #: The route's JAILCORE qualification key (contract section 5). The launch gate
     #: re-establishes the v2 pass for exactly this key; ``None`` keeps the profile-digest
     #: read for callers that do not carry a route decision.
@@ -1585,11 +1589,39 @@ def installed_filter_sha256(jail: "SeatJail") -> str:
     return filter_digest(os.pread(jail.seccomp_fd, size, 0))
 
 
+def verify_standalone_runtime_projection(jail: "SeatJail") -> tuple[int, ...]:
+    """Verify live standalone Codex runtime projection descriptors and mounts before digesting
+    or spawning."""
+    from . import seat_codex_runtime as codex_runtime
+
+    if (
+        jail.dependency is not None
+        or not isinstance(jail.standalone_runtime, codex_runtime.AdmittedStandaloneRuntime)
+        or getattr(jail.standalone_runtime, "leg", None) != jail.leg
+    ):
+        raise SeatSandboxRefused(refused("identity"), "standalone runtime is valid only for standalone codex")
+    if jail.provider_argv0 != codex_runtime.CODEX_RUNTIME_DESTINATIONS[0]:
+        raise SeatSandboxRefused(refused("identity"), "standalone codex provider_argv0 drifted")
+    if jail.path_map.get(jail.provider_path) != codex_runtime.CODEX_RUNTIME_DESTINATIONS[0]:
+        raise SeatSandboxRefused(refused("identity"), "standalone codex path_map drifted")
+    fds = codex_runtime.verify_standalone_projection(
+        jail.standalone_runtime,
+        jail.standalone_runtime_mount_args,
+        jail.pass_fds,
+        jail.standalone_runtime_projection_digest,
+        container_argv=jail.process_owner,
+    )
+    if fds != tuple(jail.standalone_runtime_fds):
+        raise SeatSandboxRefused(refused("identity"), "standalone codex runtime fds drifted")
+    return fds
+
+
 def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
     """The profile digest of THIS jail's real owner argv and installed filter bytes.
 
-    Dependency mounts are separately destination-checked and digest-bound, then
-    removed only so the already-qualified base profile remains comparable.
+    Dependency mounts and standalone Codex runtime projections are separately verified
+    (destinations, live descriptor identities, and zero offsets), then normalized only so
+    the already-qualified base profile remains comparable.
     """
     from .seat_profiles import profile_for
     from .seat_route_contract import OwnerPaths
@@ -1623,6 +1655,15 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
     )
     substitute.update(profile.digest_placeholders(paths))
     owner = list(jail.process_owner)
+    has_standalone = (
+        jail.standalone_runtime is not None
+        or bool(jail.standalone_runtime_mount_args)
+        or bool(jail.standalone_runtime_fds)
+        or bool(jail.standalone_runtime_projection_digest)
+    )
+    if jail.dependency_mount_args and has_standalone:
+        raise SeatSandboxRefused(refused("identity"), "conflicting dependency and standalone runtime mounts")
+    projected_mount_args: Sequence[str] = ()
     if jail.dependency_mount_args:
         parsed_destinations = _dependency_mount_destinations(jail.dependency_mount_args)
         if (
@@ -1635,7 +1676,12 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
             parsed_destinations,
             jail.provider_argv0,
         )
-        owner = _without_contiguous(owner, jail.dependency_mount_args)
+        projected_mount_args = jail.dependency_mount_args
+    elif has_standalone:
+        verify_standalone_runtime_projection(jail)
+        projected_mount_args = jail.standalone_runtime_mount_args
+    if projected_mount_args:
+        owner = _without_contiguous(owner, projected_mount_args)
         # Restore only the profile-declared standalone shape. Match the complete
         # projected sequence first so an altered or additional mount stays observable.
         projected_binds = tuple(profile.owner_binds(dataclasses.replace(paths, provider_bind=False)))
@@ -1841,6 +1887,7 @@ def build_seat_jail(
     egress_ca: Path | None = None,
     egress_proxy: str | None = None,
     dependency=None,
+    standalone_runtime=None,
 ) -> SeatJail:
     """The bwrap owner for one jailed launch (plan "Seat jail").
 
@@ -1863,12 +1910,19 @@ def build_seat_jail(
         raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
     resolve_probe_subject = _QUALIFICATION_PROBE_SUBJECT.get()
     dependency_projection = None
+    standalone_projection = None
     seccomp_fd = None
     try:
         if resolve_probe_subject is not None:
-            if dependency is not None:
+            if dependency is not None or standalone_runtime is not None:
                 raise SeatSandboxRefused(refused("identity"), "unexpected qualification dependency")
-            provider_executable, dependency = resolve_probe_subject(leg)
+            resolved_probe = resolve_probe_subject(leg)
+            if len(resolved_probe) == 3:
+                provider_executable, dependency, standalone_runtime = resolved_probe
+            else:
+                provider_executable, dependency = resolved_probe
+        if dependency is not None and standalone_runtime is not None:
+            raise SeatSandboxRefused(refused("identity"), "conflicting dependency and standalone runtime")
         if dependency is not None:
             _require_safe_dependency_destinations(
                 leg,
@@ -1877,6 +1931,20 @@ def build_seat_jail(
             )
             dependency.revalidate()
             dependency_projection = dependency.reopen_projection()
+        if standalone_runtime is not None:
+            from . import seat_codex_runtime as codex_runtime
+
+            if not isinstance(
+                standalone_runtime, codex_runtime.AdmittedStandaloneRuntime
+            ) or getattr(standalone_runtime, "leg", None) != leg:
+                raise SeatSandboxRefused(refused("identity"), "invalid standalone codex runtime")
+            _require_safe_dependency_destinations(
+                leg,
+                tuple(item.destination for item in standalone_runtime.entries),
+                standalone_runtime.subject_destination,
+            )
+            standalone_runtime.revalidate()
+            standalone_projection = standalone_runtime.reopen_projection()
         arch = arch or host_arch()
         review_dir = Path(review_dir)
         tree = Path(tree) if tree is not None else review_dir / HOST_TREE_DIRNAME
@@ -1897,13 +1965,21 @@ def build_seat_jail(
             if str(provider) != dependency.subject_source:
                 raise SeatSandboxRefused(refused("identity"), "dependency subject changed")
             provider = Path(dependency.subject_destination)
+        elif standalone_runtime is not None:
+            if str(provider) != standalone_runtime.subject_source:
+                raise SeatSandboxRefused(refused("identity"), "standalone runtime subject changed")
+            provider = Path(standalone_runtime.subject_destination)
         elif not provider.is_absolute() or not provider.is_file():
             raise SeatSandboxRefused(refused("jail_build"), "provider executable not found")
         program = seccomp_program if seccomp_program is not None else build_seccomp_filter(arch)
         seccomp_fd = memfd_with("seat-seccomp", program)
-        seat_bin = str(provider) if dependency is not None else f"{SEAT_BIN}/{leg}"
+        projected = dependency is not None or standalone_runtime is not None
+        seat_bin = str(provider) if projected else f"{SEAT_BIN}/{leg}"
         dependency_mount_args = (
             dependency_projection.mount_args() if dependency_projection is not None else ()
+        )
+        standalone_mount_args = (
+            standalone_projection.mount_args() if standalone_projection is not None else ()
         )
         owner = _owner_argv(leg, tree=str(tree), home=str(home), out=str(out), provider=str(provider),
                             bundle_fd=str(bundle_memfd), instructions_fd=str(instructions_memfd),
@@ -1912,11 +1988,12 @@ def build_seat_jail(
                             gemini_config=None if gemini_config is None else str(gemini_config),
                             egress_ca=None if egress_ca is None else str(egress_ca),
                             egress_proxy=egress_proxy,
-                            dependency_mount_args=dependency_mount_args,
-                            provider_bind=dependency is None)
+                            dependency_mount_args=dependency_mount_args or standalone_mount_args,
+                            provider_bind=not projected)
         env = seat_env(leg, token_fd=token_fd, egress_proxy=egress_proxy)
         pass_fds = tuple(fd for fd in (bundle_memfd, instructions_memfd, token_fd) if fd is not None)
         dependency_fds = dependency_projection.pass_fds if dependency_projection is not None else ()
+        standalone_fds = standalone_projection.pass_fds if standalone_projection is not None else ()
         jail = SeatJail(
             leg=leg,
             process_owner=tuple(owner),
@@ -1930,7 +2007,7 @@ def build_seat_jail(
                 str(provider_source): seat_bin,
             },
             env=env,
-            pass_fds=(*pass_fds, *dependency_fds, seccomp_fd),
+            pass_fds=(*pass_fds, *dependency_fds, *standalone_fds, seccomp_fd),
             seccomp_fd=seccomp_fd,
             profile_id=PROFILE_ID,
             profile_digest="",
@@ -1956,6 +2033,12 @@ def build_seat_jail(
                 dependency_projection.digest if dependency_projection is not None else ""
             ),
             dependency=dependency,
+            standalone_runtime_fds=standalone_fds,
+            standalone_runtime_mount_args=standalone_mount_args,
+            standalone_runtime_projection_digest=(
+                standalone_projection.digest if standalone_projection is not None else ""
+            ),
+            standalone_runtime=standalone_runtime,
         )
         return dataclasses.replace(jail, profile_digest=actual_profile_digest(jail, arch))
     except BaseException:
@@ -1966,6 +2049,8 @@ def build_seat_jail(
                 pass
         if dependency_projection is not None:
             dependency_projection.close()
+        if standalone_projection is not None:
+            standalone_projection.close()
         if resolve_probe_subject is not None:
             # The frozen probe only gains ownership of these inputs after a successful build.
             for fd in (bundle_memfd, instructions_memfd, token_fd):
@@ -1995,7 +2080,7 @@ def expected_mount_points(jail: SeatJail) -> list[str]:
     points = {"/", "/proc", "/dev", *BWRAP_DEV_MOUNTS, "/tmp", "/dev/shm",
               SEAT_BUNDLE, SEAT_INSTRUCTIONS, SEAT_TREE, SEAT_HOME,
               SEAT_OUT}
-    if not jail.dependency_destinations:
+    if not jail.dependency_destinations and jail.standalone_runtime is None and not jail.standalone_runtime_mount_args:
         points.add(f"{SEAT_BIN}/{jail.leg}")
     points.update(jail.dependency_mount_points)
     points.update(profile.mount_points(OwnerPaths(

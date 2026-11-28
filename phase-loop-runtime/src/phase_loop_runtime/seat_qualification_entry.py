@@ -54,11 +54,40 @@ def qualify(leg: str = "claude", *, _mutate_jail=None) -> dict[str, object]:
                 resources.callback(dependency.close)
             if getattr(dependency, "projection_digest", None) != current_key.projection_digest:
                 raise reducer.QualificationError("qualification probe projection does not match the route key")
-            executable = (Path(dependency.subject_source) if dependency is not None
-                          else subject.subject_path)
+            standalone_runtime = None
+            if leg == "codex":
+                from . import seat_codex_runtime as codex_runtime
+                from .seat_profile_codex import validate_codex_projection
+
+                try:
+                    validate_codex_projection(dependency)
+                    if subject.source != "standalone" and dependency is None:
+                        raise reducer.QualificationError("Codex projection unavailable")
+                    if dependency is None:
+                        resolved = codex_runtime.subject_runtime(subject)
+                        if isinstance(resolved, codex_runtime.AdmittedStandaloneRuntime):
+                            standalone_runtime = resolved
+                        elif isinstance(resolved, codex_runtime.CodexRuntime):
+                            standalone_runtime = codex_runtime.admit_runtime(
+                                resolved, lookup_chain=getattr(subject, "lookup_chain", ()),
+                            )
+                        else:
+                            raise reducer.QualificationError("standalone Codex runtime unavailable")
+                        resources.callback(standalone_runtime.close)
+                except (ExecutableDependencyError, seat_jail.SeatSandboxRefused) as exc:
+                    raise reducer.QualificationError("qualification subject is no longer available") from exc
+            executable = (
+                Path(dependency.subject_source)
+                if dependency is not None
+                else Path(standalone_runtime.subject_source)
+                if standalone_runtime is not None
+                else subject.subject_path
+            )
             if executable is None:
                 raise reducer.QualificationError("qualification subject is no longer available")
             key = current_key
+            if standalone_runtime is not None:
+                return executable, dependency, standalone_runtime
             return executable, dependency
 
         # The reducer checks its prerequisites first and calls the builder for its D8 probe.

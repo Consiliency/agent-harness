@@ -5058,6 +5058,10 @@ class SeatProfile:
     evidence: Mapping[str, object] = field(default_factory=dict)
     dependency: object | None = field(default=None, repr=False)
     dependency_projection_digest: str = ""
+    standalone_runtime: object | None = field(default=None, repr=False)
+    standalone_runtime_projection: object | None = field(default=None, repr=False)
+    standalone_runtime_mount_args: tuple[str, ...] = field(default=(), repr=False)
+    standalone_runtime_projection_digest: str = ""
     #: A grok launch on a frozen-basis receipt (grok tool-surface contract §4.4): the
     #: ``ProvisionalContext`` its composition stamps, or the ``LaunchContext`` mark that
     #: ``grok_tool_surface.verify_launch_context`` gives it. ``None`` otherwise.
@@ -5578,7 +5582,7 @@ def _require_dependency_profile_composition(dependency, harness, env, *, gemini_
 def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=(),
                  broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
                  writable_trees=(), needs_login=True, dependency=None, grok_sessions=None,
-                 egress_proxy=None):
+                 egress_proxy=None, standalone_runtime=None):
     """Copy declared subscription state into a per-launch private home.
 
     ``needs_login`` is False only for a launch that makes no provider request
@@ -5857,7 +5861,39 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             stack.callback(os.close, descriptor)
             pass_fds.add(descriptor)
             mounts.extend(("--perms", "0500", "--ro-bind-data", str(descriptor), destination))
+        elif standalone_runtime is not None:
+            from . import seat_codex_runtime as _codex_runtime
+
+            if (
+                harness != "codex"
+                or dependency is not None
+                or gemini_profile is not None
+                or not isinstance(standalone_runtime, _codex_runtime.AdmittedStandaloneRuntime)
+                or str(executable) != standalone_runtime.subject_source
+            ):
+                raise _seat_jail.SeatSandboxRefused(
+                    _seat_jail.refused("identity"), "invalid standalone codex runtime"
+                )
+            standalone_runtime.revalidate()
+            standalone_projection = stack.enter_context(standalone_runtime.reopen_projection())
+            destination = standalone_runtime.subject_destination
+            directories = (
+                "/run",
+                "/run/phase-loop-seat",
+                _codex_runtime.CODEX_RUNTIME_ROOT,
+                f"{_codex_runtime.CODEX_RUNTIME_ROOT}/bin",
+                f"{_codex_runtime.CODEX_RUNTIME_ROOT}/codex-path",
+            )
+            mounts.extend(
+                arg for directory in directories for arg in ("--perms", "0755", "--dir", directory)
+            )
+            standalone_mount_args = standalone_projection.mount_args()
+            mounts.extend(standalone_mount_args)
+            pass_fds.update(standalone_projection.pass_fds)
+            profile_env["PATH"] = f"{_codex_runtime.CODEX_RUNTIME_ROOT}/codex-path:/usr/bin:/bin"
         else:
+            standalone_projection = None
+            standalone_mount_args = ()
             source = _seat_bind_source(Path(executable).resolve(strict=True))
             mounts.extend(("--ro-bind", source, destination))
             native = Path(source)
@@ -5870,6 +5906,13 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 mounts.extend(("--ro-bind", runtime, "/run/phase-loop-seat/codex-runtime"))
                 destination = "/run/phase-loop-seat/codex-runtime/bin/codex"
                 profile_env["PATH"] = "/run/phase-loop-seat/codex-runtime/codex-path:/usr/bin:/bin"
+        if standalone_runtime is None:
+            standalone_projection = None
+            standalone_mount_args = ()
+        elif dependency_projection is not None or gemini_profile is not None or harness != "codex":
+            raise _seat_jail.SeatSandboxRefused(
+                _seat_jail.refused("identity"), "conflicting standalone codex runtime"
+            )
         token = _SEAT_REDACTIONS.set(tuple(redactions))
         stack.callback(_SEAT_REDACTIONS.reset, token)
         yield destination, SeatProfile(
@@ -5881,6 +5924,12 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             dependency=dependency,
             dependency_projection_digest=(
                 dependency_projection.digest if dependency_projection is not None else ""
+            ),
+            standalone_runtime=standalone_runtime,
+            standalone_runtime_projection=standalone_projection,
+            standalone_runtime_mount_args=standalone_mount_args,
+            standalone_runtime_projection_digest=(
+                standalone_projection.digest if standalone_projection is not None else ""
             ),
             scan_values=scan_values,
         )
@@ -6033,7 +6082,8 @@ def _precreate_seat_output(path):
 @contextmanager
 def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None,
                           gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                          readonly_paths=(), replaceable_outputs=(), grok_egress_proxy=None):
+                          readonly_paths=(), replaceable_outputs=(), grok_egress_proxy=None,
+                          standalone_runtime=None):
     """The owned seat's command and profile for one launch.
 
     ``grok_egress_proxy`` is the ``grok-review`` proxy a board leg holds for a grok leg on a
@@ -6058,7 +6108,23 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     The Codex writable-tree grant is retired by OD-4; argv inputs are read-only."""
     from .executable_dependency_startup import current_dependency_for_provider
 
-    if gemini_profile is None:
+    if standalone_runtime is not None:
+        from . import seat_codex_runtime as _codex_runtime
+
+        if (
+            gemini_profile is not None
+            or current_dependency_for_provider(command=command) is not None
+            or not isinstance(standalone_runtime, _codex_runtime.AdmittedStandaloneRuntime)
+            or not command
+            or str(command[0]) != standalone_runtime.subject_source
+        ):
+            raise _seat_jail.SeatSandboxRefused(
+                _seat_jail.refused("identity"), "invalid standalone codex runtime"
+            )
+        standalone_runtime.revalidate()
+        harness, executable = "codex", standalone_runtime.subject_source
+        dependency = None
+    elif gemini_profile is None:
         dependency = current_dependency_for_provider(command=command)
         if dependency is not None:
             harness, executable = dependency.provider, dependency.subject_source
@@ -6166,6 +6232,7 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             writable_trees=tuple(writable),
             needs_login=_gemini_launch_needs_login(command, gemini_profile),
             dependency=dependency,
+            standalone_runtime=standalone_runtime,
             **({"egress_proxy": grok_egress_proxy} if grok_egress_proxy is not None else {})))
         profile = replace(profile, output_dirs=tuple(
             (source, directory) for directory, source in private.items()))
@@ -6390,6 +6457,10 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
     if role is SeatLaunchRole.EXECUTOR_TRUSTED:
         from .executable_dependency_startup import refuse_unwired_dependency_route
         refuse_unwired_dependency_route("direct executor")
+    if profile.dependency is not None and profile.standalone_runtime is not None:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"), "conflicting dependency and standalone runtime"
+        )
     if profile.dependency is not None:
         _require_safe_dependency_profile_destinations(
             profile.dependency,
@@ -6404,6 +6475,31 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
         profile.dependency.revalidate()
         if profile.dependency.projection_digest != profile.dependency_projection_digest:
             raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
+    if (
+        profile.standalone_runtime is not None
+        or profile.standalone_runtime_projection is not None
+        or profile.standalone_runtime_mount_args
+        or profile.standalone_runtime_projection_digest
+    ):
+        from . import seat_codex_runtime as _codex_runtime
+
+        if (
+            not isinstance(profile.standalone_runtime, _codex_runtime.AdmittedStandaloneRuntime)
+            or not isinstance(
+                profile.standalone_runtime_projection, _codex_runtime.StandaloneRuntimeProjection
+            )
+            or profile.standalone_runtime_projection.mount_args() != profile.standalone_runtime_mount_args
+        ):
+            raise _seat_jail.SeatSandboxRefused(
+                _seat_jail.refused("identity"), "standalone codex runtime projection missing"
+            )
+        _codex_runtime.verify_standalone_projection(
+            profile.standalone_runtime,
+            profile.standalone_runtime_mount_args,
+            profile.pass_fds,
+            profile.standalone_runtime_projection_digest,
+            container_argv=profile.mount_args,
+        )
     if role is not SeatLaunchRole.EXECUTOR_TRUSTED:
         # A seat never reads the operator's terminal: stdin is closed unless given.
         kwargs.setdefault("stdin", subprocess.DEVNULL)
@@ -6443,6 +6539,7 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
                 )
 
                 probe_projection = None
+                standalone_probe_projection = None
                 if profile.dependency is not None:
                     probe_projection = stack.enter_context(profile.dependency.reopen_projection())
                     if (
@@ -6453,11 +6550,18 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
                     ):
                         raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
                     kwargs["probe_pass_fds"] = probe_projection.pass_fds
+                elif profile.standalone_runtime is not None:
+                    standalone_probe_projection = stack.enter_context(
+                        profile.standalone_runtime.reopen_projection()
+                    )
+                    if standalone_probe_projection.digest != profile.standalone_runtime_projection_digest:
+                        raise _seat_jail.SeatSandboxRefused(
+                            _seat_jail.refused("identity"), "standalone codex probe digest mismatch"
+                        )
+                    kwargs["probe_pass_fds"] = standalone_probe_projection.pass_fds
 
                 def probe_owner(marker):
-                    if probe_projection is None:
-                        probe_view = _seat_filesystem_view(cwd, readonly_paths=(marker,))
-                    else:
+                    if probe_projection is not None:
                         probe_view = _seat_filesystem_view(
                             cwd, readonly_paths=(*profile.readonly_paths, marker),
                             outputs=profile.outputs, output_dirs=profile.output_dirs,
@@ -6465,6 +6569,42 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
                             broker_socket=profile.broker_socket,
                             writable_trees=profile.writable_trees,
                         )
+                        return _seat_owner(probe_view, filtered_network=filtered_network)
+                    if standalone_probe_projection is not None:
+                        from . import seat_codex_runtime as _codex_runtime
+
+                        directories = (
+                            "/run",
+                            "/run/phase-loop-seat",
+                            _codex_runtime.CODEX_RUNTIME_ROOT,
+                            f"{_codex_runtime.CODEX_RUNTIME_ROOT}/bin",
+                            f"{_codex_runtime.CODEX_RUNTIME_ROOT}/codex-path",
+                        )
+                        probe_mounts = (
+                            *(
+                                arg
+                                for directory in directories
+                                for arg in ("--perms", "0755", "--dir", directory)
+                            ),
+                            *standalone_probe_projection.mount_args(),
+                        )
+                        probe_view = _seat_filesystem_view(
+                            cwd, readonly_paths=(*profile.readonly_paths, marker),
+                            outputs=profile.outputs, output_dirs=profile.output_dirs,
+                            profile_mounts=probe_mounts,
+                            broker_socket=profile.broker_socket,
+                            writable_trees=profile.writable_trees,
+                        )
+                        owner_argv = _seat_owner(probe_view, filtered_network=filtered_network)
+                        _codex_runtime.verify_standalone_projection(
+                            profile.standalone_runtime,
+                            standalone_probe_projection.mount_args(),
+                            kwargs.get("probe_pass_fds", ()),
+                            profile.standalone_runtime_projection_digest,
+                            container_argv=owner_argv,
+                        )
+                        return owner_argv
+                    probe_view = _seat_filesystem_view(cwd, readonly_paths=(marker,))
                     return _seat_owner(probe_view, filtered_network=filtered_network)
 
                 descriptor = seat_seccomp.sealed_keyring_filter()
@@ -6478,6 +6618,22 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
                 kwargs["probe_owner"] = probe_owner
                 command = ["/usr/bin/python3", "-I", "-S", key_destination, str(descriptor),
                            *_seat_fd_closer(profile.keep_fds, profile.terminal_fd), *command]
+            standalone_runtime_check = None
+            if profile.standalone_runtime is not None:
+                from . import seat_codex_runtime as _codex_runtime
+
+                owner_for_check = tuple(kwargs.get("process_owner", ()))
+                pass_fds_for_check = tuple(kwargs.get("pass_fds", ()))
+
+                def standalone_runtime_check():
+                    _codex_runtime.verify_standalone_projection(
+                        profile.standalone_runtime,
+                        profile.standalone_runtime_mount_args,
+                        pass_fds_for_check,
+                        profile.standalone_runtime_projection_digest,
+                        container_argv=owner_for_check,
+                    )
+
             if supervisor is not None:
                 owner = kwargs.pop("process_owner", ())
                 probe_owner = kwargs.pop("probe_owner", None)
@@ -6489,6 +6645,8 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
                         **({"pass_fds": kwargs["probe_pass_fds"]}
                            if kwargs.get("probe_pass_fds") else {}),
                     )
+                if standalone_runtime_check is not None:
+                    standalone_runtime_check()
                 command = supervisor([*prefix, *command], kwargs.get("pass_fds", ()))
                 egress_token = _EGRESS_LAUNCH_PREFIX.set(())
                 stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
@@ -6496,6 +6654,8 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
                 command,
                 dependency=profile.dependency,
                 seat_caps=seat_caps,
+                **({"standalone_runtime_check": standalone_runtime_check}
+                   if standalone_runtime_check is not None else {}),
                 **kwargs,
             )
     finally:
@@ -6579,6 +6739,7 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
                     child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
                     trace_output: str | None = None,
                     spawn_hook: "Callable[[], None] | None" = None,
+                    standalone_runtime_check: "Callable[[], None] | None" = None,
                     **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
@@ -6645,6 +6806,21 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
                 != process_owner.dependency_projection_digest
             ):
                 raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
+        if (
+            process_owner.standalone_runtime is not None
+            or probe_owner.standalone_runtime is not None
+            or process_owner.standalone_runtime_mount_args
+            or probe_owner.standalone_runtime_mount_args
+        ):
+            if (
+                process_owner.standalone_runtime is None
+                or probe_owner.standalone_runtime is not process_owner.standalone_runtime
+                or probe_owner.standalone_runtime_projection_digest
+                != process_owner.standalone_runtime_projection_digest
+            ):
+                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
+            _seat_jail.verify_standalone_runtime_projection(process_owner)
+            _seat_jail.verify_standalone_runtime_projection(probe_owner)
         _require_qualified_jail(process_owner)
         # The provider's scratch decision, applied to the helper chain's own env; the probe
         # and the launch are handed this same decided object.
@@ -6662,9 +6838,18 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
             _window_trace_argv(trace_output, prefix, argv)
             if trace_output is not None else [*prefix, *argv]
         )
+        jailed_before_spawn = _caps_spawn_hook(spawn_hook) if spawn_hook is not None else None
+        if process_owner.standalone_runtime is not None:
+            _prev_hook = jailed_before_spawn
+
+            def jailed_before_spawn():
+                _seat_jail.verify_standalone_runtime_projection(process_owner)
+                if _prev_hook is not None:
+                    _prev_hook()
+
         jailed_process = capped_popen(
             capped_command, seat_key=seat_caps or "",
-            **({"before_spawn": _caps_spawn_hook(spawn_hook)} if spawn_hook is not None else {}),
+            **({"before_spawn": jailed_before_spawn} if jailed_before_spawn is not None else {}),
             **kwargs,
         )
         _require_launch_proof(jailed_process)
@@ -6696,6 +6881,8 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
             command = [*prefix, *argv] if witness is None else [
                 *_with_bwrap_lifecycle_fds(prefix, witness.info_fd, witness.block_fd), *argv]
             spawn_kwargs = kwargs if witness is None else witness.popen_kwargs(kwargs)
+            if standalone_runtime_check is not None:
+                standalone_runtime_check()
             if spawn_hook is not None:
                 spawn_hook()  # the spawn boundary: every argument above is settled
             process = subprocess.Popen(command, **spawn_kwargs)
@@ -6709,9 +6896,18 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
             _tree_proof.attach(process, _tree_proof.TreeProof.pending())
     else:
         from .seat_resource_caps import capped_popen
+        owned_before_spawn = _caps_spawn_hook(spawn_hook) if spawn_hook is not None else None
+        if standalone_runtime_check is not None:
+            _prev_owned_hook = owned_before_spawn
+
+            def owned_before_spawn():
+                standalone_runtime_check()
+                if _prev_owned_hook is not None:
+                    _prev_owned_hook()
+
         process = capped_popen(
             [*prefix, *argv], seat_key=seat_caps,
-            **({"before_spawn": _caps_spawn_hook(spawn_hook)} if spawn_hook is not None else {}),
+            **({"before_spawn": owned_before_spawn} if owned_before_spawn is not None else {}),
             **kwargs)
         _require_launch_proof(process)
     # Counted once the process exists: a launch that fails to exec is not a spawn.
@@ -6720,7 +6916,7 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
 
 
 def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
-                 executor: bool = False, **kwargs) -> "subprocess.CompletedProcess[str]":
+                 executor: bool = False, standalone_runtime=None, **kwargs) -> "subprocess.CompletedProcess[str]":
     """THE one place a review provider is started and waited on. See `launch_provider`.
 
     Every argv but a trusted ``nsenter`` observer runs through the seat-launch owner, whose
@@ -6769,6 +6965,7 @@ def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
         else:
             command, profile = stack.enter_context(_seat_command_profile(
                 argv, env=env, cwd=cwd, role=SeatLaunchRole.PROVIDER_ADMIN,
+                standalone_runtime=standalone_runtime,
             ))
             process = stack.enter_context(launch_owned(
                 command, role=SeatLaunchRole.PROVIDER_ADMIN, profile=profile, **kwargs,
@@ -13615,9 +13812,15 @@ def _cleanup_jailed_seat(
         if (dependency := getattr(jail, "dependency", None)) is not None
         and getattr(dependency, "_jailcore_owned", False)
     }
-    for dependency in dependencies.values():
+    standalone_runtimes = {
+        id(runtime): runtime
+        for jail in (seat.jail, seat.probe_jail)
+        if (runtime := getattr(jail, "standalone_runtime", None)) is not None
+        and callable(getattr(runtime, "close", None))
+    }
+    for owned in (*dependencies.values(), *standalone_runtimes.values()):
         try:
-            dependency.close()
+            owned.close()
         except BaseException as exc:
             failures.append(exc)
     for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME):
@@ -13894,78 +14097,98 @@ def _fresh_window_launch_jails(seat: "_JailedSeat"):
     if not isinstance(jail, _seat_jail.SeatJail) or jail.seccomp_fd < 0:
         yield jail, probe
         return
-    allocated: list[int] = []
+    with contextlib.ExitStack() as stack:
+        def _pread_all(fd: int) -> bytes:
+            size = os.fstat(fd).st_size
+            return os.pread(fd, size, 0) if size > 0 else b""
 
-    def _pread_all(fd: int) -> bytes:
-        size = os.fstat(fd).st_size
-        return os.pread(fd, size, 0) if size > 0 else b""
+        def _clone_one(template: object, token_bytes: bytes | None) -> object:
+            if not isinstance(template, _seat_jail.SeatJail) or template.seccomp_fd < 0:
+                return template
+            new_seccomp = _seat_jail.memfd_with("seat-seccomp", _pread_all(template.seccomp_fd))
+            stack.callback(os.close, new_seccomp)
+            new_bundle = template.bundle_fd
+            if template.bundle_fd >= 0:
+                new_bundle = _seat_jail.memfd_with("seat-bundle", _pread_all(template.bundle_fd))
+                stack.callback(os.close, new_bundle)
+            new_instructions = template.instructions_fd
+            if template.instructions_fd >= 0:
+                new_instructions = _seat_jail.memfd_with(
+                    "seat-instructions", _pread_all(template.instructions_fd))
+                stack.callback(os.close, new_instructions)
+            new_token = template.token_fd
+            if template.token_fd is not None:
+                new_token = _seat_jail.token_pipe(b"" if token_bytes is None else token_bytes)
+                stack.callback(os.close, new_token)
 
-    def _clone_one(template: object, token_bytes: bytes | None) -> object:
-        if not isinstance(template, _seat_jail.SeatJail) or template.seccomp_fd < 0:
-            return template
-        new_seccomp = _seat_jail.memfd_with("seat-seccomp", _pread_all(template.seccomp_fd))
-        allocated.append(new_seccomp)
-        new_bundle = template.bundle_fd
-        if template.bundle_fd >= 0:
-            new_bundle = _seat_jail.memfd_with("seat-bundle", _pread_all(template.bundle_fd))
-            allocated.append(new_bundle)
-        new_instructions = template.instructions_fd
-        if template.instructions_fd >= 0:
-            new_instructions = _seat_jail.memfd_with(
-                "seat-instructions", _pread_all(template.instructions_fd))
-            allocated.append(new_instructions)
-        new_token = template.token_fd
-        if template.token_fd is not None:
-            new_token = _seat_jail.token_pipe(b"" if token_bytes is None else token_bytes)
-            allocated.append(new_token)
+            fd_map = {template.seccomp_fd: new_seccomp}
+            if template.bundle_fd >= 0:
+                fd_map[template.bundle_fd] = new_bundle
+            if template.instructions_fd >= 0:
+                fd_map[template.instructions_fd] = new_instructions
+            if template.token_fd is not None and new_token is not None:
+                fd_map[template.token_fd] = new_token
 
-        fd_map = {template.seccomp_fd: new_seccomp}
-        if template.bundle_fd >= 0:
-            fd_map[template.bundle_fd] = new_bundle
-        if template.instructions_fd >= 0:
-            fd_map[template.instructions_fd] = new_instructions
-        if template.token_fd is not None and new_token is not None:
-            fd_map[template.token_fd] = new_token
+            str_map = {str(old): str(new) for old, new in fd_map.items()}
+            owner = list(template.process_owner)
+            for idx, arg in enumerate(owner):
+                if arg in ("--seccomp", "--ro-bind-data") and idx + 1 < len(owner):
+                    replaced = str_map.get(owner[idx + 1])
+                    if replaced is not None:
+                        owner[idx + 1] = replaced
+                elif (
+                    arg == "--setenv"
+                    and idx + 2 < len(owner)
+                    and owner[idx + 1] == _seat_jail.CLAUDE_TOKEN_FD_ENV
+                    and template.token_fd is not None
+                    and new_token is not None
+                ):
+                    owner[idx + 2] = str(new_token)
+            new_standalone_fds = template.standalone_runtime_fds
+            new_standalone_mount_args = template.standalone_runtime_mount_args
+            new_standalone_digest = template.standalone_runtime_projection_digest
+            if template.standalone_runtime is not None:
+                fresh_projection = stack.enter_context(
+                    template.standalone_runtime.reopen_projection()
+                )
+                old_mounts = tuple(template.standalone_runtime_mount_args)
+                new_mounts = fresh_projection.mount_args()
+                width = len(old_mounts)
+                matches = [
+                    idx for idx in range(len(owner) - width + 1)
+                    if tuple(owner[idx:idx + width]) == old_mounts
+                ] if width else []
+                if len(matches) != 1:
+                    raise _seat_jail.SeatSandboxRefused(
+                        _seat_jail.refused("identity"), "standalone codex mounts changed in template"
+                    )
+                pos = matches[0]
+                owner[pos:pos + width] = new_mounts
+                for old_fd, new_fd in zip(template.standalone_runtime_fds, fresh_projection.pass_fds):
+                    fd_map[old_fd] = new_fd
+                new_standalone_fds = fresh_projection.pass_fds
+                new_standalone_mount_args = new_mounts
+                new_standalone_digest = fresh_projection.digest
+            env = dict(template.env)
+            if (template.token_fd is not None and new_token is not None
+                    and _seat_jail.CLAUDE_TOKEN_FD_ENV in env):
+                env[_seat_jail.CLAUDE_TOKEN_FD_ENV] = str(new_token)
+            pass_fds = tuple(fd_map.get(fd, fd) for fd in template.pass_fds)
+            return replace(
+                template,
+                process_owner=tuple(owner),
+                env=MappingProxyType(env),
+                pass_fds=pass_fds,
+                seccomp_fd=new_seccomp,
+                bundle_fd=new_bundle,
+                instructions_fd=new_instructions,
+                token_fd=new_token,
+                standalone_runtime_fds=new_standalone_fds,
+                standalone_runtime_mount_args=new_standalone_mount_args,
+                standalone_runtime_projection_digest=new_standalone_digest,
+            )
 
-        str_map = {str(old): str(new) for old, new in fd_map.items()}
-        owner = list(template.process_owner)
-        for idx, arg in enumerate(owner):
-            if arg in ("--seccomp", "--ro-bind-data") and idx + 1 < len(owner):
-                replaced = str_map.get(owner[idx + 1])
-                if replaced is not None:
-                    owner[idx + 1] = replaced
-            elif (
-                arg == "--setenv"
-                and idx + 2 < len(owner)
-                and owner[idx + 1] == _seat_jail.CLAUDE_TOKEN_FD_ENV
-                and template.token_fd is not None
-                and new_token is not None
-            ):
-                owner[idx + 2] = str(new_token)
-        env = dict(template.env)
-        if (template.token_fd is not None and new_token is not None
-                and _seat_jail.CLAUDE_TOKEN_FD_ENV in env):
-            env[_seat_jail.CLAUDE_TOKEN_FD_ENV] = str(new_token)
-        pass_fds = tuple(fd_map.get(fd, fd) for fd in template.pass_fds)
-        return replace(
-            template,
-            process_owner=tuple(owner),
-            env=MappingProxyType(env),
-            pass_fds=pass_fds,
-            seccomp_fd=new_seccomp,
-            bundle_fd=new_bundle,
-            instructions_fd=new_instructions,
-            token_fd=new_token,
-        )
-
-    try:
         yield _clone_one(jail, getattr(seat, "token", b"")), _clone_one(probe, b"probe")
-    finally:
-        for fd in allocated:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
 
 
 def _require_window_qualification_key(
@@ -14774,19 +14997,33 @@ def _prepare_jailed_codex(
     tree = _approved_stage_or_refuse(review_dir, review_authorization)
     subject, dependency = _resolved_jail_subject("codex", _broker_subscription_env(env))
     jails = []
+    held_runtime = None
     try:
         _validate_jail_dependency("codex", dependency)
         validate_codex_projection(dependency)
         if subject.source != "standalone" and dependency is None:
             raise ExecutableDependencyError("authority_missing")
         resolved = runtime.subject_runtime(subject)
-        executable = Path(dependency.subject_source) if dependency is not None else subject.subject_path
-        if executable is None or (dependency is None and resolved is None):
+        if dependency is None:
+            if isinstance(resolved, runtime.AdmittedStandaloneRuntime):
+                held_runtime = resolved
+            elif isinstance(resolved, runtime.CodexRuntime):
+                held_runtime = runtime.admit_runtime(
+                    resolved, lookup_chain=getattr(subject, "lookup_chain", ()),
+                )
+            else:
+                raise _seat_jail.SeatSandboxRefused(
+                    _seat_jail.refused("identity"), "standalone codex runtime unavailable"
+                )
+            executable = Path(held_runtime.subject_source)
+        else:
+            executable = Path(dependency.subject_source)
+        if executable is None:
             raise _seat_jail.SeatSandboxRefused("seat_provider_unavailable")
         caller_env = os.environ if env is None else env
         verdict = codex_admission_gate("codex", caller_env, True,
                                        executable=executable, dependency=dependency,
-                                       deadline_s=deadline_s)
+                                       runtime=held_runtime, deadline_s=deadline_s)
         if verdict is not None:
             raise _seat_jail.SeatSandboxRefused(verdict.code or "codex_seat_cli_shape")
         raw = cred.read_auth(caller_env)
@@ -14806,7 +15043,7 @@ def _prepare_jailed_codex(
             "codex", seat_dir, executable, tree=tree,
             artifact=artifact.encode(), instructions=instructions.encode(),
             seat_ids=(seat_id, seat_id), egress_ca=ca, egress_proxy=egress.proxy_url,
-            dependency=dependency,
+            dependency=dependency, standalone_runtime=held_runtime,
         )
         jails.append(jail)
         home_fd = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
@@ -14824,7 +15061,7 @@ def _prepare_jailed_codex(
         probe = _build_jail_with_owned_inputs(
             "codex", probe_dir, executable, artifact=b"", instructions=b"",
             seat_ids=(seat_id, seat_id), egress_ca=_write_egress_ca(probe_dir, egress.ca_cert),
-            egress_proxy=egress.proxy_url, dependency=dependency,
+            egress_proxy=egress.proxy_url, dependency=dependency, standalone_runtime=held_runtime,
         )
         jails.append(probe)
         return _JailedSeat(jail, probe, holder_pid, b"", review_dir, seat_dir,
@@ -14835,6 +15072,8 @@ def _prepare_jailed_codex(
     except BaseException:
         for built in jails:
             _seat_jail.close_jail_fds(built)
+        if held_runtime is not None:
+            held_runtime.close()
         if dependency is not None and getattr(dependency, "_jailcore_owned", False):
             dependency.close()
         shutil.rmtree(seat_dir, ignore_errors=True)
