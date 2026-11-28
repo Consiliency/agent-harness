@@ -53,7 +53,7 @@ def _extract_top_level_fenced_blocks(text: str) -> list[tuple[str, str, int, int
                 match
                 and match.group(1)[0] == close_char
                 and len(match.group(1)) >= close_min
-                and match.group(2).strip() == ""
+                and match.group(2).strip(" \t") == ""
             ):
                 blocks.append((open_fence, open_info, open_line, lineno, "\n".join(body_lines)))
                 open_fence = None
@@ -105,9 +105,9 @@ def test_roadmap_template_outer_markdown_fence_encloses_inner_code_blocks() -> N
     reason="repo-only source and generated skill trees absent from standalone-from-wheel layout",
 )
 def test_roadmap_template_source_and_generated_bundles_are_identical() -> None:
-    src = SRC_TEMPLATE.read_text(encoding="utf-8")
-    assert SKILLS_TEMPLATE.read_text(encoding="utf-8") == src
-    assert BUNDLE_TEMPLATE.read_text(encoding="utf-8") == src
+    src = SRC_TEMPLATE.read_bytes()
+    assert SKILLS_TEMPLATE.read_bytes() == src
+    assert BUNDLE_TEMPLATE.read_bytes() == src
 
 
 def test_fence_parser_catches_premature_closure_regression() -> None:
@@ -138,3 +138,13 @@ def test_fence_parser_catches_premature_closure_regression() -> None:
     ])
     with pytest.raises(AssertionError, match="unclosed markdown fence"):
         _extract_top_level_fenced_blocks(broken_unclosed)
+
+    # CommonMark 0.31.2 permits only ASCII spaces/tabs after a closing fence; trailing U+00A0 leaves it unclosed.
+    broken_nbsp = "\n".join([
+        "````markdown",
+        "# Title",
+        "````\u00a0",
+        "## Notes on filling in the template",
+    ])
+    with pytest.raises(AssertionError, match="unclosed markdown fence"):
+        _extract_top_level_fenced_blocks(broken_nbsp)
