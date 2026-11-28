@@ -63,7 +63,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
    - run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for every consumed reflection supporting a failed recommendation; it moves each consumed file to `archive/` under the same repo and branch subtree;
    - if `archive` refuses, it has moved nothing: drop any `--exclude` for a path the manifest did not consume (that reflection already stays in place), fix any other cause it names, and rerun;
    - the manifest decides what is consumed: the admitted reflections of ready skills, reflections excluded with no friction and no proposal (`no_friction_or_proposal`), and duplicates (`duplicate_of`) whose kept twin is also consumed;
-   - repo-specific proposal sections are dropped without discarding usable friction; all other reflections stay in place, including capped or oversized ones and those of skills still below the threshold, so their friction can count in a later pass.
+   - repo-specific proposal lines are dropped without discarding generic sibling proposals or usable friction; all other reflections stay in place, including capped or oversized ones and those of skills still below the threshold, so their friction can count in a later pass.
    - a reflection with only a rejected repo-specific proposal stays in place; it is not consumed as empty.
 
 ## Failure Policy

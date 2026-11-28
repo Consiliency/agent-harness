@@ -309,6 +309,44 @@ def classify_improvements(text: str) -> str:
     return "agnostic"
 
 
+def _drop_repo_specific_improvement_lines(text: str) -> tuple[str, int]:
+    """Drop repo-specific proposal lines (and indented continuations) from ``Improvements``.
+
+    Returns ``(surviving_text, dropped_line_count)`` so generic sibling proposals in
+    the same section still reach the aggregator (agent-harness#1654).
+    """
+    lines = text.splitlines()
+    if not lines:
+        return "", 0
+    items: list[list[str]] = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if not line.strip():
+            items.append([line])
+            idx += 1
+            continue
+        base_indent = len(line) - len(line.lstrip())
+        item = [line]
+        idx += 1
+        while idx < len(lines) and lines[idx].strip():
+            next_indent = len(lines[idx]) - len(lines[idx].lstrip())
+            if next_indent > base_indent:
+                item.append(lines[idx])
+                idx += 1
+            else:
+                break
+        items.append(item)
+    kept: list[str] = []
+    dropped = 0
+    for item in items:
+        if any(classify_improvements(line) == "repo_specific" for line in item):
+            dropped += len(item)
+        else:
+            kept.extend(item)
+    return "\n".join(kept).strip(), dropped
+
+
 CONTENT_KEYS = ("worked", "didnt", "improvements")
 NEAR_DUPLICATE_OVERLAP = 0.8
 
@@ -361,8 +399,10 @@ def apply_quality_filter(
     its own lines look like cross-run boilerplate. Repeated one-repo ledger lines
     and repeated one-repo lines carrying a ref, path or URL within the same skill
     are stripped from What worked and Improvements before classification.
-    Repo-specific proposals are dropped section by section, and the per-branch
-    cap keeps the newest usable reflections.
+    Repo-specific proposal lines are dropped at line granularity so generic
+    sibling proposals still reach the aggregator; when no agnostic proposal
+    survives, the Improvements section is dropped while usable friction stays
+    intact, and the per-branch cap keeps the newest usable reflections.
     """
     _mark_duplicates(reflections)
 
@@ -402,13 +442,27 @@ def apply_quality_filter(
             if key == "improvements":
                 stripped_repo_specific = any(classify_improvements(line) == "repo_specific" for line in original if line not in kept)
             reflection.sections[key] = "\n".join(kept).strip()
-        reflection.improvements_class = classify_improvements(reflection.sections.get("improvements", ""))
-        if stripped_repo_specific and classify_improvements(redact(reflection.sections.get("improvements", ""), bulleted_ledger=True)) in {"none", "missing"}:
-            reflection.improvements_class = "repo_specific"
-        if reflection.improvements_class == "repo_specific":
-            reflection.sections["improvements"] = ""
-            reflection.notes.append("improvements_repo_specific")
-            reflection.notes.append("section_dropped:improvements:repo_specific")
+        dropped_repo_specific = 0
+        if "improvements" in reflection.sections:
+            surviving_imp, dropped_repo_specific = _drop_repo_specific_improvement_lines(
+                reflection.sections["improvements"]
+            )
+        else:
+            surviving_imp = ""
+        if dropped_repo_specific or stripped_repo_specific:
+            surviving_class = classify_improvements(redact(surviving_imp, bulleted_ledger=True))
+            if surviving_class == "agnostic":
+                reflection.sections["improvements"] = surviving_imp
+                reflection.improvements_class = "agnostic"
+                if dropped_repo_specific:
+                    reflection.notes.append(f"lines_dropped:improvements:repo_specific:{dropped_repo_specific}")
+            else:
+                reflection.sections["improvements"] = ""
+                reflection.improvements_class = "repo_specific"
+                reflection.notes.append("improvements_repo_specific")
+                reflection.notes.append("section_dropped:improvements:repo_specific")
+        else:
+            reflection.improvements_class = classify_improvements(surviving_imp)
         for key in CONTENT_KEYS:
             if key in reflection.sections:
                 reflection.sections[key] = redact(

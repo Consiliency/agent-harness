@@ -105,6 +105,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `collect()` (so symlinked or aliased roots no longer double-scan or archive the original
   file), and consume a `duplicate_of:<id>` reflection only when its kept twin is also
   consumed in the same pass (agent-harness#1657).
+- Drop repo-specific `Improvements to SKILL.md` entries in `reflection_corpus` at line
+  (and wrapped-bullet) granularity rather than discarding the whole section, so generic
+  sibling proposals still reach the aggregator while pure repo-specific sections without
+  friction remain excluded and unarchived (agent-harness#1654).
 - Add `"codex"` to `panel_invoker._SANDBOX_INCAPABLE_BROKERED_LEGS` so the retained
   sealed non-jailed brokered Codex route (`_brokered_codex_command`, sealed in
   agent-harness#1916) no longer reports `seat_filesystem_unconfined` in launch modes,

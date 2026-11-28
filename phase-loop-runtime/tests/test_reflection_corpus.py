@@ -1272,3 +1272,104 @@ def test_duplicate_of_out_of_root_twin_and_dangling_duplicate_are_not_consumed(t
         min_reflections=1,
     )
     assert [r.id for r in rc.consumed(synthetic)] == ["R0001", "R0002", "R0003"]
+
+
+# agent-harness#1654: drop repo-specific Improvements at line granularity so
+# generic sibling proposals still reach the aggregator.
+@pytest.mark.parametrize("repo_line", [
+    "- Fix the defect tracked in agent-harness#1371.",
+    "- Read /home/example/private-repo/notes.md before editing.",
+    "- Follow the workaround at https://example.com/private-proposal.",
+])
+@pytest.mark.parametrize("with_friction", [False, True])
+def test_repo_specific_improvement_line_keeps_generic_sibling_proposal(
+    tmp_path, repo_line, with_friction
+):
+    root = tmp_path / "skills"
+    generic_line = "- Add a pre-check reminding the implementer to run targeted tests before pushing."
+    for run in ("run1", "run2"):
+        put(root, "codex-plan-phase", "repo", "branch", run, reflection(
+            worked="Useful behavior was retained.",
+            didnt="FRICTION-SURVIVES." if with_friction else "",
+            improvements=f"{repo_line}\n{generic_line}",
+        ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 2
+    assert corpus.ready_skills() == ["plan-phase"]
+    assert bundle.count("Add a pre-check reminding the implementer to run targeted tests before pushing.") == 2
+    assert "agent-harness#1371" not in bundle
+    assert "/home/example/private-repo/notes.md" not in bundle
+    assert "https://example.com/private-proposal" not in bundle
+    for entry in corpus.admitted:
+        assert entry.improvements_class == "agnostic"
+        assert entry.excluded is None
+        assert "lines_dropped:improvements:repo_specific:1" in entry.notes
+        assert "section_dropped:improvements:repo_specific" not in entry.notes
+    assert len(rc.manifest(corpus, boilerplate)["reflections_consumed"]) == 2
+
+
+def test_wrapped_repo_specific_bullet_drops_its_continuation_but_keeps_sibling(tmp_path):
+    root = tmp_path / "skills"
+    improvements_first = (
+        "- Fix the defect tracked in agent-harness#1371\n"
+        "  by patching the local wrapper script.\n"
+        "- Require explicit exit-code assertions on shell helpers."
+    )
+    improvements_second = (
+        "- Patch the local wrapper script\n"
+        "  as tracked in agent-harness#1371.\n"
+        "- Require explicit exit-code assertions on shell helpers."
+    )
+    put(root, "codex-plan-phase", "repo", "branch", "run1", reflection(worked="", didnt="", improvements=improvements_first))
+    put(root, "codex-plan-phase", "repo", "branch", "run2", reflection(worked="", didnt="", improvements=improvements_second))
+
+    corpus, _ = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 2
+    assert bundle.count("Require explicit exit-code assertions on shell helpers.") == 2
+    assert "local wrapper script" not in bundle
+    assert "agent-harness#1371" not in bundle
+    assert all("lines_dropped:improvements:repo_specific:2" in r.notes for r in corpus.admitted)
+
+
+@pytest.mark.parametrize("remainder", ["None.", "- None.", "- Hosted CI: passed on main."])
+def test_repo_specific_line_with_no_generic_sibling_still_drops_section(tmp_path, remainder):
+    root = tmp_path / "skills"
+    path = put(root, "codex-plan-phase", "repo", "branch", "run", reflection(
+        worked="",
+        didnt="",
+        improvements=f"- Fix agent-harness#1371.\n{remainder}",
+    ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert corpus.scanned[0].improvements_class == "repo_specific"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert "section_dropped:improvements:repo_specific" in corpus.scanned[0].notes
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+    assert path.exists()
+
+
+def test_repeated_repo_specific_boilerplate_keeps_generic_sibling_proposal(tmp_path):
+    root = tmp_path / "skills"
+    repeated = "Fix the defect tracked in other-repo#12 before the plan is frozen."
+    generic = "Require a targeted lint check before committing."
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="",
+            didnt="",
+            improvements=f"{repeated}\n{generic}",
+        ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=2)
+    bundle = rc.render_bundle(corpus)
+
+    assert boilerplate == [repeated]
+    assert len(corpus.admitted) == 3
+    assert bundle.count(generic) == 3
+    assert "other-repo#12" not in bundle
+    assert all(r.improvements_class == "agnostic" and r.excluded is None for r in corpus.admitted)
