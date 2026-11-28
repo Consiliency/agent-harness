@@ -188,17 +188,9 @@ def _profile_egress(leg: str, profile, execute: bool) -> tuple[Verdict | None, s
 
 
 def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | None:
-    from . import seat_jail, seat_subject
+    from . import seat_jail, seat_route, seat_subject
 
     profile = _profile_for(leg)
-
-    for gate in _GATES.get(leg, ()):
-        try:
-            result = gate(leg, env, execute)
-        except Exception:  # noqa: BLE001
-            return Verdict(leg, "unknown", reason="inventory_failed")
-        if result is not None:
-            return result
 
     if profile is not None or leg in _LEGACY_LEGS:
         try:
@@ -212,14 +204,16 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
             if profile.recorded_stop is not None:
                 return _refuses(leg, profile.recorded_stop)
             try:
-                credential_present = profile.credential_present()
+                credential_present = seat_route._call_route_check(
+                    profile.credential_present, env=env,
+                )
             except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
                 return Verdict(leg, "unknown", reason="inventory_failed")
             if not credential_present:
                 return _refuses(leg, profile.credential_missing_code)
             for precondition in profile.preconditions:
                 try:
-                    code = precondition.check()
+                    code = seat_route._call_route_check(precondition.check, env=env)
                 except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
                     return Verdict(leg, "unknown", reason="inventory_failed")
                 if code is not None:
@@ -345,6 +339,13 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
             panel_invoker.require_grok_admission(["grok", "-p", "doctor"], env)
         except SeatSandboxRefused as exc:
             return _refuses(leg, exc.code)
+    for gate in _GATES.get(leg, ()):
+        try:
+            result = gate(leg, env, execute)
+        except Exception:  # noqa: BLE001
+            return Verdict(leg, "unknown", reason="inventory_failed")
+        if result is not None:
+            return result
     return None
 
 

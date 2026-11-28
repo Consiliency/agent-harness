@@ -80,6 +80,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   enforce post-run `codex_seat_token_expiring` even on zero exit codes; and document the
   2100 s launch floor and non-refreshing `exp` bound for heartbeat-only Codex legs
   (agent-harness#1951).
+- Harden the jailed Codex review seat's timeout, cancellation, setup, probe accounting,
+  qualification, and doctor ordering: classify Codex `TimeoutExpired` and clean broker
+  deadline exits as `TIMEOUT` with closed detail `codex leg deadline exceeded` (and
+  operation cancellations via monitor/board cancel events as `UNAVAILABLE` with empty
+  review text while preserving containment refusals and in-flight/replacement `leg_exec.v1`
+  refusal records); synchronize broker response writes with deliberate shutdown using
+  connection-locked nonblocking sends; record guarded `model_turn`/`verdict` signals
+  before post-exit early refusals and guard `seat_codex_evidence.read_tool_record` against
+  `RecursionError`; normalize operational Codex setup/probe failures to typed
+  `SeatSandboxRefused` / `seat_admission._refuses` codes without deleting pre-existing
+  directories; exclude `codex_admission_gate`'s `--help`/`features list` probes from the
+  leg spawn counter via `run_provider(..., count_spawn=False)` without touching Claude SDK
+  proof regions; reject explicit `provider=` overrides in `seat_jail_qualification.qualify`
+  for `codex`; and run vendor admission gates after host/profile/egress/subject/pass-record
+  checks in `seat_admission._base_verdict` with caller `env` threaded into profile checks
+  (agent-harness#1950).
 - Enforce `grok_tool_surface.bridged_to(prefix, proxy)` inside `_check_context` so
   standalone `verify_launch_context` binds every issued `LaunchContext` mark directly to
   the live namespace holder and proxy pair instead of relying solely on outer board-leg

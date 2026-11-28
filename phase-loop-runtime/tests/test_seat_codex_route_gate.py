@@ -72,6 +72,7 @@ def ready_codex(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox_egress, "egress_required", lambda: True)
     monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
     monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_: None)
+    monkeypatch.setattr(seat_jail, "pass_record_verdict", lambda *a, **k: (True, "ok"))
     monkeypatch.setattr(seat_jail_autoqualify, "ensure_qualified", lambda *a, **k:
                         seat_jail_autoqualify.Outcome(seat_jail_autoqualify.QUALIFIED))
     from phase_loop_runtime import seat_codex_runtime

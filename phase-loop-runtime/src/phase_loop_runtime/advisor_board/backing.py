@@ -23,6 +23,7 @@ import os
 import platform
 from pathlib import Path
 import secrets
+import select
 import socket
 import stat
 import subprocess
@@ -430,6 +431,10 @@ def start_context_carrying_thread(
     return thread
 
 
+class _BrokerCancelledError(ValueError):
+    """Internal broker cancellation sentinel; subclasses ValueError for callers."""
+
+
 class CredentiallessAdapterFailure(ValueError):
     """The credentialless client failed only because the adapter it served raised, while every
     independent broker check held (agent-harness#1823). The adapter's exception is its
@@ -795,6 +800,9 @@ class ParentUnixBroker:
                 self.evidence["cleanup_failed"] = True
             raise
         self._connection: socket.socket | None = None
+        self._conn_lock = threading.Lock()
+        self._shutdown_connection: socket.socket | None = None
+        self._shutdown_disposition: str | None = None
         self._cancel_event = threading.Event()
         self._stopping = False
 
@@ -803,17 +811,51 @@ class ParentUnixBroker:
         if remaining <= 0:
             raise ValueError("broker authorization expired")
         if self._stopping or self._cancel_event.is_set() or not _leg_operation_active(self.authorization):
-            raise ValueError("broker operation cancelled or closed")
+            raise _BrokerCancelledError("broker operation cancelled or closed")
         return remaining
 
-    def _wake_server(self) -> None:
-        self._stopping = True
-        for sock in (self._connection, self._sock):
-            if sock is not None:
+    def _wake_server(self, *, disposition: str | None = None) -> None:
+        with self._conn_lock:
+            self._stopping = True
+            if disposition in {"deadline_exceeded", "operation_cancelled"}:
+                self._shutdown_disposition = disposition
+                if self._connection is not None:
+                    self._shutdown_connection = self._connection
+            conn = self._connection
+            if conn is not None:
                 try:
-                    sock.shutdown(socket.SHUT_RDWR)
+                    conn.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
+        sock = self._sock
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _send_response_frame(self, conn: socket.socket, payload: bytes) -> None:
+        """Write one broker response frame atomically with respect to deliberate shutdown."""
+        frame = struct.pack("!I", len(payload)) + payload
+        view = memoryview(frame)
+        sent = 0
+        conn.setblocking(False)
+        while sent < len(frame):
+            with self._conn_lock:
+                if self._shutdown_connection is conn:
+                    return
+                if self._stopping:
+                    raise OSError("broker stopping during response send")
+                try:
+                    written = conn.send(view[sent:])
+                except (BlockingIOError, InterruptedError):
+                    written = None
+            if written is None:
+                select.select([], [conn], [], 0.05)
+                continue
+            if written == 0:
+                raise ConnectionResetError("broker response send returned 0 bytes")
+            sent += written
 
     def _adapter_quiescent(self) -> bool:
         """The launched client's inference adapter reports its provider cleanup proven."""
@@ -874,38 +916,47 @@ class ParentUnixBroker:
     ) -> None:
         self._sock.settimeout(min(10.0, self._admission_remaining()))
         conn, _ = self._sock.accept()
-        self._connection = conn
-        with conn:
-            if not hasattr(socket, "SO_PEERCRED"): raise ValueError("peer credentials unavailable")
-            peer = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
-            pid, uid, gid = struct.unpack("3i", peer)
-            if uid != os.getuid() or gid != os.getgid() or not self._descends_from(pid, expected_pid, expected_start): raise ValueError("broker peer ancestry mismatch")
-            self.evidence.update({"peer_pid": pid, "peer_uid": uid, "peer_gid": gid, "peer_ancestry_verified": True})
-            if time.monotonic_ns() >= self.authorization.expires_monotonic_ns: raise ValueError("broker authorization expired")
-            raw = _recv_frame(conn, _BROKER_MAX_BYTES, admission_check=self._admission_remaining)
-            data = json.loads(raw)
-            if set(data) != {"schema","operation","nonce","harness","model","purpose","input_sha256"}: raise ValueError("broker request grammar")
-            if self._used or data != {"schema":PARENT_UNIX_BROKER_V1,"operation":self.authorization.operation,"nonce":self.nonce,"harness":self.harness,"model":self.model,"purpose":self.authorization.purpose,"input_sha256":self.authorization.input_sha256}: raise ValueError("broker request binding")
-            self._admission_remaining()
-            self._used = True
-            conn.settimeout(None)
-            try:
-                status, text = adapter.invoke()
-            except BaseException as exc:
-                # The adapter's own outcome, apart from every transport and cleanup error
-                # (agent-harness#1823): recorded before the connection closes on the way out.
-                self._adapter_failure = (exc, time.monotonic_ns())
-                raise
-            if (
-                status not in _BROKER_RESPONSE_STATUSES
-                or not isinstance(text, str)
-                or len(text.encode()) > _BROKER_RESPONSE_MAX_BYTES
-            ):
-                raise ValueError("broker response grammar")
-            # The response schema has no control channel: text is opaque inference
-            # prose, while redirect/auth/session/provider/tool/command metadata has
-            # no representable field and is rejected by the exact-key check below.
-            _send_frame(conn, json.dumps({"schema":PARENT_UNIX_BROKER_V1,"status":status,"text":text}, separators=(",", ":")).encode())
+        with self._conn_lock:
+            self._connection = conn
+        try:
+            with conn:
+                if not hasattr(socket, "SO_PEERCRED"): raise ValueError("peer credentials unavailable")
+                peer = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+                pid, uid, gid = struct.unpack("3i", peer)
+                if uid != os.getuid() or gid != os.getgid() or not self._descends_from(pid, expected_pid, expected_start): raise ValueError("broker peer ancestry mismatch")
+                self.evidence.update({"peer_pid": pid, "peer_uid": uid, "peer_gid": gid, "peer_ancestry_verified": True})
+                if time.monotonic_ns() >= self.authorization.expires_monotonic_ns: raise ValueError("broker authorization expired")
+                raw = _recv_frame(conn, _BROKER_MAX_BYTES, admission_check=self._admission_remaining)
+                data = json.loads(raw)
+                if set(data) != {"schema","operation","nonce","harness","model","purpose","input_sha256"}: raise ValueError("broker request grammar")
+                if self._used or data != {"schema":PARENT_UNIX_BROKER_V1,"operation":self.authorization.operation,"nonce":self.nonce,"harness":self.harness,"model":self.model,"purpose":self.authorization.purpose,"input_sha256":self.authorization.input_sha256}: raise ValueError("broker request binding")
+                self._admission_remaining()
+                self._used = True
+                conn.settimeout(None)
+                try:
+                    status, text = adapter.invoke()
+                except BaseException as exc:
+                    # The adapter's own outcome, apart from every transport and cleanup error
+                    # (agent-harness#1823): recorded before the connection closes on the way out.
+                    self._adapter_failure = (exc, time.monotonic_ns())
+                    raise
+                if (
+                    status not in _BROKER_RESPONSE_STATUSES
+                    or not isinstance(text, str)
+                    or len(text.encode()) > _BROKER_RESPONSE_MAX_BYTES
+                ):
+                    raise ValueError("broker response grammar")
+                # The response schema has no control channel: text is opaque inference
+                # prose, while redirect/auth/session/provider/tool/command metadata has
+                # no representable field and is rejected by the exact-key check below.
+                self._send_response_frame(
+                    conn,
+                    json.dumps({"schema":PARENT_UNIX_BROKER_V1,"status":status,"text":text}, separators=(",", ":")).encode(),
+                )
+        finally:
+            with self._conn_lock:
+                if self._connection is conn:
+                    self._connection = None
 
     def run_credentialless_client(
         self, adapter: _BrokerInferenceAdapter, *, deadline_s: float | None,
@@ -1023,10 +1074,20 @@ class ParentUnixBroker:
             stdout, stderr = client_wait.stdout, client_wait.stderr
             completed, timed_out = client_wait.completed, client_wait.timed_out
             if client_wait.cancelled:
-                error.append(ValueError("broker operation cancelled or closed"))
+                error.append(_BrokerCancelledError("broker operation cancelled or closed"))
         finally:
-            if not completed or self._cancel_event.is_set():
-                self._wake_server()
+            cleanup_cancelled = bool(
+                (client_wait is not None and client_wait.cancelled)
+                or self._cancel_event.is_set()
+                or not _leg_operation_active(self.authorization)
+            )
+            if not completed or cleanup_cancelled:
+                shutdown_disposition = (
+                    "operation_cancelled" if cleanup_cancelled
+                    else "deadline_exceeded" if timed_out
+                    else None
+                )
+                self._wake_server(disposition=shutdown_disposition)
                 try:
                     provider_cancelled = True
                     adapter.cancel()
@@ -1106,9 +1167,13 @@ class ParentUnixBroker:
                 "authorization_expiry_scope": "admission_only",
                 "admission_expires_monotonic_ns": self.authorization.expires_monotonic_ns,
             }
-        cancelled = self._cancel_event.is_set() or not _leg_operation_active(self.authorization)
+        cancelled = bool(
+            (client_wait is not None and client_wait.cancelled)
+            or self._cancel_event.is_set()
+            or not _leg_operation_active(self.authorization)
+        )
         if cancelled:
-            error.append(ValueError("broker operation cancelled or closed"))
+            error.append(_BrokerCancelledError("broker operation cancelled or closed"))
         from ..panel_invoker import ProviderProcessGroupQuiescenceError
         for failure in error:
             if isinstance(failure, ProviderProcessGroupQuiescenceError):
@@ -1116,6 +1181,25 @@ class ParentUnixBroker:
         serving = thread is not None and thread.is_alive()
         if timed_out or error or serving or not adapter_quiescent or proc.returncode != 0:
             adapter_failure, adapter_failure_ns = self._adapter_failure or (None, None)
+            independent_errors = [
+                exc for exc in error
+                if not (cancelled and isinstance(exc, _BrokerCancelledError))
+            ]
+            client_exit_abnormal = (
+                client_wait is None
+                or (client_wait.exit_status is not None and client_wait.exit_status != 0)
+            )
+            if (
+                not serving
+                and adapter_quiescent
+                and adapter_failure is None
+                and not independent_errors
+                and not client_exit_abnormal
+            ):
+                if cancelled:
+                    self.evidence["broker_failure_disposition"] = "operation_cancelled"
+                elif timed_out:
+                    self.evidence["broker_failure_disposition"] = "deadline_exceeded"
             raise _credentialless_client_failure(
                 error, adapter_failure=adapter_failure, timed_out=timed_out,
                 cancelled=cancelled, serving=serving, adapter_quiescent=adapter_quiescent,

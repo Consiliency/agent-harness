@@ -259,6 +259,8 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
     """Run the EC-EXECFIND-2 jail falsifiers on this host. Returns the evidence; on a pass
     (and ``record``), writes the evidence and pass record to this host's store."""
     from .seat_profiles import profile_for
+    if leg == "codex" and provider is not None:
+        raise QualificationError("codex qualification does not accept an explicit provider override")
     if profile_for(leg) is None:
         raise QualificationError(f"no {leg} jail is shipped")
     if not seat_uid.seat_uid_available():
