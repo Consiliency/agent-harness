@@ -12808,9 +12808,12 @@ class NativeFillRefusal:
 class NativeFillRefusalError(ValueError):
     """Raised when a fill is applied outside the preflight contract (never silent)."""
 
-    def __init__(self, refusal: NativeFillRefusal) -> None:
+    def __init__(
+        self, refusal: NativeFillRefusal, *, legs: Sequence[PanelLegResult] = (),
+    ) -> None:
         super().__init__(f"{refusal.reason}: {refusal.detail}")
         self.refusal = refusal
+        self.legs: tuple[PanelLegResult, ...] = tuple(legs)
 
 
 def _native_fillable_seats(board: "Board", env: Mapping[str, str] | None) -> list["Seat"]:
@@ -12968,7 +12971,36 @@ def attach_native_fill_provenance(leg: PanelLegResult, fill: NativeLegFill) -> P
     return leg
 
 
-def _not_deferred_detail(fill: NativeLegFill, leg: PanelLegResult | None) -> str:
+def board_wide_failure_summary(legs: Sequence[PanelLegResult]) -> str | None:
+    """agent-harness#1183: when every seat on a multi-seat board failed/degraded (none
+    usable and none deferred cleanly), return a closed-vocabulary board-wide summary so
+    shared staging/environment failures are not obscured by a single seat's native-fill
+    binding error."""
+    if len(legs) < 2:
+        return None
+    if any(
+        item.usable
+        or (item.status == "UNAVAILABLE"
+            and item.detail == _CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE)
+        for item in legs
+    ):
+        return None
+    details = [str(item.detail) if item.detail else "" for item in legs]
+    if details[0] and len(set(details)) == 1:
+        return f"all {len(legs)} seats failed with {details[0]}"
+    if all(detail.startswith("unknown failure") for detail in details):
+        return (
+            f"all {len(legs)} seats failed/degraded "
+            "(shared environment or staging failure; inspect per-seat leg logs)"
+        )
+    return f"all {len(legs)} seats failed/degraded"
+
+
+def _not_deferred_detail(
+    fill: NativeLegFill,
+    leg: PanelLegResult | None,
+    all_legs: Sequence[PanelLegResult] = (),
+) -> str:
     """agent-harness#1183: say what the seat ACTUALLY did, so a seat that degraded before it
     could defer (e.g. the staging free-space floor) is not reported as a routing problem.
     ``leg.detail`` is already our closed vocabulary (the ``PanelLegResult`` chokepoint)."""
@@ -12981,6 +13013,10 @@ def _not_deferred_detail(fill: NativeLegFill, leg: PanelLegResult | None) -> str
     outcome = leg.status + (f" ({leg.detail})" if leg.detail else "")
     if leg.status == "OK":
         outcome += " with a runtime verdict, which a fill never replaces"
+        return f"{head}: the seat returned {outcome}"
+    summary = board_wide_failure_summary(all_legs)
+    if summary is not None:
+        return f"{head}: the seat returned {outcome}; {summary}"
     return f"{head}: the seat returned {outcome}"
 
 
@@ -13004,9 +13040,14 @@ def apply_native_leg_fills(
             or leg.detail != _CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE or request is None
             or (request.model or "").lower() != (fill.model or "").lower()
         ):
-            raise NativeFillRefusalError(NativeFillRefusal(
-                NATIVE_FILL_SEAT_NOT_DEFERRED, _not_deferred_detail(fill, leg), fill.seat_key,
-            ))
+            raise NativeFillRefusalError(
+                NativeFillRefusal(
+                    NATIVE_FILL_SEAT_NOT_DEFERRED,
+                    _not_deferred_detail(fill, leg, out),
+                    fill.seat_key,
+                ),
+                legs=out,
+            )
         conforming = terminal_verdict(fill.text) is not None
         filled = PanelLegResult(
             leg=leg.leg, status="OK" if conforming else "DEGRADED", text=fill.text,

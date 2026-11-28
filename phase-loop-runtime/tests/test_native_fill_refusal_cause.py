@@ -105,7 +105,126 @@ def test_cli_reports_a_binding_refusal_as_a_native_fill_refusal(tmp_path, monkey
         raise pi.NativeFillRefusalError(pi.NativeFillRefusal(pi.NATIVE_FILL_SEAT_NOT_DEFERRED, detail, request["seat_key"]))
 
     monkeypatch.setattr(pi, "invoke_board", refuse)
-    rc, _out, err = run(["advisor-board", str(bundle), "--native-leg", f"claude={request_dir}", "--json"])
+    rc, out, err = run(["advisor-board", str(bundle), "--native-leg", f"claude={request_dir}", "--json"])
     assert rc == 2
     assert f"native fill refused [{pi.NATIVE_FILL_SEAT_NOT_DEFERRED}]" in err and FLOOR in err
     assert "could not stage the artifact" not in err
+    payload = json.loads(out)
+    assert payload["status"] == "native_fill_refused"
+    assert payload["usable"] is False
+    assert payload["refusal"]["reason"] == pi.NATIVE_FILL_SEAT_NOT_DEFERRED
+    assert FLOOR in payload["refusal"]["detail"]
+    assert payload["board_wide_failure"] is None
+
+
+def test_board_wide_staging_floor_failure_is_named_in_refusal_and_error_legs(tmp_path):
+    """When every seat degrades on the staging floor, the refusal names the board-wide
+    failure and attaches all legs to `NativeFillRefusalError`."""
+    artifact = tmp_path / "bundle.md"
+    artifact.write_text("review me\n")
+    board = _mixed_board()
+
+    def spawn(leg, art, **kw):
+        return "DEGRADED", "", FLOOR
+
+    fill = _bound_fill(pi.NativeLegFill, board, board.seats[0], "review me\n")
+    with pytest.raises(pi.NativeFillRefusalError) as excinfo:
+        invoke_sanctioned_review_transport(
+            board, "", spawn=spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
+            native_leg_fills=[fill],
+        )
+    assert excinfo.value.refusal.reason == pi.NATIVE_FILL_SEAT_NOT_DEFERRED
+    assert f"all {len(board.seats)} seats failed with {FLOOR}" in excinfo.value.refusal.detail
+    assert len(excinfo.value.legs) == len(board.seats)
+    assert all(leg.detail == FLOOR for leg in excinfo.value.legs)
+
+
+def test_cli_board_wide_unknown_failure_emits_json_summary_and_retains_leg_logs(tmp_path, monkeypatch):
+    """Reproduces the 2026-11-08 partial-clone failure on agent-harness#1183: when every
+    seat fails with per-seat leg logs, `advisor-board --native-leg ... --json` prints a
+    top-level board-wide failure notice, emits structured JSON on stdout, and keeps the
+    referenced leg-log files instead of deleting them in `finally`."""
+    import json
+    from pathlib import Path
+
+    from test_advisor_board_advisory_cli_802 import _BUNDLE, _Run, _repo_root
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    bundle = tmp_path / "bundle.md"
+    bundle.write_text(_BUNDLE, encoding="utf-8")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.chdir(_repo_root())
+    fill_dir = tmp_path / "fills"
+    rc, out, err = _Run(monkeypatch)(
+        ["advisor-board", str(bundle), "--emit-native-request", "--native-fill-dir", str(fill_dir), "--json"])
+    assert rc == 0, err
+    request = json.loads(out)
+    request_dir = Path(request["request_path"]).parent
+    (request_dir / pi.NATIVE_FILL_REVIEW_FILE).write_text("Reviewed.\nAGREE\n", encoding="utf-8")
+
+    run = _Run(monkeypatch)
+    created_logs: list[Path] = []
+
+    def refuse_all_seats(board, artifact, **kwargs):
+        leg_log_dir = Path(kwargs["leg_log_dir"])
+        failed_legs = []
+        for seat in board.seats:
+            detail = pi._resolve_leg_detail(
+                pi._LegFailure(pi._UNKNOWN_DETAIL, raw="fatal: partial clone exit 128\n", unknown=True, rc=128),
+                leg_log_dir,
+                seat.seat_key,
+            )
+            failed_legs.append(
+                pi.PanelLegResult(leg=seat.harness, status="DEGRADED", text="", detail=detail, seat_key=seat.seat_key)
+            )
+        created_logs.extend(sorted((leg_log_dir / "leg-logs").glob("*.log")))
+        fills = kwargs["native_leg_fills"]
+        pi.apply_native_leg_fills(failed_legs, fills)
+
+    monkeypatch.setattr(pi, "invoke_board", refuse_all_seats)
+    rc, out, err = run(["advisor-board", str(bundle), "--native-leg", f"claude={request_dir}", "--json"])
+    assert rc == 2
+    assert "advisor-board: board-wide failure:" in err
+    assert f"all {len(created_logs)} seats failed/degraded" in err
+    assert "leg failure logs kept in " in err
+    payload = json.loads(out)
+    assert payload["status"] == "native_fill_refused"
+    assert payload["usable"] is False
+    assert payload["refusal"]["reason"] == pi.NATIVE_FILL_SEAT_NOT_DEFERRED
+    assert payload["board_wide_failure"] is not None
+    assert f"all {len(created_logs)} seats failed/degraded" in payload["board_wide_failure"]
+    assert len(payload["legs"]) == len(created_logs)
+    assert all(path.is_file() for path in created_logs), "leg logs must be retained on NativeFillRefusalError"
+
+
+def test_cli_preflight_native_fill_refusal_emits_structured_json(tmp_path, monkeypatch):
+    """Preflight native-fill refusals also emit structured JSON when `--json` is passed."""
+    import json
+    from pathlib import Path
+
+    from test_advisor_board_advisory_cli_802 import _BUNDLE, _Run, _repo_root
+
+    bundle = tmp_path / "bundle.md"
+    bundle.write_text(_BUNDLE, encoding="utf-8")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.chdir(_repo_root())
+    fill_dir = tmp_path / "fills"
+    rc, out, err = _Run(monkeypatch)(
+        ["advisor-board", str(bundle), "--emit-native-request", "--native-fill-dir", str(fill_dir), "--json"])
+    assert rc == 0, err
+    request = json.loads(out)
+    request_dir = Path(request["request_path"]).parent
+    (request_dir / pi.NATIVE_FILL_REVIEW_FILE).write_text("Reviewed.\nAGREE\n", encoding="utf-8")
+
+    # Mutate bundle so preflight refuses with digest mismatch before any reviewer launch.
+    bundle.write_text(_BUNDLE + "\nextra\n", encoding="utf-8")
+    rc, out, err = _Run(monkeypatch)(
+        ["advisor-board", str(bundle), "--native-leg", f"claude={request_dir}", "--json"])
+    assert rc == 2
+    assert f"native fill refused [{pi.NATIVE_FILL_DIGEST_MISMATCH}]" in err
+    payload = json.loads(out)
+    assert payload["status"] == "native_fill_refused"
+    assert payload["usable"] is False
+    assert payload["refusal"]["reason"] == pi.NATIVE_FILL_DIGEST_MISMATCH
+    assert payload["board_wide_failure"] is None
+    assert payload["legs"] == []

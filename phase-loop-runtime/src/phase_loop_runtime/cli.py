@@ -2504,6 +2504,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         if refusal is not None:
             # Typed, before any reviewer launch.
             print(f"advisor-board: native fill refused [{refusal.reason}]: {refusal.detail} (seat {refusal.seat_key})", file=sys.stderr)
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(
+                    _native_fill_refusal_json(board.name, refusal),
+                    indent=2, sort_keys=True,
+                ))
             return 2
     if capture is None:
         instruction_token = set_review_instruction_digest(
@@ -2619,9 +2624,26 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         return 2
     except NativeFillRefusalError as exc:
         # agent-harness#1183: a fill refused at binding (the seat did not defer) is a native-fill
-        # refusal naming the seat's real outcome, never an artifact-staging failure.
+        # refusal naming the seat's real outcome, never an artifact-staging failure. Preserve
+        # per-seat leg logs on exit, surface board-wide failures prominently, and emit structured
+        # JSON when `--json` was requested.
+        from .panel_invoker import board_wide_failure_summary
+
         refusal = exc.refusal
+        exc_legs = tuple(getattr(exc, "legs", ()) or ())
+        leg_details = tuple(leg.detail for leg in exc_legs)
+        board_wide = board_wide_failure_summary(exc_legs)
+        if board_wide is not None:
+            print(f"advisor-board: board-wide failure: {board_wide}", file=sys.stderr)
         print(f"advisor-board: native fill refused [{refusal.reason}]: {refusal.detail} (seat {refusal.seat_key})", file=sys.stderr)
+        if bool(getattr(args, "json", False)):
+            print(json.dumps(
+                _native_fill_refusal_json(
+                    board.name, refusal, legs=exc_legs, seat_modes=seat_modes,
+                    board_wide_failure=board_wide,
+                ),
+                indent=2, sort_keys=True,
+            ))
         if capture is not None:
             capture.close()
         return 2
@@ -3047,6 +3069,42 @@ def _placement_command(args: argparse.Namespace) -> int:
 def _board_notices_json(legs) -> list[dict[str, str]]:
     """Every leg's typed seat notices (agent-harness#1132), rendered from literals."""
     return [notice.as_json() for leg in legs for notice in leg.seat_notices]
+
+
+def _native_fill_refusal_json(
+    board_name: str,
+    refusal,
+    *,
+    legs=(),
+    seat_modes=(),
+    board_wide_failure: str | None = None,
+) -> dict[str, object]:
+    """Structured JSON error payload for `advisor-board --json` on a native-fill refusal
+    (agent-harness#1183), carrying the typed refusal, optional board-wide summary, and
+    per-seat closed-vocabulary status/detail without raw review text."""
+    return {
+        "board": board_name,
+        "usable": False,
+        "status": "native_fill_refused",
+        "refusal": {
+            "reason": refusal.reason,
+            "detail": refusal.detail,
+            "seat_key": refusal.seat_key,
+        },
+        "board_wide_failure": board_wide_failure,
+        "seat_modes": [mode.as_json() for mode in seat_modes],
+        "notices": _board_notices_json(legs),
+        "legs": [
+            {
+                "seat_key": leg.seat_key,
+                "leg": leg.leg,
+                "status": leg.status,
+                "detail": leg.detail,
+                "notices": [notice.as_json() for notice in leg.seat_notices],
+            }
+            for leg in legs
+        ],
+    }
 
 
 def _print_seat_modes(modes) -> None:
