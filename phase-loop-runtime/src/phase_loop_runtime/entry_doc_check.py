@@ -7,12 +7,15 @@ docs still true?". Every defect this module targets arose with **no diff
 touching the doc** -- a ``v0.1.5`` install pin that rotted through six releases
 untouched, a relative link that renders on GitHub but breaks on PyPI.
 
-Three arms, each fully decidable offline:
+Four arms, each fully decidable offline:
 
   (1) ``paths``              -- backtick tokens that look like repo paths resolve.
   (2) ``pins``               -- version pins are *fresh*, not merely resolvable.
   (3) ``published_rendering`` -- a README shipped as a package long-description
                                 carries no relative link destinations.
+  (4) ``cli_flags``          -- ``phase-loop <subcommand> --flag`` spans in
+                                ``docs/``, ``skills-src/``, and entry docs match
+                                the live ``phase-loop`` CLI parser (``--help``).
 
 Two clocks, never crossed
 -------------------------
@@ -33,6 +36,7 @@ Zero external deps (stdlib only). Importable API + ``main(argv) -> int`` +
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import itertools
 import json
@@ -84,8 +88,16 @@ PACKAGE_LONG_DESCRIPTION_DOCS: Tuple[str, ...] = (
 #: long-description, and the coverage arm must keep reconciling against that
 #: narrower set or it would stop reporting an unlisted package README.
 ONBOARDING_DOCS: Tuple[str, ...] = (
+    "CONTRIBUTING.md",
     "docs/TEAM-ONBOARDING.md",
     "docs/outside-worker-quickstart.md",
+)
+
+#: Directories scanned by Arm 4 (``cli_flags``) for ``phase-loop <sub> --flag``
+#: drift beyond the entry docs (agent-harness#1612).
+CLI_FLAG_DOC_ROOTS: Tuple[str, ...] = (
+    "docs",
+    "skills-src",
 )
 
 #: Everything the arms read. The union of two roles that used to be one tuple --
@@ -298,6 +310,16 @@ class RepoContext:
         absent from a clean checkout.
         """
         return self._git("check-ignore", "-q", "--", rel) is not None
+
+    def is_remote_tracking_ref(self, ref: str) -> bool:
+        """True when ``ref`` resolves to a real ``refs/remotes/<ref>`` in git.
+
+        Allows entry docs like ``CONTRIBUTING.md`` to cite ``origin/main`` as a
+        backticked git ref without blanket-skipping typos like ``origin/mian``.
+        """
+        if not ref or ref.startswith("/") or ref.startswith("-") or "/" not in ref or ".." in ref:
+            return False
+        return self._git("show-ref", "--verify", "--quiet", f"refs/remotes/{ref}") is not None
 
     def has_directory_prefix(self, prefix: str) -> bool:
         """True if ``prefix`` occurs as a directory-path component sequence.
@@ -629,6 +651,10 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
             if ctx.is_ignored(token.lstrip("/")):
                 # A generated/runtime artifact by the repo's own declaration.
                 continue
+            if not token.startswith("/") and ctx.is_remote_tracking_ref(token):
+                # A real git remote-tracking ref (for example `origin/main`),
+                # not a repository path.
+                continue
             findings.append(
                 Finding(
                     file=doc_path,
@@ -696,6 +722,23 @@ _FLAG_REF_PIN_RE = re.compile(
 
 #: Archive suffixes and sentence punctuation that ride along on a URL-form ref.
 _REF_SUFFIX_RE = re.compile(r"(?:\.tar\.gz|\.tgz|\.zip)$", re.IGNORECASE)
+
+
+_GH_WORKFLOW_RUN_RE = re.compile(r"\bgh\s+workflow\s+run\b")
+
+
+def _is_workflow_dispatch_ref(line: str, match_start: int, matched_text: str) -> bool:
+    """True when ``--ref`` belongs to ``gh workflow run ... --ref <branch>``.
+
+    GitHub CLI's ``gh workflow run --ref`` selects a branch or ref to dispatch a
+    workflow on, not an ``agent-harness`` install release-tag pin. Scoped to the
+    immediate command segment before ``match_start`` so a chained install command
+    on the same line is still checked.
+    """
+    if not matched_text.startswith("--ref"):
+        return False
+    segment = re.split(r"(?:&&|\|\||[;|`])", line[:match_start])[-1]
+    return bool(_GH_WORKFLOW_RUN_RE.search(segment))
 
 
 def _normalize_url_ref(ref: str) -> str:
@@ -888,7 +931,10 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
             )
         for match in _FLAG_REF_PIN_RE.finditer(line):
             # No owner/repo to gate on -- see _FLAG_REF_PIN_RE. An unqualified ref
-            # in this repository's own entry doc is a claim about this repository.
+            # in this repository's own entry doc is a claim about this repository,
+            # except GitHub CLI's `gh workflow run ... --ref <branch>`.
+            if _is_workflow_dispatch_ref(line, match.start(), match.group(0)):
+                continue
             findings.extend(
                 _evaluate_ref_pin(
                     match.group("ref"), match.group(0), doc_path, idx, ctx
@@ -977,6 +1023,448 @@ def check_published_rendering(text: str, doc_path: str, ctx: RepoContext) -> Lis
                         f"the long-description of `{package.name}`. GitHub rewrites it "
                         f"with repository context; PyPI does not. Use an absolute URL."
                     ),
+                )
+            )
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Arm 4 -- CLI flags (agent-harness#1612)
+
+
+_CLI_FENCE_RE = re.compile(r"^([ ]*)(`{3,}|~{3,})(.*)$")
+_CLI_FLAG_RE = re.compile(r"^--[a-z][a-z0-9-]*$")
+_CLI_SUBCOMMAND_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+
+
+def _collect_parser_flags(
+    parser: argparse.ArgumentParser, prefix: Tuple[str, ...] = ()
+) -> Tuple[Dict[Tuple[str, ...], Set[str]], Dict[Tuple[str, ...], Set[str]]]:
+    """Walk ``parser`` and its subparsers, returning documented ``--flag`` sets."""
+    options_by_cmd: Dict[Tuple[str, ...], Set[str]] = {}
+    value_opts_by_cmd: Dict[Tuple[str, ...], Set[str]] = {}
+    own_opts: Set[str] = set()
+    own_value_opts: Set[str] = set()
+    for action in parser._actions:
+        if action.help is argparse.SUPPRESS:
+            continue
+        for opt in action.option_strings:
+            if opt.startswith("--"):
+                own_opts.add(opt)
+                if action.nargs != 0:
+                    own_value_opts.add(opt)
+    options_by_cmd[prefix] = own_opts
+    value_opts_by_cmd[prefix] = own_value_opts
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, subparser in action.choices.items():
+                sub_opts, sub_val = _collect_parser_flags(subparser, prefix + (name,))
+                options_by_cmd.update(sub_opts)
+                value_opts_by_cmd.update(sub_val)
+    return options_by_cmd, value_opts_by_cmd
+
+
+@functools.lru_cache(maxsize=1)
+def _load_cli_parser_flags() -> (
+    Tuple[Dict[Tuple[str, ...], Set[str]], Dict[Tuple[str, ...], Set[str]]]
+):
+    """Lazily inspect ``phase_loop_runtime.cli.build_parser()`` for documented flags."""
+    from . import cli as _cli
+
+    return _collect_parser_flags(_cli.build_parser())
+
+
+def _iter_inline_code_spans(line: str) -> List[str]:
+    """Extract CommonMark single- or multi-backtick inline code spans on ``line``."""
+    spans: List[str] = []
+    idx = 0
+    length = len(line)
+    while idx < length:
+        if line[idx] != "`":
+            idx += 1
+            continue
+        run_end = idx
+        while run_end < length and line[run_end] == "`":
+            run_end += 1
+        ticks = line[idx:run_end]
+        close = line.find(ticks, run_end)
+        while close != -1 and (
+            (close > 0 and line[close - 1] == "`")
+            or (close + len(ticks) < length and line[close + len(ticks)] == "`")
+        ):
+            close = line.find(ticks, close + 1)
+        if close == -1:
+            idx = run_end
+            continue
+        spans.append(line[run_end:close])
+        idx = close + len(ticks)
+    return spans
+
+
+def _tokenize_shell_segments(
+    lines_with_nos: Sequence[Tuple[int, str]],
+) -> List[List[Tuple[str, int, bool]]]:
+    """Split shell command lines into operator-bounded segments of ``(tok, line, quoted)``."""
+    segments: List[List[Tuple[str, int, bool]]] = []
+    cur_seg: List[Tuple[str, int, bool]] = []
+    buf: List[str] = []
+    buf_line = 0
+    buf_quoted = False
+    in_quote: Optional[str] = None
+
+    def flush_tok() -> None:
+        nonlocal buf_quoted
+        if buf:
+            cur_seg.append(("".join(buf), buf_line, buf_quoted))
+            buf.clear()
+            buf_quoted = False
+
+    def flush_seg() -> None:
+        flush_tok()
+        if cur_seg:
+            segments.append(list(cur_seg))
+            cur_seg.clear()
+
+    for lineno, raw in lines_with_nos:
+        i = 0
+        n = len(raw)
+        while i < n:
+            ch = raw[i]
+            if in_quote is not None:
+                if ch == "\\" and in_quote == '"' and i + 1 < n:
+                    buf.append(raw[i + 1])
+                    i += 2
+                    continue
+                if ch == in_quote:
+                    in_quote = None
+                    i += 1
+                    continue
+                buf.append(ch)
+                i += 1
+                continue
+            if ch == "#" and not buf:
+                break
+            if ch in ("'", '"'):
+                if not buf:
+                    buf_line = lineno
+                    buf_quoted = True
+                in_quote = ch
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < n:
+                if not buf:
+                    buf_line = lineno
+                buf.append(raw[i + 1])
+                i += 2
+                continue
+            if ch in " \t\r":
+                flush_tok()
+                i += 1
+                continue
+            if ch in ";|&()" or (ch == "$" and i + 1 < n and raw[i + 1] == "("):
+                flush_seg()
+                if ch == "$" and i + 1 < n and raw[i + 1] == "(":
+                    i += 2
+                elif i + 1 < n and raw[i + 1] == ch and ch in "|&":
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if not buf:
+                buf_line = lineno
+            buf.append(ch)
+            i += 1
+        if in_quote is None:
+            flush_tok()
+    flush_seg()
+    return segments
+
+
+def _ends_with_line_continuation(line: str) -> bool:
+    stripped = line.rstrip("\r")
+    trailing_backslashes = len(stripped) - len(stripped.rstrip("\\"))
+    return trailing_backslashes % 2 == 1
+
+
+def _iter_cli_code_segments(text: str) -> List[List[Tuple[str, int, bool]]]:
+    """Yield shell command segments from fenced code blocks and inline code spans."""
+    lines = text.split("\n")
+    out: List[List[Tuple[str, int, bool]]] = []
+    opener_char: Optional[str] = None
+    opener_len = 0
+    fence_group: List[Tuple[int, str]] = []
+
+    def flush_fence_group() -> None:
+        if fence_group:
+            out.extend(_tokenize_shell_segments(fence_group))
+            fence_group.clear()
+
+    for idx, line in enumerate(lines):
+        lineno = idx + 1
+        match = _CLI_FENCE_RE.match(line)
+        if opener_char is None:
+            if match:
+                char = match.group(2)[0]
+                info = match.group(3)
+                if not (char == "`" and "`" in info):
+                    opener_char = char
+                    opener_len = len(match.group(2))
+                    continue
+            for span in _iter_inline_code_spans(line):
+                out.extend(_tokenize_shell_segments([(lineno, span)]))
+            continue
+        if (
+            match
+            and match.group(2)[0] == opener_char
+            and len(match.group(2)) >= opener_len
+            and not match.group(3).strip()
+        ):
+            flush_fence_group()
+            opener_char = None
+            opener_len = 0
+            continue
+        if _ends_with_line_continuation(line):
+            fence_group.append((lineno, line.rstrip("\r")[:-1] + " "))
+        else:
+            fence_group.append((lineno, line))
+            flush_fence_group()
+    flush_fence_group()
+    return out
+
+
+def _extract_cli_flag(token: str) -> Optional[str]:
+    """Return canonical ``--flag`` from ``token`` (handling ``[--flag]`` and ``--flag=val``)."""
+    candidate = token.lstrip("[")
+    if candidate == "--" or not candidate.startswith("--"):
+        return None
+    flag = candidate.split("=", 1)[0].rstrip(".,;:)]}>")
+    return flag if _CLI_FLAG_RE.fullmatch(flag) else None
+
+
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_PYTHON_BIN_RE = re.compile(r"^(?:.*/)?python(?:\d+(?:\.\d+)*)?$")
+_CLI_WRAPPER_BINS: frozenset = frozenset({"nohup", "time", "exec", "sudo"})
+
+
+def _find_cli_invocation(seg: Sequence[Tuple[str, int, bool]]) -> Optional[int]:
+    """Return index of first arg after ``phase-loop`` in command position, else ``None``.
+
+    Skips shell prompts (``$``, ``%``), leading ``KEY=VAL`` assignments, and
+    common command wrappers (``env``, ``timeout``, ``uv run``, ``command`` without
+    ``-v``/``-V``), and recognizes ``python -m phase_loop_runtime.cli``. Leaves
+    non-invocation mentions such as ``git grep phase-loop --include ...`` or
+    ``command -v phase-loop`` untouched.
+    """
+    idx = 0
+    n = len(seg)
+    while idx < n:
+        tok, _ln, quoted = seg[idx]
+        if quoted:
+            return None
+        if tok in ("$", "%"):
+            idx += 1
+            continue
+        if _ENV_ASSIGN_RE.match(tok):
+            idx += 1
+            continue
+        if tok == "env":
+            idx += 1
+            while idx < n and not seg[idx][2] and (
+                seg[idx][0].startswith("-") or _ENV_ASSIGN_RE.match(seg[idx][0])
+            ):
+                idx += 1
+            continue
+        if tok == "timeout":
+            idx += 1
+            while idx < n and not seg[idx][2] and seg[idx][0].startswith("-"):
+                opt = seg[idx][0]
+                idx += 1
+                if opt in ("-k", "-s", "--kill-after", "--signal") and idx < n:
+                    idx += 1
+            if idx < n and not seg[idx][2]:
+                idx += 1  # duration argument
+            continue
+        if tok == "uv" and idx + 1 < n and not seg[idx + 1][2] and seg[idx + 1][0] == "run":
+            idx += 2
+            while idx < n and not seg[idx][2] and seg[idx][0].startswith("-"):
+                opt = seg[idx][0]
+                idx += 1
+                if opt in ("--project", "--python", "--with", "--directory") and idx < n:
+                    idx += 1
+            continue
+        if tok == "command":
+            idx += 1
+            while idx < n and not seg[idx][2] and seg[idx][0].startswith("-"):
+                if seg[idx][0] in ("-v", "-V"):
+                    return None
+                idx += 1
+            continue
+        if tok in _CLI_WRAPPER_BINS:
+            idx += 1
+            continue
+        if tok == "phase-loop" or tok.endswith("/phase-loop"):
+            return idx + 1
+        if _PYTHON_BIN_RE.match(tok):
+            p = idx + 1
+            while p < n and not seg[p][2] and seg[p][0].startswith("-") and seg[p][0] != "-m":
+                p += 1
+            if (
+                p + 1 < n
+                and not seg[p][2]
+                and seg[p][0] == "-m"
+                and not seg[p + 1][2]
+                and seg[p + 1][0] == "phase_loop_runtime.cli"
+            ):
+                return p + 2
+            return None
+        return None
+    return None
+
+
+def check_cli_flags(
+    text: str,
+    doc_path: str,
+    *,
+    command_flags: Optional[Dict[Tuple[str, ...], Set[str]]] = None,
+    value_flags: Optional[Dict[Tuple[str, ...], Set[str]]] = None,
+) -> List[Finding]:
+    """Arm 4: every ``phase-loop <subcommand> --flag`` span must exist in ``--help``."""
+    if command_flags is None or value_flags is None:
+        loaded_flags, loaded_values = _load_cli_parser_flags()
+        if command_flags is None:
+            command_flags = loaded_flags
+        if value_flags is None:
+            value_flags = loaded_values
+
+    top_flags = command_flags.get((), set())
+    top_value_flags = value_flags.get((), set())
+    findings: List[Finding] = []
+
+    for seg in _iter_cli_code_segments(text):
+        pos = _find_cli_invocation(seg)
+        if pos is None:
+            continue
+        # Validate optional top-level flags preceding the subcommand.
+        while pos < len(seg):
+            t, ln, q = seg[pos]
+            if q or t == "--":
+                break
+            flag = _extract_cli_flag(t)
+            if flag is None:
+                break
+            if flag not in top_flags:
+                findings.append(
+                    Finding(
+                        file=doc_path,
+                        line=ln,
+                        arm="cli_flags",
+                        code="unknown_cli_flag",
+                        token=f"phase-loop {flag}",
+                        message=(
+                            f"`phase-loop {flag}` is not a documented top-level "
+                            f"option in `phase-loop --help`."
+                        ),
+                    )
+                )
+            if flag in top_value_flags and "=" not in t and pos + 1 < len(seg):
+                pos += 1
+            pos += 1
+        if pos >= len(seg):
+            continue
+        sub_tok, sub_ln, sub_q = seg[pos]
+        if sub_q or not _CLI_SUBCOMMAND_RE.fullmatch(sub_tok):
+            continue
+        if (sub_tok,) not in command_flags:
+            has_concrete_flag = False
+            for t, _ln, q in seg[pos + 1 :]:
+                if not q and t == "--":
+                    break
+                if not q and _extract_cli_flag(t) is not None:
+                    has_concrete_flag = True
+                    break
+            if has_concrete_flag:
+                findings.append(
+                    Finding(
+                        file=doc_path,
+                        line=sub_ln,
+                        arm="cli_flags",
+                        code="unknown_cli_subcommand",
+                        token=f"phase-loop {sub_tok}",
+                        message=(
+                            f"`phase-loop {sub_tok}` is not a documented subcommand "
+                            f"in `phase-loop --help`."
+                        ),
+                    )
+                )
+            continue
+        path_key: Tuple[str, ...] = (sub_tok,)
+        pos += 1
+        while (
+            pos < len(seg)
+            and not seg[pos][2]
+            and (*path_key, seg[pos][0]) in command_flags
+        ):
+            path_key = (*path_key, seg[pos][0])
+            pos += 1
+        valid_opts = command_flags[path_key]
+        cmd_label = " ".join(path_key)
+        while pos < len(seg):
+            t, ln, q = seg[pos]
+            if not q and t == "--":
+                break
+            if not q:
+                flag = _extract_cli_flag(t)
+                if flag is not None and flag not in valid_opts:
+                    findings.append(
+                        Finding(
+                            file=doc_path,
+                            line=ln,
+                            arm="cli_flags",
+                            code="unknown_cli_flag",
+                            token=f"{cmd_label} {flag}",
+                            message=(
+                                f"`phase-loop {cmd_label} {flag}` is not a "
+                                f"documented option in `phase-loop {cmd_label} --help`."
+                            ),
+                        )
+                    )
+            pos += 1
+    return findings
+
+
+def check_cli_flags_in_repo(
+    ctx: RepoContext,
+    *,
+    roots: Sequence[str] = CLI_FLAG_DOC_ROOTS,
+    exclude: Set[str] = frozenset(),
+    command_flags: Optional[Dict[Tuple[str, ...], Set[str]]] = None,
+    value_flags: Optional[Dict[Tuple[str, ...], Set[str]]] = None,
+) -> List[Finding]:
+    """Scan markdown files under ``roots`` for ``phase-loop <sub> --flag`` drift."""
+    findings: List[Finding] = []
+    seen: Set[str] = set(exclude)
+    for root_rel in roots:
+        root_dir = ctx.repo / root_rel
+        if not root_dir.is_dir():
+            continue
+        for path in sorted(root_dir.rglob("*.md")):
+            if not path.is_file():
+                continue
+            try:
+                resolved = path.resolve()
+                resolved.relative_to(ctx.repo)
+            except (OSError, ValueError):
+                continue
+            logical = path.relative_to(ctx.repo).as_posix()
+            if logical in seen:
+                continue
+            seen.add(logical)
+            findings.extend(
+                check_cli_flags(
+                    path.read_text(encoding="utf-8"),
+                    logical,
+                    command_flags=command_flags,
+                    value_flags=value_flags,
                 )
             )
     return findings
@@ -1126,6 +1614,7 @@ def check_document(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
     findings = list(check_paths(text, doc_path, ctx))
     findings.extend(check_pin_freshness(text, doc_path, ctx))
     findings.extend(check_published_rendering(text, doc_path, ctx))
+    findings.extend(check_cli_flags(text, doc_path))
     return findings
 
 
@@ -1186,6 +1675,9 @@ def check_repo(
         findings.extend(check_document(path.read_text(encoding="utf-8"), doc, ctx))
     if only is None:
         findings.extend(check_entry_doc_coverage(ctx, entry_docs))
+        findings.extend(
+            check_cli_flags_in_repo(ctx, roots=CLI_FLAG_DOC_ROOTS, exclude=set(targets))
+        )
     return findings
 
 

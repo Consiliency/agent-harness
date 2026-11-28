@@ -533,8 +533,12 @@ class TestEntryDocRoles(unittest.TestCase):
         )
 
     def test_onboarding_docs_are_checked(self):
-        """The ah#600 coverage gap: these were entry points by function, unchecked."""
-        for doc in ("docs/TEAM-ONBOARDING.md", "docs/outside-worker-quickstart.md"):
+        """The ah#600 / ah#1612 coverage gap: these were entry points by function, unchecked."""
+        for doc in (
+            "CONTRIBUTING.md",
+            "docs/TEAM-ONBOARDING.md",
+            "docs/outside-worker-quickstart.md",
+        ):
             self.assertIn(doc, edc.ENTRY_DOCS)
 
     def test_onboarding_docs_are_not_package_long_descriptions(self):
@@ -1419,6 +1423,143 @@ class TestCli(unittest.TestCase):
         self.assertEqual(
             edc.main(["entry_doc_check", "--repo", str(REPO_ROOT), "--file", "README.md"]), 0
         )
+
+
+# ---------------------------------------------------------------------------
+# Arm 4 -- CLI flags & CONTRIBUTING.md coverage (agent-harness#1612)
+
+
+class TestArmCliFlags(unittest.TestCase):
+    def test_unknown_subcommand_flag_in_docs_and_skills_src_is_reported(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": "Clean doc.\n",
+                    "docs/guide.md": "Run `phase-loop doctor --json --nonexistent-flag`.\n",
+                    "skills-src/claude/demo/SKILL.md": (
+                        "```sh\n"
+                        "phase-loop advisor-board <artifact> \\\n"
+                        "  --advisory \\\n"
+                        "  --bogus-option\n"
+                        "```\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                [(f.file, f.line, f.arm, f.code, f.token) for f in found],
+                [
+                    ("docs/guide.md", 1, "cli_flags", "unknown_cli_flag", "doctor --nonexistent-flag"),
+                    (
+                        "skills-src/claude/demo/SKILL.md",
+                        4,
+                        "cli_flags",
+                        "unknown_cli_flag",
+                        "advisor-board --bogus-option",
+                    ),
+                ],
+            )
+
+    def test_unknown_top_level_flag_and_subcommand_and_optional_brackets_are_reported(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": (
+                        "Run `phase-loop --bogus-top doctor --json` and "
+                        "`phase-loop nonexistent-sub --repo .` and "
+                        "`phase-loop doctor [--bogus-opt]` and "
+                        "`timeout 60 python3 -m phase_loop_runtime.cli docs-audit --bogus-audit`.\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                [(f.arm, f.code, f.token) for f in found],
+                [
+                    ("cli_flags", "unknown_cli_flag", "phase-loop --bogus-top"),
+                    ("cli_flags", "unknown_cli_subcommand", "phase-loop nonexistent-sub"),
+                    ("cli_flags", "unknown_cli_flag", "doctor --bogus-opt"),
+                    ("cli_flags", "unknown_cli_flag", "docs-audit --bogus-audit"),
+                ],
+            )
+
+    def test_adversarial_positives_for_cli_flags(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": "Clean doc.\n",
+                    "docs/examples.md": (
+                        "```sh\n"
+                        "# phase-loop doctor --commented-out-flag\n"
+                        "PHASE_LOOP_SKILL_BUNDLE=/tmp/x timeout 120 phase-loop --allow-branchgov run --repo . --phase P1\n"
+                        "phase-loop run --repo . --command-template \"pytest --fake-in-quotes\" --json\n"
+                        "phase-loop doctor --json -- --passthrough-flag\n"
+                        "phase-loop doctor --json | jq --raw-output .\n"
+                        "phase-loop doctor --json && git status --short # --comment-flag\n"
+                        "git grep phase-loop --include '*.md'\n"
+                        "command -v phase-loop\n"
+                        "phase-loop-skill-eval run --experiment /tmp/exp\n"
+                        "```\n"
+                        "Also `phase-loop train-status --event-log PATH [--json]`.\n"
+                    ),
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual([f.render() for f in found], [])
+
+    def test_remote_tracking_ref_passes_while_typo_still_fails(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "CONTRIBUTING.md": "Compare against `origin/main` and `origin/mian`.\n",
+                },
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            found = edc.check_repo(repo, entry_docs=("CONTRIBUTING.md",))
+            self.assertEqual(
+                [(f.arm, f.code, f.token) for f in found],
+                [("paths", "missing_path", "origin/mian")],
+            )
+
+    def test_gh_workflow_run_ref_is_exempt_without_exempting_install_ref(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "CONTRIBUTING.md": (
+                        "```sh\n"
+                        "gh workflow run test.yml --ref <your-branch> -f chronology=false\n"
+                        "gh workflow run test.yml --ref <your-branch> && install-agent-harness.sh --ref <your-branch>\n"
+                        "```\n"
+                    ),
+                },
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            found = edc.check_repo(repo, entry_docs=("CONTRIBUTING.md",))
+            self.assertEqual(
+                [(f.line, f.arm, f.code, f.token) for f in found],
+                [(3, "pins", "invalid_placeholder", "--ref <your-branch>")],
+            )
+
+    def test_entry_doc_under_docs_is_not_double_reported_for_cli_flags(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "docs/TEAM-ONBOARDING.md": "Run `phase-loop doctor --bogus-once`.\n",
+                },
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            found = edc.check_repo(repo, entry_docs=("docs/TEAM-ONBOARDING.md",))
+            self.assertEqual(
+                [(f.file, f.arm, f.code, f.token) for f in found],
+                [("docs/TEAM-ONBOARDING.md", "cli_flags", "unknown_cli_flag", "doctor --bogus-once")],
+            )
 
 
 if __name__ == "__main__":

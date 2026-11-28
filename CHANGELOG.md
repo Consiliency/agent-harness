@@ -36,6 +36,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   against the checked-out repository in `.github/workflows/test.yml` (with an isolated
   JUnit report and positive/negative controls in `test_ci_canonical_manifest_1730.py`,
   while preserving the standalone-from-wheel clean-room run) (agent-harness#1730).
+- Add Arm 4 (`cli_flags`) to `phase_loop_runtime.entry_doc_check` to validate
+  `phase-loop <subcommand> --flag` invocations across `docs/`, `skills-src/`, and entry
+  docs against `phase-loop` `--help` / `cli.build_parser()`, and add `CONTRIBUTING.md` to
+  `entry_doc_check.ENTRY_DOCS` (agent-harness#1612).
 - Run the 12 repo-local LEGIBLE assumption-probe live arms (`repo_constant`,
   `roadmap_predicate`, `ast_call_predicate`, and `manifest_behavior`) directly from the
   source checkout by explicit node ID in `.github/workflows/test.yml` (excluding
