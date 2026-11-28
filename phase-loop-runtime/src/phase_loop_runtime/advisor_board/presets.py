@@ -19,7 +19,7 @@ and legal review are mid-tier decisions where being wrong is expensive, so the
 review-class boards (``default``, ``code-review``, ``legal-review``,
 ``legal-strategy-review``) seat Opus 5.5 (``claude-opus-5-5``) on the claude lane --
 the maintainer's review default "for now" (2026-09-23; Fable ``claude-fable-5-1``
-before that) -- not the implementer ``claude-sonnet-5``. The catch-all ``general`` and
+before that) -- not the implementer ``claude-sonnet-5-5``. The catch-all ``general`` and
 ``solo`` boards follow the same default. The divergent-thinking boards (``brainstorm``,
 ``doc-edit``, ``legal-brainstorm``) deliberately KEEP Sonnet — a diverse voice / a
 low-stakes copyedit / an aggressive-but-cheap ideation seat — where it is the right

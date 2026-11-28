@@ -1742,7 +1742,7 @@ _LEG_CLI: dict[str, str] = {
 # The claude leg default is `claude-opus-5-5` (Opus 5.5), set as the review default "for
 # now" by the maintainer (2026-09-23); `claude-fable-5-1` (Fable), the prior default,
 # stays registered and selectable per seat. Either way the review path does NOT run on
-# `CLAUDE_IMPLEMENTER_MODEL` (the implementer model, `claude-sonnet-5`). This dict is
+# `CLAUDE_IMPLEMENTER_MODEL` (the implementer model, `claude-sonnet-5-5`). This dict is
 # the SINGLE source of truth for the panel's per-leg default model — the claude leg
 # builder (`_claude_tui_command`) and the Agent-View attempt both read it — so the
 # review-path model is decoupled from the implementer model and can never silently
