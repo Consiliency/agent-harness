@@ -448,18 +448,23 @@ exit codes:
 
 
 def _wants_help(argv: list[str]) -> bool:
+    wants = False
     i = 0
     while i < len(argv):
         arg = argv[i]
         if arg == "--":
-            return False
+            break
         if arg in ("-h", "--help"):
-            return True
+            wants = True
+            i += 1
+            continue
         if arg in ("--repo", "--phase"):
+            if i + 1 >= len(argv):
+                raise ValueError(f"{arg} requires a value")
             i += 2
             continue
         i += 1
-    return False
+    return wants
 
 
 def _main(argv: list[str]) -> int:

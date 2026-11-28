@@ -701,3 +701,33 @@ class TestIgnoredOutputAudit(unittest.TestCase):
         self.assertFalse(cc._wants_help(["--repo", "--help"]))
         self.assertFalse(cc._wants_help(["--", "--help"]))
         self.assertTrue(cc._wants_help(["--phase", "CORE", "--help"]))
+
+    def test_help_does_not_mask_dangling_option_value(self):
+        """agent-harness#1613: malformed invocations with a dangling --repo or --phase
+        must still raise and emit CRASH_ACTION even when -h/--help is also present."""
+        import contextlib
+        import io
+        import sys
+        import phase_loop_runtime.closeout_classifier as cc
+
+        for entry in ("module", "console"):
+            for argv in (
+                ["--record-outputs", "--help", "--repo"],
+                ["--repo", ".", "-h", "--phase"],
+            ):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    with self.assertRaises(Exception):
+                        if entry == "console":
+                            saved = sys.argv
+                            sys.argv = ["phase-loop-closeout-audit", *argv]
+                            try:
+                                cc.console_main()
+                            finally:
+                                sys.argv = saved
+                        else:
+                            cc.main(argv)
+                lines = buf.getvalue().strip().splitlines()
+                self.assertEqual(sum(l.startswith("action: ") for l in lines), 1, (entry, argv, lines))
+                self.assertTrue(lines[-1].startswith("action: "), (entry, argv, lines))
+                self.assertIn("terminal_status=blocked and blocker_class=dirty_worktree_conflict", lines[-1])
